@@ -1,0 +1,7 @@
+{
+  "x": 1,
+  "v": 1,
+  "kdf": { "alg": "argon2id", "salt": "5OaqunHpjzeTORWnJxggYQ==", "t": 3, "m_kib": 65536, "p": 1 },
+  "wrapped_vk": "zFDMN2WIkG8b7i8wK3J6CHhRiBZxsRRX5YDNTrvD8sgvaf0jDZvObTCkewW1skVwOFD5lIdLAelB72UX",
+  "inbox_pub": "VENAgHDNXfEIlZ60SIEDUUQ71+g8yYHckyDPUEAVfhE="
+}
