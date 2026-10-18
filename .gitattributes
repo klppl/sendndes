@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Test vectors are byte-exact; never convert line endings
+testvectors/** -text
