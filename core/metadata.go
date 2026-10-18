@@ -48,7 +48,7 @@ func validDir(s string) bool {
 	return true
 }
 
-// check applies the field rules to already-normalized values.
+// check applies the field rules (not NFC, which only writers apply).
 func (m *Metadata) check() error {
 	if !utf8.ValidString(m.Name) || !utf8.ValidString(m.Dir) || !utf8.ValidString(m.MIME) {
 		return fmt.Errorf("%w: invalid UTF-8", ErrMetadata)
@@ -62,10 +62,13 @@ func (m *Metadata) check() error {
 	if m.Rev < 1 {
 		return fmt.Errorf("%w: rev must be at least 1", ErrMetadata)
 	}
-	if !norm.NFC.IsNormalString(m.Name) || !norm.NFC.IsNormalString(m.Dir) {
-		return fmt.Errorf("%w: name or dir is not NFC", ErrMetadata)
-	}
 	return nil
+}
+
+// IsNFC reports whether name and dir are NFC. Readers accept non-NFC
+// metadata (SPEC 5.2); tools may warn about it.
+func (m Metadata) IsNFC() bool {
+	return norm.NFC.IsNormalString(m.Name) && norm.NFC.IsNormalString(m.Dir)
 }
 
 // EncodeMetadata normalizes name and dir to NFC, checks the field rules and

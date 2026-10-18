@@ -44,10 +44,10 @@ func readInboxHeader(r io.Reader) (*inboxHeader, error) {
 	return h, nil
 }
 
-// SealInbox writes an inbox file for content to w, sealed to inboxPub
-// (SPEC 6.2). It is what the inbox server runs; it needs no vault keys.
-// meta.Rev is set to 1.
-func SealInbox(w io.Writer, inboxPub [KeySize]byte, meta Metadata, content io.Reader) (FileID, error) {
+// SealInbox writes an inbox file for content to w, sealed to inboxPub and
+// authenticated with kAuth (SPEC 6.2). It is what the inbox server runs; it
+// needs no vault keys. meta.Rev is set to 1.
+func SealInbox(w io.Writer, inboxPub, kAuth [KeySize]byte, meta Metadata, content io.Reader) (FileID, error) {
 	meta.Rev = 1
 	plain, _, err := EncodeMetadata(meta)
 	if err != nil {
@@ -59,12 +59,12 @@ func SealInbox(w io.Writer, inboxPub [KeySize]byte, meta Metadata, content io.Re
 	defer clear(ephPriv[:])
 	var metaNonce [NonceSize]byte
 	randomBytes(metaNonce[:])
-	return id, sealInbox(w, &inboxPub, plain, content, id, &ephPriv, metaNonce[:])
+	return id, sealInbox(w, &inboxPub, kAuth[:], plain, content, id, &ephPriv, metaNonce[:])
 }
 
 // sealInbox writes an inbox file with the given id, ephemeral key and nonce.
 // Release code reaches it only through SealInbox, with random values.
-func sealInbox(w io.Writer, inboxPub *[KeySize]byte, metaPlain []byte, content io.Reader, id FileID, ephPriv *[KeySize]byte, metaNonce []byte) error {
+func sealInbox(w io.Writer, inboxPub *[KeySize]byte, kAuth, metaPlain []byte, content io.Reader, id FileID, ephPriv *[KeySize]byte, metaNonce []byte) error {
 	ephPub, err := curve25519.X25519(ephPriv[:], curve25519.Basepoint)
 	if err != nil {
 		return err
@@ -76,7 +76,7 @@ func sealInbox(w io.Writer, inboxPub *[KeySize]byte, metaPlain []byte, content i
 	defer clear(dh)
 	h := &inboxHeader{fileID: id}
 	copy(h.ephPub[:], ephPub)
-	fk := inboxFK(dh, &h.ephPub, inboxPub)
+	fk := inboxFK(dh, kAuth, &h.ephPub, inboxPub)
 	defer clear(fk[:])
 	fkeys := deriveFileKeys(&fk)
 	defer fkeys.wipe()
@@ -119,7 +119,7 @@ func openInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*open
 	if err != nil {
 		return nil, err
 	}
-	o.fk = inboxFK(dh, &hdr.ephPub, &keys.InboxPub)
+	o.fk = inboxFK(dh, keys.InboxAuth[:], &hdr.ephPub, &keys.InboxPub)
 	clear(dh)
 	o.keys = deriveFileKeys(&o.fk)
 	if o.meta, err = decryptMeta(hdr.metaBlob, &o.keys.meta, hdr.fileID); err != nil {
@@ -176,8 +176,8 @@ func ingestInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys, w io
 
 // CheckAlreadyIngested decides whether an existing object with the inbox
 // file's id is the result of ingesting it (SPEC 6.3): the object's FK must
-// equal the inbox FK and its chunks must be byte-identical; meta_blob may
-// differ. It returns nil if so, so the inbox file may be deleted, and an
+// equal the inbox FK, its meta_blob must decrypt under that FK, and its chunks
+// must be byte-identical; meta_blob may differ from the inbox file's. It returns nil if so, so the inbox file may be deleted, and an
 // error wrapping ErrConflict if not. Any other error means the inbox file
 // itself is bad. Nothing is deleted here.
 func CheckAlreadyIngested(inbox io.Reader, inboxSize int64, object io.Reader, objectSize int64, expected FileID, keys *VaultKeys) error {
@@ -205,6 +205,9 @@ func CheckAlreadyIngested(inbox io.Reader, inboxSize int64, object io.Reader, ob
 	clear(objFK[:])
 	if !same {
 		return conflict("FK differs")
+	}
+	if _, err := decryptMeta(oh.metaBlob, &in.keys.meta, oh.fileID); err != nil {
+		return conflict("existing object's metadata does not decrypt: " + err.Error())
 	}
 	buf := make([]byte, StoredChunkSize)
 	errDiffer := errors.New("chunks differ")

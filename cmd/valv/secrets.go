@@ -8,40 +8,39 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/klppl/valv/core"
 	"golang.org/x/term"
+	"golang.org/x/text/unicode/norm"
 )
 
-// lineReader reads one secret per line for --passphrase-stdin.
-type lineReader struct{ r *bufio.Reader }
+// minPassphraseLen is the minimum for a new passphrase, in code points after
+// NFC (SPEC 3).
+const minPassphraseLen = 12
 
-func (l *lineReader) next() (string, error) {
-	line, err := l.r.ReadString('\n')
-	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
-		return "", errors.New("could not read a line from stdin")
-	}
-	line = strings.TrimSuffix(line, "\n")
-	return strings.TrimSuffix(line, "\r"), nil
+// terminal reads secrets interactively. Tests replace it.
+type terminal interface {
+	IsTerminal() bool
+	ReadPassword(prompt string) (string, error)
 }
 
-// readSecret reads a passphrase or recovery key. With --passphrase-stdin it
-// takes the next stdin line (only the line ending is removed); otherwise it
-// reads from the terminal without echo.
-func (a *app) readSecret(prompt string) (string, error) {
-	if a.passStdin {
-		if a.lines == nil {
-			a.lines = &lineReader{bufio.NewReader(a.stdin)}
-		}
-		return a.lines.next()
-	}
-	f, ok := a.stdin.(*os.File)
-	if !ok || !term.IsTerminal(int(f.Fd())) {
-		return "", errors.New("stdin is not a terminal; use --passphrase-stdin")
-	}
-	fmt.Fprint(a.stderr, prompt)
+// osTerminal reads from stdin when it is a terminal, without echo.
+type osTerminal struct {
+	in     io.Reader
+	prompt io.Writer
+}
+
+func (t osTerminal) IsTerminal() bool {
+	f, ok := t.in.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+func (t osTerminal) ReadPassword(prompt string) (string, error) {
+	f := t.in.(*os.File)
+	fmt.Fprint(t.prompt, prompt)
 	b, err := term.ReadPassword(int(f.Fd()))
-	fmt.Fprintln(a.stderr)
+	fmt.Fprintln(t.prompt)
 	if err != nil {
 		return "", errors.New("could not read from the terminal")
 	}
@@ -50,7 +49,42 @@ func (a *app) readSecret(prompt string) (string, error) {
 	return s, nil
 }
 
-// newPassphrase asks for a new passphrase, twice on a terminal.
+// lineReader reads one secret per line for --passphrase-stdin.
+type lineReader struct{ r *bufio.Reader }
+
+// next returns the next line with exactly one trailing "\n" or "\r\n"
+// removed, and nothing else.
+func (l *lineReader) next() (string, error) {
+	line, err := l.r.ReadString('\n')
+	if err != nil && !(errors.Is(err, io.EOF) && line != "") {
+		return "", errors.New("could not read a line from stdin")
+	}
+	if s, ok := strings.CutSuffix(line, "\r\n"); ok {
+		return s, nil
+	}
+	return strings.TrimSuffix(line, "\n"), nil
+}
+
+// interactive reports whether secrets come from a terminal.
+func (a *app) interactive() bool { return !a.passStdin }
+
+// readSecret reads a passphrase or recovery key: the next stdin line with
+// --passphrase-stdin, otherwise from the terminal without echo.
+func (a *app) readSecret(prompt string) (string, error) {
+	if a.passStdin {
+		if a.lines == nil {
+			a.lines = &lineReader{bufio.NewReader(a.stdin)}
+		}
+		return a.lines.next()
+	}
+	if !a.term.IsTerminal() {
+		return "", errors.New("stdin is not a terminal; use --passphrase-stdin")
+	}
+	return a.term.ReadPassword(prompt)
+}
+
+// newPassphrase asks for a new passphrase, twice on a terminal, and enforces
+// the minimum length unless --allow-weak-passphrase was given.
 func (a *app) newPassphrase() (string, error) {
 	p, err := a.readSecret("New passphrase: ")
 	if err != nil {
@@ -59,7 +93,10 @@ func (a *app) newPassphrase() (string, error) {
 	if p == "" {
 		return "", errors.New("the passphrase must not be empty")
 	}
-	if !a.passStdin {
+	if n := utf8.RuneCountInString(norm.NFC.String(p)); n < minPassphraseLen && !a.allowWeak {
+		return "", fmt.Errorf("the passphrase must have at least %d characters", minPassphraseLen)
+	}
+	if a.interactive() {
 		again, err := a.readSecret("Repeat passphrase: ")
 		if err != nil {
 			return "", err
@@ -73,12 +110,12 @@ func (a *app) newPassphrase() (string, error) {
 
 // unlock reads vault.json from dir and unlocks it with a passphrase.
 func (a *app) unlock(dir string) (*core.VaultKeys, error) {
-	data, err := os.ReadFile(filepath.Join(dir, core.ConfigFile))
+	data, err := readConfig(filepath.Join(dir, core.ConfigFile))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("no %s in %s (not a vault?)", core.ConfigFile, dir)
 		}
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", core.ConfigFile, err)
 	}
 	c, err := core.ParseConfig(data)
 	if err != nil {

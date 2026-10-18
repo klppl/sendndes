@@ -25,6 +25,7 @@ const (
 	infoContent     = "valv/v1/content"
 	infoMeta        = "valv/v1/meta"
 	infoInboxFK     = "valv/v1/inbox-fk"
+	infoInboxAuth   = "valv/v1/inbox-auth" // inbox epoch 0
 )
 
 // hkdf32 is HKDF-SHA256 with L=32. A nil salt is the empty salt.
@@ -42,12 +43,14 @@ type VaultKeys struct {
 	Wrap      [KeySize]byte
 	InboxPriv [KeySize]byte // clamped
 	InboxPub  [KeySize]byte
+	InboxAuth [KeySize]byte // K_auth, for the inbox server
 }
 
 // DeriveVaultKeys derives K_wrap and the inbox key pair from VK (SPEC 3).
 func DeriveVaultKeys(vk [KeySize]byte) (*VaultKeys, error) {
 	k := &VaultKeys{VK: vk}
 	k.Wrap = hkdf32(vk[:], nil, infoWrap)
+	k.InboxAuth = hkdf32(vk[:], nil, infoInboxAuth)
 	k.InboxPriv = hkdf32(vk[:], nil, infoInboxX25519)
 	clamp(&k.InboxPriv)
 	pub, err := curve25519.X25519(k.InboxPriv[:], curve25519.Basepoint)
@@ -64,6 +67,7 @@ func (k *VaultKeys) Wipe() {
 	clear(k.VK[:])
 	clear(k.Wrap[:])
 	clear(k.InboxPriv[:])
+	clear(k.InboxAuth[:])
 }
 
 // clamp applies RFC 7748 clamping to an X25519 private key.
@@ -91,12 +95,17 @@ func (f *fileKeys) wipe() {
 	clear(f.meta[:])
 }
 
-// inboxFK derives an inbox file's FK from the X25519 shared secret (SPEC 6.2).
-func inboxFK(dh []byte, ephPub, inboxPub *[KeySize]byte) [KeySize]byte {
+// inboxFK derives an inbox file's FK from the X25519 shared secret and
+// K_auth (SPEC 6.2). kAuth is only nil when building negative test vectors.
+func inboxFK(dh, kAuth []byte, ephPub, inboxPub *[KeySize]byte) [KeySize]byte {
 	salt := make([]byte, 0, 2*KeySize)
 	salt = append(salt, ephPub[:]...)
 	salt = append(salt, inboxPub[:]...)
-	return hkdf32(dh, salt, infoInboxFK)
+	ikm := make([]byte, 0, len(dh)+len(kAuth))
+	ikm = append(ikm, dh...)
+	ikm = append(ikm, kAuth...)
+	defer clear(ikm)
+	return hkdf32(ikm, salt, infoInboxFK)
 }
 
 // x25519 computes a shared secret, rejecting an all-zero result.

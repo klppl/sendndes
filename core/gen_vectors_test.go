@@ -127,10 +127,12 @@ func (g *generator) genVault() []byte {
 		ConfigAAD:          configAAD(&c.Salt, &c.InboxPub),
 		WrappedVK:          c.WrappedVK[:],
 		KWrap:              keys.Wrap[:],
+		KAuth:              keys.InboxAuth[:],
 		InboxPrivUnclamped: unclamped[:],
 		InboxPriv:          keys.InboxPriv[:],
 		InboxPub:           keys.InboxPub[:],
 		RecoveryKey:        EncodeRecoveryKey(*vk),
+		RecoveryChecksum:   recoveryChecksum(vk),
 		VaultJSONHex:       data,
 	}
 	nfd := "Ra\u0308ksmo\u0308rga\u030as pa\u030a O\u0308land"
@@ -147,6 +149,7 @@ func (g *generator) genVault() []byte {
 	pn := &g.out.Vault.PassphraseNormalization
 	pn.NFD, pn.NFC, pn.KEK = []byte(nfd), []byte(nfc), k1[:]
 	g.write("vault/vault.json", data)
+	g.genRecoveryKeys(*vk)
 	return data
 }
 
@@ -211,27 +214,38 @@ func (g *generator) genObjects() {
 		label, desc, readable string
 		meta                  Metadata
 		plain                 []byte
+		raw                   bool // write meta as given, bypassing NFC normalization
 	}{
 		{"tiny", "Tiny object (13 bytes, one final chunk)", "hello.txt in the root",
 			Metadata{Name: "hello.txt", Dir: "", MTime: mtimeNow, MIME: "text/plain", Rev: 1},
-			[]byte("Hello, Valv!\n")},
+			[]byte("Hello, Valv!\n"), false},
 		{"multi", "Multi-chunk object: 3 full chunks plus a 1234-byte partial chunk", "Räkning åäö.pdf in Dokument/Kvitton 2026",
 			Metadata{Name: "Räkning åäö.pdf", Dir: "Dokument/Kvitton 2026", MTime: mtimeNow + 1, MIME: "application/pdf", Rev: 3},
-			pattern(3*ChunkSize+1234, 0)},
+			pattern(3*ChunkSize+1234, 0), false},
 		{"exact", "Exact multiple of the chunk size: 2 full chunks, the second is final", "café.bin in Photos/한국",
 			Metadata{Name: "café.bin", Dir: "Photos/한국", MTime: mtimeNow + 2, MIME: "application/octet-stream", Rev: 1},
-			pattern(2*ChunkSize, 7)},
+			pattern(2*ChunkSize, 7), false},
 		{"empty", "Empty file: one empty final chunk (16 bytes, just the tag)", "empty in a/b/c",
 			Metadata{Name: "empty", Dir: "a/b/c", MTime: mtimeNow + 3, MIME: "", Rev: 1},
-			nil},
+			nil, false},
+		{"nfd_name", "Name and dir stored in NFD by another writer: readers accept it, tools warn", "Räksmörgås.txt in Kök, in NFD",
+			Metadata{Name: "Ra\u0308ksmo\u0308rga\u030as.txt", Dir: "Ko\u0308k", MTime: -1, MIME: "text/plain", Rev: 2},
+			[]byte("NFD"), true},
 	}
 	for _, s := range specs {
 		metaPlain, meta, err := EncodeMetadata(s.meta)
+		if s.raw {
+			meta = s.meta
+			metaPlain, err = padMetadata(canonicalMetadataJSON(&meta))
+			if meta.IsNFC() {
+				g.t.Fatal("raw vector is NFC")
+			}
+		}
 		if err != nil {
 			g.t.Fatal(err)
 		}
 		file := g.makeObjectRaw(s.label, metaPlain, s.plain)
-		v := objectVector{}
+		v := objectVector{WarnNonNFC: !meta.IsNFC()}
 		v.Description = s.desc
 		v.File = "objects/" + s.label + ".obj"
 		v.Path = ObjectPath(fixedID(s.label + "/file_id"))
@@ -260,7 +274,7 @@ func (g *generator) genInbox() {
 	ephPriv := fixed32(label + "/eph_priv")
 	metaNonce := fixed(label+"/meta_nonce", NonceSize)
 	var buf bytes.Buffer
-	if err := sealInbox(&buf, &g.keys.InboxPub, metaPlain, bytes.NewReader(plain), id, ephPriv, metaNonce); err != nil {
+	if err := sealInbox(&buf, &g.keys.InboxPub, g.keys.InboxAuth[:], metaPlain, bytes.NewReader(plain), id, ephPriv, metaNonce); err != nil {
 		g.t.Fatal(err)
 	}
 	file := buf.Bytes()
@@ -268,7 +282,7 @@ func (g *generator) genInbox() {
 	dh, _ := curve25519.X25519(ephPriv[:], g.keys.InboxPub[:])
 	var ep [KeySize]byte
 	copy(ep[:], ephPub)
-	fk := inboxFK(dh, &ep, &g.keys.InboxPub)
+	fk := inboxFK(dh, g.keys.InboxAuth[:], &ep, &g.keys.InboxPub)
 
 	v := inboxVector{}
 	v.Description = "Inbox file sealed to inbox_pub: one full chunk plus a 5-byte final chunk"
@@ -282,6 +296,8 @@ func (g *generator) genInbox() {
 	v.EphPub = ephPub
 	v.DH = dh
 	v.HKDFSalt = append(append([]byte{}, ephPub...), g.keys.InboxPub[:]...)
+	v.KAuth = g.keys.InboxAuth[:]
+	v.HKDFIKM = append(append([]byte{}, dh...), g.keys.InboxAuth[:]...)
 
 	wrapNonce := fixed(label+"/ingest_wrap_nonce", NonceSize)
 	var obj bytes.Buffer
@@ -478,7 +494,6 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	meta("meta_whitespace", "Space after a colon", sub(`"name":"a.txt"`, `"name": "a.txt"`), 0, ' ')
 	meta("meta_non_space_padding", "Padded with 0x00 instead of spaces", j, 0, 0x00)
 	meta("meta_non_minimal_padding", "Padded to 1024 bytes when 512 is enough", j, 1024, ' ')
-	meta("meta_nfd_name", "name in NFD (a + combining diaeresis)", sub("a.txt", "a\u0308.txt"), 0, ' ')
 	meta("meta_empty_name", "Empty name", sub(`"name":"a.txt"`, `"name":""`), 0, ' ')
 	meta("meta_dotdot_dir", "dir component ..", sub(`"dir":""`, `"dir":"a/../b"`), 0, ' ')
 	meta("meta_rev_zero", "rev 0", sub(`"rev":1`, `"rev":0`), 0, ' ')
@@ -511,12 +526,72 @@ func (g *generator) genNegative(vaultJSON []byte) {
 		return g.negative(name, "inbox", desc, expect, data)
 	}
 	in("inb_flipped_chunk_bit", "One bit flipped in chunk 0", "auth", flip(inb, ih+10))
+	in("inb_no_k_auth", "Sealed by someone with only inbox_pub: FK from DH alone, without K_auth", "auth", g.forgedInbox("negative/inb_no_k_auth", nil))
+	in("inb_wrong_k_auth", "Sealed with a wrong K_auth", "auth", g.forgedInbox("negative/inb_wrong_k_auth", fixed("negative/wrong_k_auth", KeySize)))
 	in("inb_flipped_eph_pub", "One bit flipped in eph_pub: different FK, meta_blob fails", "auth", flip(inb, 30))
 	in("inb_zero_eph_pub", "eph_pub all zeros: X25519 result is all zero", "malformed", zeroRange(inb, 22, 54))
 	in("inb_tampered_kind", "Header kind byte set to 1 (object)", "malformed", setByte(inb, 5, 1))
 	in("inb_ct_residue_11", "Structural: last 10 bytes removed, final chunk is 11 bytes", "malformed", inb[:len(inb)-10])
 	in("path_renamed_inbox", "Valid inbox file stored under another file_id's name", "path", inb).Path =
 		InboxDir + "/" + InboxName(renamedID)
+}
+
+// forgedInbox seals a valid-looking inbox file with kAuth instead of the
+// vault's K_auth (nil: none at all).
+func (g *generator) forgedInbox(label string, kAuth []byte) []byte {
+	metaPlain, _, _ := EncodeMetadata(Metadata{Name: "invoice.pdf", MTime: mtimeNow, MIME: "application/pdf", Rev: 1})
+	var buf bytes.Buffer
+	err := sealInbox(&buf, &g.keys.InboxPub, kAuth, metaPlain, bytes.NewReader(pattern(100, 9)),
+		fixedID(label+"/file_id"), fixed32(label+"/eph_priv"), fixed(label+"/meta_nonce", NonceSize))
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// genRecoveryKeys writes valid and invalid recovery key inputs.
+func (g *generator) genRecoveryKeys(vk [KeySize]byte) {
+	rk := EncodeRecoveryKey(vk)
+	flat := strings.ReplaceAll(rk, "-", "")
+	ok := func(desc, in string) {
+		if got, err := DecodeRecoveryKey(in); err != nil || got != vk {
+			g.t.Fatalf("%s: %v", desc, err)
+		}
+		g.out.RecoveryKeys = append(g.out.RecoveryKeys, recoveryVector{Description: desc, Input: in, VK: vk[:]})
+	}
+	bad := func(desc, in, class string) {
+		_, err := DecodeRecoveryKey(in)
+		if got := errorClass(err); got != class {
+			g.t.Fatalf("%s: got %s, want %s", desc, got, class)
+		}
+		g.out.RecoveryKeys = append(g.out.RecoveryKeys, recoveryVector{Description: desc, Input: in, Error: class})
+	}
+	ok("Canonical form", rk)
+	ok("Lowercase, spaces instead of hyphens", strings.ToLower(strings.ReplaceAll(rk, "-", " ")))
+	ok("No separators", flat)
+	other := byte('A')
+	if flat[10] == 'A' {
+		other = 'B'
+	}
+	bad("One character changed", flat[:10]+string(other)+flat[11:], "recovery_typo")
+	swapAt := -1
+	for i := 0; i+1 < len(flat); i++ {
+		if flat[i] != flat[i+1] {
+			swapAt = i
+			break
+		}
+	}
+	bad("Two adjacent characters swapped", flat[:swapAt]+string(flat[swapAt+1])+string(flat[swapAt])+flat[swapAt+2:], "recovery_typo")
+	bad("Old 52-character format (no checksum)", flat[:52], "malformed")
+	bad("One character missing", flat[:55], "malformed")
+	bad("Digit 1 is not in the alphabet", "1"+flat[1:], "malformed")
+	// Only ASCII is case-folded: dotless i and long s must not become I and S.
+	if i := strings.IndexAny(flat, "IS"); i >= 0 {
+		repl := map[byte]string{'I': "\u0131", 'S': "\u017f"}[flat[i]]
+		bad("Non-ASCII look-alike of "+string(flat[i]), flat[:i]+repl+flat[i+1:], "malformed")
+	} else {
+		g.t.Fatal("fixed recovery key has neither I nor S")
+	}
 }
 
 // emptyFinalAfterFull builds an object whose content is one full non-final

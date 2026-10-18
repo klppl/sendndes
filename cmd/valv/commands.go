@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -10,17 +11,16 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/klppl/valv/core"
 	"golang.org/x/text/unicode/norm"
 )
 
 func (a *app) cmdInit(args []string) error {
-	fs := a.flags("init", false)
+	fs := a.flags("init", false, true)
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -40,66 +40,97 @@ func (a *app) cmdInit(args []string) error {
 		return err
 	}
 	defer keys.Wipe()
+
+	// Show the recovery key before anything is written (SPEC 4.3).
+	if _, err := fmt.Fprintf(a.stdout, "Recovery key (shown once; store it offline):\n\n  %s\n\n", recoveryKey); err != nil {
+		return fmt.Errorf("could not write the recovery key (%v); vault not created", err)
+	}
+	if a.interactive() {
+		typed, err := a.readSecret("Retype the recovery key to confirm: ")
+		if err != nil {
+			return fmt.Errorf("%w; vault not created", err)
+		}
+		vk, err := core.DecodeRecoveryKey(typed)
+		if err != nil {
+			return fmt.Errorf("%w; vault not created", err)
+		}
+		same := subtle.ConstantTimeCompare(vk[:], keys.VK[:]) == 1
+		clear(vk[:])
+		if !same {
+			return errors.New("that is not the recovery key shown; vault not created")
+		}
+	}
+
+	// Write vault.json last; on failure remove the directories created here.
+	var created []string
 	for _, d := range []string{dir, filepath.Join(dir, core.ObjectsDir), filepath.Join(dir, core.InboxDir)} {
+		if _, err := os.Stat(d); errors.Is(err, os.ErrNotExist) {
+			created = append(created, d)
+		}
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
 	}
 	cfgPath := filepath.Join(dir, core.ConfigFile)
-	if err := writeAtomic(cfgPath, false, nil, func(w io.Writer) error { _, err := w.Write(data); return err }); err != nil {
+	err = writeAtomic(cfgPath, writeOpts{check: configChecker(pass, keys)}, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+	if err != nil {
+		for i := len(created) - 1; i >= 0; i-- {
+			os.Remove(created[i])
+		}
+		return fmt.Errorf("writing %s: %w; vault not created", core.ConfigFile, err)
+	}
+	if _, err := fmt.Fprintf(a.stdout, "Created vault in %s. Unlock self-check passed.\n", dir); err != nil {
 		return err
 	}
-	// Self-check on what is on disk before showing the recovery key.
-	if err := selfCheck(cfgPath, pass, keys); err != nil {
-		os.Remove(cfgPath)
-		return fmt.Errorf("self-check failed, vault not created: %w", err)
-	}
-	fmt.Fprintf(a.stdout, "Created vault in %s\n\nRecovery key (shown once; store it offline):\n\n  %s\n\n", dir, recoveryKey)
-	fmt.Fprintln(a.stdout, "Unlock self-check passed.")
 	return nil
 }
 
-// selfCheck reads vault.json back from disk, unlocks it with pass and checks
-// it gives the expected VK.
-func selfCheck(cfgPath, pass string, want *core.VaultKeys) error {
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return err
+// configChecker returns a writeAtomic check that reads the temp vault.json
+// back, unlocks it with pass and requires the expected VK (SPEC 4.4).
+func configChecker(pass string, want *core.VaultKeys) func(string) error {
+	return func(tmp string) error {
+		data, err := readConfig(tmp)
+		if err != nil {
+			return err
+		}
+		c, err := core.ParseConfig(data)
+		if err != nil {
+			return err
+		}
+		got, err := core.Unlock(c, pass)
+		if err != nil {
+			return fmt.Errorf("written vault.json does not unlock: %w", err)
+		}
+		defer got.Wipe()
+		if subtle.ConstantTimeCompare(got.VK[:], want.VK[:]) != 1 {
+			return errors.New("written vault.json unlocks to a different key")
+		}
+		return nil
 	}
-	c, err := core.ParseConfig(data)
-	if err != nil {
-		return err
-	}
-	got, err := core.Unlock(c, pass)
-	if err != nil {
-		return err
-	}
-	defer got.Wipe()
-	if subtle.ConstantTimeCompare(got.VK[:], want.VK[:]) != 1 {
-		return errors.New("vault.json unlocks to a different key")
-	}
-	return nil
 }
 
 func (a *app) cmdAdd(args []string) error {
-	fs := a.flags("add", true)
+	fs := a.flags("add", true, false)
 	dirFlag := fs.String("dir", "", "folder inside the vault")
 	nameFlag := fs.String("name", "", "file name inside the vault")
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
 	}
-	src, err := os.Open(pos[0])
+	src, err := os.OpenFile(pos[0], os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	st, err := src.Stat()
+	before, err := src.Stat()
 	if err != nil {
 		return err
 	}
-	if !st.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", pos[0])
+	if !before.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", display(pos[0]))
 	}
 	name := *nameFlag
 	if name == "" {
@@ -108,7 +139,7 @@ func (a *app) cmdAdd(args []string) error {
 	obj, err := core.PrepareObject(core.Metadata{
 		Name:  name,
 		Dir:   *dirFlag,
-		MTime: st.ModTime().UnixNano(),
+		MTime: before.ModTime().UnixNano(),
 		MIME:  mimeType(name),
 		Rev:   1,
 	})
@@ -126,17 +157,33 @@ func (a *app) cmdAdd(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	err = writeAtomic(dst, false, nil, func(w io.Writer) error {
-		bw := bufio.NewWriterSize(w, core.StoredChunkSize)
-		if err := obj.Encrypt(bw, keys, src); err != nil {
-			return err
-		}
-		return bw.Flush()
+	err = writeAtomic(dst, writeOpts{}, func(w io.Writer) error {
+		return encryptSource(w, obj, keys, src, before)
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(a.stdout, obj.ID())
+	_, err = fmt.Fprintln(a.stdout, obj.ID())
+	return err
+}
+
+// encryptSource encrypts src into w and then checks that src did not change
+// while it was read (SPEC 5.4). This narrows the race; it cannot close it.
+func encryptSource(w io.Writer, obj *core.NewObject, keys *core.VaultKeys, src *os.File, before os.FileInfo) error {
+	bw := bufio.NewWriterSize(w, core.StoredChunkSize)
+	if err := obj.Encrypt(bw, keys, src); err != nil {
+		return err
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	after, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		return errors.New("the file changed while it was being read; nothing added")
+	}
 	return nil
 }
 
@@ -160,18 +207,8 @@ func logicalPath(m core.Metadata) string {
 	return m.Dir + "/" + m.Name
 }
 
-// display quotes a path that has characters a terminal would not show plainly.
-func display(p string) string {
-	for _, r := range p {
-		if !unicode.IsPrint(r) {
-			return strconv.Quote(p)
-		}
-	}
-	return p
-}
-
 func (a *app) cmdLs(args []string) error {
-	fs := a.flags("ls", true)
+	fs := a.flags("ls", true, false)
 	dirFlag := fs.String("dir", "", "only list this folder and its subfolders")
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
@@ -203,19 +240,18 @@ func (a *app) cmdLs(args []string) error {
 			fmt.Fprintf(a.stderr, "warning: %s\n", fmtProblem(f.rel, err))
 			continue
 		}
-		d := info.Meta.Dir
+		d := norm.NFC.String(info.Meta.Dir)
 		if filter != "" && d != filter && !strings.HasPrefix(d, filter+"/") {
 			continue
 		}
 		rows = append(rows, row{logicalPath(info.Meta), info})
 	}
-	sortRows := func(i, j int) bool {
+	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].path != rows[j].path {
 			return rows[i].path < rows[j].path
 		}
 		return rows[i].info.ID.String() < rows[j].info.ID.String()
-	}
-	sort.Slice(rows, sortRows)
+	})
 	w := bufio.NewWriter(a.stdout)
 	for _, r := range rows {
 		mt := time.Unix(0, r.info.Meta.MTime).Format("2006-01-02 15:04:05")
@@ -230,117 +266,198 @@ func (a *app) cmdLs(args []string) error {
 	return nil
 }
 
+// openedTarget is an object opened once for get (review L3).
+type openedTarget struct {
+	f      vaultFile
+	file   *os.File
+	reader *core.ObjectReader
+}
+
+func (t *openedTarget) close() {
+	t.reader.Close()
+	t.file.Close()
+}
+
 func (a *app) cmdGet(args []string) error {
-	fs := a.flags("get", true)
-	out := fs.String("o", "", "output file, or - for stdout (default: the file's name in the current directory)")
+	fs := a.flags("get", true, false)
+	out := fs.String("o", "", "output file, or - for stdout")
 	force := fs.Bool("force", false, "replace an existing output file")
+	unverified := fs.Bool("unverified-stream", false, "allow -o - (plaintext before authentication finishes)")
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
 	}
-	if *out != "" && *out != "-" && !*force {
-		if _, err := os.Lstat(*out); err == nil {
-			return errExists
-		}
+	if *out == "-" && !*unverified {
+		return errors.New("-o - writes plaintext before the file is authenticated; add --unverified-stream to accept that")
 	}
 	dir := a.vaultDir()
+	if *out != "" && *out != "-" {
+		if err := checkOutsideVault(*out, dir); err != nil {
+			return err
+		}
+		if !*force {
+			if _, err := os.Lstat(*out); err == nil {
+				return errOutputExists
+			}
+		}
+	}
 	keys, err := a.unlock(dir)
 	if err != nil {
 		return err
 	}
 	defer keys.Wipe()
-	f, info, err := a.findObject(dir, pos[0], keys)
+	t, err := a.openTarget(dir, pos[0], keys)
 	if err != nil {
 		return err
 	}
-	decrypt := func(w io.Writer) error {
-		r, size, err := openSized(f.abs)
-		if err != nil {
-			return err
-		}
-		defer r.Close()
-		_, err = core.DecryptObject(r, size, f.id, keys, w)
-		return err
-	}
+	defer t.close()
+	meta := t.reader.Info().Meta
+
 	if *out == "-" {
 		// Plaintext goes out as it is decrypted; on error the output so far
-		// is not trustworthy and the exit code says so.
+		// is not trustworthy and the exit status says so.
 		bw := bufio.NewWriterSize(a.stdout, core.ChunkSize)
-		if err := decrypt(bw); err != nil {
-			return fmt.Errorf("%s: %w (output so far is invalid)", f.rel, err)
+		if err := t.reader.DecryptTo(bw); err != nil {
+			return fmt.Errorf("%s: %w (output so far is invalid)", display(t.f.rel), err)
 		}
 		return bw.Flush()
 	}
 	dst := *out
 	if dst == "" {
-		dst = info.Meta.Name
+		if err := checkDefaultName(meta.Name); err != nil {
+			return err
+		}
+		dst = meta.Name
+		if err := checkOutsideVault(dst, dir); err != nil {
+			return err
+		}
 	}
-	mtime := time.Unix(0, info.Meta.MTime)
-	err = writeAtomic(dst, *force, &mtime, func(w io.Writer) error {
+	mtime := time.Unix(0, meta.MTime)
+	err = writeAtomic(dst, writeOpts{overwrite: *force, mtime: &mtime}, func(w io.Writer) error {
 		bw := bufio.NewWriterSize(w, core.ChunkSize)
-		if err := decrypt(bw); err != nil {
+		if err := t.reader.DecryptTo(bw); err != nil {
 			return err
 		}
 		return bw.Flush()
 	})
-	if err != nil && !errors.Is(err, errExists) {
-		return fmt.Errorf("%s: %w", f.rel, err)
+	if errors.Is(err, errExists) {
+		return errOutputExists
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("%s: %w", display(t.f.rel), err)
+	}
+	return nil
 }
 
-// findObject resolves a file_id or a path inside the vault.
-func (a *app) findObject(dir, arg string, keys *core.VaultKeys) (vaultFile, core.ObjectInfo, error) {
+var errOutputExists = errors.New("the output file already exists (use --force to replace it)")
+
+// checkDefaultName decides whether a stored name may be used as the output
+// file name without an explicit -o (SPEC 5.4).
+func checkDefaultName(name string) error {
+	bad := len(name) > 200 || name == core.ConfigFile ||
+		strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ")
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '\\' || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+			bad = true
+		}
+	}
+	if bad {
+		return errors.New("the stored name is not safe to use as a file name here; pass -o <path>")
+	}
+	return nil
+}
+
+// checkOutsideVault refuses an output path whose directory is the vault
+// directory or inside it, following symlinks (SPEC 5.4). Directories are
+// compared by identity, so case-insensitive file systems are handled.
+func checkOutsideVault(out, vault string) error {
+	vst, err := os.Stat(vault)
+	if err != nil {
+		return err
+	}
+	abs, err := filepath.Abs(out)
+	if err != nil {
+		return err
+	}
+	outDir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return err
+	}
+	for d := outDir; ; d = filepath.Dir(d) {
+		if st, err := os.Stat(d); err == nil && os.SameFile(st, vst) {
+			return errors.New("refusing to write inside the vault directory; choose another output location with -o")
+		}
+		if filepath.Dir(d) == d {
+			return nil
+		}
+	}
+}
+
+// openTarget resolves a file_id or a path inside the vault and opens the
+// object once.
+func (a *app) openTarget(dir, arg string, keys *core.VaultKeys) (*openedTarget, error) {
+	open := func(f vaultFile) (*openedTarget, error) {
+		file, size, err := openRegular(f.abs)
+		if err != nil {
+			return nil, err
+		}
+		r, err := core.OpenObject(file, size, f.id, keys)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		return &openedTarget{f, file, r}, nil
+	}
 	if id, err := core.ParseFileID(arg); err == nil {
 		rel := core.ObjectPath(id)
-		f := vaultFile{rel, filepath.Join(dir, filepath.FromSlash(rel)), id}
-		info, err := readObjectInfo(f, keys)
+		t, err := open(vaultFile{rel, filepath.Join(dir, filepath.FromSlash(rel)), id})
 		if errors.Is(err, os.ErrNotExist) {
-			return f, info, fmt.Errorf("no object with id %s", id)
+			return nil, fmt.Errorf("no object with id %s", id)
 		}
 		if err != nil {
-			return f, info, fmt.Errorf("%s: %w", rel, err)
+			return nil, fmt.Errorf("%s: %w", rel, err)
 		}
-		return f, info, nil
+		return t, nil
 	}
 	want := norm.NFC.String(strings.Trim(arg, "/"))
 	s, err := scanVault(dir)
 	if err != nil {
-		return vaultFile{}, core.ObjectInfo{}, err
+		return nil, err
 	}
-	var matches []vaultFile
-	var infos []core.ObjectInfo
+	var matches []*openedTarget
 	unreadable := 0
 	for _, f := range s.objects {
-		info, err := readObjectInfo(f, keys)
+		t, err := open(f)
 		if err != nil {
 			unreadable++
 			continue
 		}
-		if logicalPath(info.Meta) == want {
-			matches = append(matches, f)
-			infos = append(infos, info)
+		if norm.NFC.String(logicalPath(t.reader.Info().Meta)) == want {
+			matches = append(matches, t)
+		} else {
+			t.close()
 		}
 	}
 	switch len(matches) {
 	case 1:
-		return matches[0], infos[0], nil
+		return matches[0], nil
 	case 0:
 		if unreadable > 0 {
-			return vaultFile{}, core.ObjectInfo{}, fmt.Errorf("no such file (%d object(s) could not be read; run valv verify)", unreadable)
+			return nil, fmt.Errorf("no such file (%d object(s) could not be read; run valv verify)", unreadable)
 		}
-		return vaultFile{}, core.ObjectInfo{}, errors.New("no such file")
+		return nil, errors.New("no such file")
 	default:
 		ids := make([]string, len(matches))
 		for i, m := range matches {
-			ids[i] = m.id.String()
+			ids[i] = m.f.id.String()
+			m.close()
 		}
-		return vaultFile{}, core.ObjectInfo{}, fmt.Errorf("%d files have this path; use an id: %s", len(matches), strings.Join(ids, ", "))
+		return nil, fmt.Errorf("%d files have this path; use an id: %s", len(matches), strings.Join(ids, ", "))
 	}
 }
 
 func (a *app) cmdIngest(args []string) error {
-	fs := a.flags("ingest", true)
+	fs := a.flags("ingest", true, false)
 	inboxFlag := fs.String("inbox", "", "inbox directory (default <vault>/inbox)")
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
@@ -370,6 +487,8 @@ func (a *app) cmdIngest(args []string) error {
 	for _, f := range s.inbox {
 		result, err := ingestOne(dir, f, keys)
 		switch {
+		case errors.Is(err, core.ErrAuth):
+			report(fmt.Sprintf("%s: not authentic (made without this vault's K_auth, or damaged): %v (inbox file kept)", display(f.rel), err))
 		case err != nil:
 			report(fmtProblem(f.rel, err) + " (inbox file kept)")
 		case result == "already":
@@ -386,19 +505,20 @@ func (a *app) cmdIngest(args []string) error {
 }
 
 // ingestOne ingests one inbox file (SPEC 6.3). The inbox file is deleted
-// only after a verified ingest, or when the existing object is its ingest
-// result.
+// only after the object has been read back from its final path and fully
+// authenticated, or when the existing object is its ingest result.
 func ingestOne(dir string, f vaultFile, keys *core.VaultKeys) (string, error) {
-	dst := filepath.Join(dir, filepath.FromSlash(core.ObjectPath(f.id)))
-	in, inSize, err := openSized(f.abs)
+	rel := core.ObjectPath(f.id)
+	dst := filepath.Join(dir, filepath.FromSlash(rel))
+	in, inSize, err := openRegular(f.abs)
 	if err != nil {
 		return "", err
 	}
 	defer in.Close()
 	if _, err := os.Lstat(dst); err == nil {
-		obj, objSize, err := openSized(dst)
+		obj, objSize, err := openRegular(dst)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("%w: existing %s: %v", core.ErrConflict, rel, err)
 		}
 		defer obj.Close()
 		if err := core.CheckAlreadyIngested(in, inSize, obj, objSize, f.id, keys); err != nil {
@@ -410,7 +530,7 @@ func ingestOne(dir string, f vaultFile, keys *core.VaultKeys) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return "", err
 	}
-	err = writeAtomic(dst, false, nil, func(w io.Writer) error {
+	err = writeAtomic(dst, writeOpts{}, func(w io.Writer) error {
 		bw := bufio.NewWriterSize(w, core.StoredChunkSize)
 		if _, err := core.IngestInbox(bufio.NewReaderSize(in, core.StoredChunkSize), inSize, f.id, keys, bw); err != nil {
 			return err
@@ -420,12 +540,27 @@ func ingestOne(dir string, f vaultFile, keys *core.VaultKeys) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// Read the object back from its final path before deleting the inbox file.
+	if err := verifyObjectFile(dst, f.id, keys); err != nil {
+		os.Remove(dst)
+		return "", fmt.Errorf("read-back of %s failed, object removed: %w", rel, err)
+	}
 	in.Close()
 	return "ingested", os.Remove(f.abs)
 }
 
+func verifyObjectFile(p string, id core.FileID, keys *core.VaultKeys) error {
+	r, size, err := openRegular(p)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	_, err = core.VerifyObject(bufio.NewReaderSize(r, core.StoredChunkSize), size, id, keys)
+	return err
+}
+
 func (a *app) cmdVerify(args []string) error {
-	fs := a.flags("verify", true)
+	fs := a.flags("verify", true, false)
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
 	}
@@ -449,26 +584,30 @@ func (a *app) cmdVerify(args []string) error {
 	for _, u := range s.unexpected {
 		problem(u)
 	}
-	check := func(f vaultFile, verify func(io.Reader, int64) error) {
-		r, size, err := openSized(f.abs)
+	check := func(f vaultFile, verify func(io.Reader, int64) (core.Metadata, error)) {
+		r, size, err := openRegular(f.abs)
+		var meta core.Metadata
 		if err == nil {
-			err = verify(bufio.NewReaderSize(r, core.StoredChunkSize), size)
+			meta, err = verify(bufio.NewReaderSize(r, core.StoredChunkSize), size)
 			r.Close()
 		}
-		if err != nil {
+		switch {
+		case errors.Is(err, core.ErrAuth) && strings.HasPrefix(f.rel, core.InboxDir+"/"):
+			problem(fmtProblem(f.rel, fmt.Errorf("not authentic or damaged: %w", err)))
+		case err != nil:
 			problem(fmtProblem(f.rel, err))
+		case !meta.IsNFC():
+			fmt.Fprintf(w, "warn  %s: name or dir is not NFC (readable; written by another tool?)\n", display(f.rel))
 		}
 	}
 	for _, f := range s.objects {
-		check(f, func(r io.Reader, size int64) error {
-			_, err := core.DecryptObject(r, size, f.id, keys, io.Discard)
-			return err
+		check(f, func(r io.Reader, size int64) (core.Metadata, error) {
+			return core.VerifyObject(r, size, f.id, keys)
 		})
 	}
 	for _, f := range s.inbox {
-		check(f, func(r io.Reader, size int64) error {
-			_, err := core.VerifyInbox(r, size, f.id, keys)
-			return err
+		check(f, func(r io.Reader, size int64) (core.Metadata, error) {
+			return core.VerifyInbox(r, size, f.id, keys)
 		})
 	}
 	for _, p := range s.partial {
@@ -485,7 +624,7 @@ func (a *app) cmdVerify(args []string) error {
 }
 
 func (a *app) cmdPasswd(args []string) error {
-	fs := a.flags("passwd", true)
+	fs := a.flags("passwd", true, true)
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
 	}
@@ -503,19 +642,24 @@ func (a *app) cmdPasswd(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfgPath := filepath.Join(dir, core.ConfigFile)
-	if err := writeAtomic(cfgPath, true, nil, func(w io.Writer) error { _, err := w.Write(data); return err }); err != nil {
+	if err := a.replaceConfig(dir, data, pass, keys); err != nil {
 		return err
 	}
-	if err := selfCheck(cfgPath, pass, keys); err != nil {
-		return fmt.Errorf("vault.json was replaced but does not unlock: %w", err)
-	}
-	fmt.Fprintln(a.stdout, "Passphrase changed.")
-	return nil
+	_, err = fmt.Fprintln(a.stdout, "Passphrase changed.")
+	return err
+}
+
+// replaceConfig writes vault.json through a temp file that is read back and
+// unlocked before it replaces the old one. No backup is kept (SPEC 4.4).
+func (a *app) replaceConfig(dir string, data []byte, pass string, keys *core.VaultKeys) error {
+	return writeAtomic(filepath.Join(dir, core.ConfigFile), writeOpts{overwrite: true, check: configChecker(pass, keys)}, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
 }
 
 func (a *app) cmdRecover(args []string) error {
-	fs := a.flags("recover", false)
+	fs := a.flags("recover", false, true)
 	force := fs.Bool("force", false, "replace an existing vault.json")
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
@@ -525,8 +669,7 @@ func (a *app) cmdRecover(args []string) error {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("%s is not a directory", dir)
 	}
-	cfgPath := filepath.Join(dir, core.ConfigFile)
-	if _, err := os.Lstat(cfgPath); err == nil && !*force {
+	if _, err := os.Lstat(filepath.Join(dir, core.ConfigFile)); err == nil && !*force {
 		return errors.New("vault.json exists; use --force to replace it")
 	}
 	rk, err := a.readSecret("Recovery key: ")
@@ -540,28 +683,25 @@ func (a *app) cmdRecover(args []string) error {
 	if err != nil {
 		return err
 	}
-	var prefixes [][]byte
+	var samples []core.ObjectSample
 	for _, f := range s.objects {
-		if p, err := readPrefix(f.abs, 82); err == nil {
-			prefixes = append(prefixes, p)
+		if sample, err := readSample(f); err == nil {
+			samples = append(samples, sample)
 		}
 	}
-	if len(s.objects) > 0 && len(prefixes) == 0 {
+	if len(s.objects) > 0 && len(samples) == 0 {
 		return errors.New("no object could be read to check the recovery key; nothing written")
 	}
 	pass, err := a.newPassphrase()
 	if err != nil {
 		return err
 	}
-	data, checked, err := core.RecoverVault(rk, pass, prefixes)
+	data, checked, err := core.RecoverVault(rk, pass, samples)
 	if err != nil {
 		return fmt.Errorf("%w; nothing written", err)
 	}
 	if !checked {
-		fmt.Fprintln(a.stderr, "warning: the vault has no objects, so the recovery key could not be checked")
-	}
-	if err := writeAtomic(cfgPath, true, nil, func(w io.Writer) error { _, err := w.Write(data); return err }); err != nil {
-		return err
+		fmt.Fprintln(a.stderr, "warning: the vault has no objects, so only the recovery key's checksum vouches for it")
 	}
 	c, _ := core.ParseConfig(data)
 	keys, err := core.Unlock(c, pass)
@@ -569,9 +709,40 @@ func (a *app) cmdRecover(args []string) error {
 		return fmt.Errorf("rebuilt vault.json does not unlock: %w", err)
 	}
 	defer keys.Wipe()
-	if err := selfCheck(cfgPath, pass, keys); err != nil {
-		return fmt.Errorf("rebuilt vault.json does not unlock: %w", err)
+	if err := a.replaceConfig(dir, data, pass, keys); err != nil {
+		return err
 	}
-	fmt.Fprintln(a.stdout, "vault.json rebuilt from the recovery key.")
-	return nil
+	_, err = fmt.Fprintln(a.stdout, "vault.json rebuilt from the recovery key.")
+	return err
+}
+
+// readSample reads the start of an object for the recovery key check.
+func readSample(f vaultFile) (core.ObjectSample, error) {
+	r, size, err := openRegular(f.abs)
+	if err != nil {
+		return core.ObjectSample{}, err
+	}
+	defer r.Close()
+	prefix := make([]byte, 86)
+	n, err := io.ReadFull(r, prefix)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return core.ObjectSample{}, err
+	}
+	return core.ObjectSample{Prefix: prefix[:n], Size: size, ID: f.id}, nil
+}
+
+func (a *app) cmdServerConfig(args []string) error {
+	fs := a.flags("server-config", true, false)
+	if _, err := parse(fs, args, 0, 0); err != nil {
+		return err
+	}
+	keys, err := a.unlock(a.vaultDir())
+	if err != nil {
+		return err
+	}
+	defer keys.Wipe()
+	fmt.Fprintln(a.stderr, "warning: k_auth is a secret. Give it only to the inbox server: anyone holding it can add files that ingest accepts as authentic, and it cannot be rotated in v1. It cannot decrypt anything.")
+	b64 := base64.StdEncoding
+	_, err = fmt.Fprintf(a.stdout, "inbox_pub: %s\nk_auth: %s\n", b64.EncodeToString(keys.InboxPub[:]), b64.EncodeToString(keys.InboxAuth[:]))
+	return err
 }
