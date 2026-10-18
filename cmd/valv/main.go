@@ -36,7 +36,8 @@ commands:
   ingest [--inbox <dir>]                 move sealed inbox files into the vault
   verify                                 authenticate every file in the vault
   passwd                                 change the passphrase
-  recover <vault-dir> [--force]          rebuild vault.json from the recovery key
+  recover <vault-dir> [--force] [--unverified-key]
+                                         rebuild vault.json from the recovery key
   server-config                          print the inbox server's inbox_pub and K_auth
 
 get writes to a temp file and moves it into place only after the whole file
@@ -67,14 +68,11 @@ type app struct {
 	lines     *lineReader
 }
 
-// writingCommands create temp files, so they remove them on SIGINT/SIGTERM.
-var writingCommands = map[string]bool{"init": true, "add": true, "get": true, "ingest": true, "passwd": true, "recover": true}
-
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, term: osTerminal{in: stdin, prompt: stderr}}
-	if len(args) > 0 && writingCommands[args[0]] {
-		defer installSignalCleanup(os.Exit)()
-	}
+	// Every command: temp files, init's directories and the terminal state
+	// are cleaned up on SIGINT, SIGTERM, SIGHUP and SIGQUIT (SPEC 8).
+	defer installSignalCleanup(os.Exit)()
 	return a.run(args)
 }
 

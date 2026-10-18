@@ -69,49 +69,76 @@ func readConfig(p string) ([]byte, error) {
 	return data, nil
 }
 
-// Temp files that exist right now, so a signal handler can remove them.
-var temps = struct {
+// What a signal handler must undo: temp files that exist right now, and
+// hooks such as restoring the terminal or removing directories init created.
+var cleanup = struct {
 	sync.Mutex
-	m map[string]struct{}
-}{m: map[string]struct{}{}}
+	temps map[string]struct{}
+	hooks map[int]func()
+	next  int
+}{temps: map[string]struct{}{}, hooks: map[int]func(){}}
 
 func registerTemp(p string) {
-	temps.Lock()
-	temps.m[p] = struct{}{}
-	temps.Unlock()
+	cleanup.Lock()
+	cleanup.temps[p] = struct{}{}
+	cleanup.Unlock()
 }
 
 func unregisterTemp(p string) {
-	temps.Lock()
-	delete(temps.m, p)
-	temps.Unlock()
+	cleanup.Lock()
+	delete(cleanup.temps, p)
+	cleanup.Unlock()
 }
 
-// cleanupTemps removes every temp file still registered.
-func cleanupTemps() {
-	temps.Lock()
-	defer temps.Unlock()
-	for p := range temps.m {
-		os.Remove(p)
-		delete(temps.m, p)
+// addCleanupHook registers f to run on a handled signal, after temp files are
+// removed. Hooks run newest first. The returned function unregisters f.
+func addCleanupHook(f func()) (remove func()) {
+	cleanup.Lock()
+	id := cleanup.next
+	cleanup.next++
+	cleanup.hooks[id] = f
+	cleanup.Unlock()
+	return func() {
+		cleanup.Lock()
+		delete(cleanup.hooks, id)
+		cleanup.Unlock()
 	}
 }
 
-// installSignalCleanup removes temp files and exits on SIGINT or SIGTERM.
-// The returned function uninstalls the handler.
+// runCleanup removes every registered temp file, then runs the hooks.
+func runCleanup() {
+	cleanup.Lock()
+	defer cleanup.Unlock()
+	for p := range cleanup.temps {
+		os.Remove(p)
+		delete(cleanup.temps, p)
+	}
+	ids := make([]int, 0, len(cleanup.hooks))
+	for id := range cleanup.hooks {
+		ids = append(ids, id)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(ids)))
+	for _, id := range ids {
+		cleanup.hooks[id]()
+		delete(cleanup.hooks, id)
+	}
+}
+
+// handledSignals are cleaned up after and exit with 128 + the signal number
+// (SPEC 8). SIGKILL cannot be handled.
+var handledSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
+
+// installSignalCleanup runs runCleanup and exits on a handled signal. The
+// returned function uninstalls the handler.
 func installSignalCleanup(exit func(int)) func() {
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(ch, handledSignals...)
 	done := make(chan struct{})
 	go func() {
 		select {
 		case sig := <-ch:
-			cleanupTemps()
-			code := 130
-			if sig == syscall.SIGTERM {
-				code = 143
-			}
-			exit(code)
+			runCleanup()
+			exit(128 + int(sig.(syscall.Signal)))
 		case <-done:
 		}
 	}()
@@ -157,7 +184,7 @@ func writeAtomic(dst string, opts writeOpts, fill func(io.Writer) error) (err er
 			return errExists
 		}
 	}
-	dir := filepath.Dir(dst)
+	dir := tempDirFor(dst)
 	tmp, f, err := createTemp(dir)
 	if err != nil {
 		return err
@@ -205,6 +232,9 @@ func writeAtomic(dst string, opts writeOpts, fill func(io.Writer) error) (err er
 	return nil
 }
 
+// tempDirFor is the directory writeAtomic creates dst's temp file in.
+func tempDirFor(dst string) string { return filepath.Dir(dst) }
+
 // moveNoReplace moves tmp to dst unless dst exists. A hard link makes the
 // check atomic; without hard links it falls back to check-then-rename.
 func moveNoReplace(tmp, dst string) error {
@@ -250,24 +280,80 @@ type vaultFile struct {
 
 // scan is the result of walking a vault directory (SPEC 4.1, 8).
 type scan struct {
-	objects    []vaultFile
-	inbox      []vaultFile
-	partial    []string // displayable paths of *.part files: incomplete writes
-	unexpected []string // "displayable path: reason"
+	objects     []vaultFile
+	inbox       []vaultFile
+	partial     []string // displayable paths of *.part files: incomplete writes
+	junk        []string // displayable paths of OS junk (SPEC 8): notes only
+	unexpected  []string // "displayable path: reason"
+	symlinkDirs []string // "displayable path: symlinked directory in vault"
+}
+
+// junkNames are the OS junk names of SPEC 8, plus the "._" prefix.
+var junkNames = map[string]bool{
+	".DS_Store": true, ".Spotlight-V100": true, ".Trashes": true, ".fseventsd": true,
+	"Thumbs.db": true, "desktop.ini": true, ".localized": true,
+}
+
+// isJunk reports whether a directory entry is OS junk: a listed name (or a
+// "._" name) that is a regular file or a real directory. Junk is never
+// opened, and a junk directory is not scanned.
+func isJunk(e os.DirEntry) bool {
+	name := e.Name()
+	return (junkNames[name] || strings.HasPrefix(name, "._")) && (e.Type().IsRegular() || e.Type().IsDir())
+}
+
+const symlinkedDir = "symlinked directory in vault"
+
+// dirProblems lists symlinked (or non-directory) objects/, inbox/ and
+// objects/xx/ entries, checked without following symlinks (SPEC 8).
+func dirProblems(dir string) []string {
+	var probs []string
+	for _, name := range []string{core.ObjectsDir, core.InboxDir} {
+		st, err := os.Lstat(filepath.Join(dir, name))
+		switch {
+		case err != nil:
+		case st.Mode()&os.ModeSymlink != 0:
+			probs = append(probs, name+": "+symlinkedDir)
+		case !st.IsDir():
+			probs = append(probs, name+": not a directory")
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, core.ObjectsDir))
+	if err != nil {
+		return probs
+	}
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 && isPrefixDir(e.Name()) {
+			probs = append(probs, display(path.Join(core.ObjectsDir, e.Name()))+": "+symlinkedDir)
+		}
+	}
+	return probs
+}
+
+// requireRealDirs refuses a vault with a symlinked directory (SPEC 8).
+func requireRealDirs(dir string) error {
+	if probs := dirProblems(dir); len(probs) > 0 {
+		return errors.New(probs[0])
+	}
+	return nil
 }
 
 // scanVault lists a vault's files and sorts out anything that does not
-// belong. It does not open or decrypt anything.
+// belong. It does not open or decrypt anything, and does not descend into
+// symlinked directories (they are listed in symlinkDirs).
 func scanVault(dir string) (*scan, error) {
-	s := &scan{}
+	s := &scan{symlinkDirs: dirProblems(dir)}
 	root, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	for _, e := range root {
 		name := e.Name()
+		symlink := e.Type()&os.ModeSymlink != 0
 		switch {
 		case name == core.ConfigFile && e.Type().IsRegular():
+		case (name == core.ObjectsDir || name == core.InboxDir) && symlink:
+			// reported by dirProblems
 		case name == core.ObjectsDir && e.IsDir():
 			if err := s.scanObjects(dir); err != nil {
 				return nil, err
@@ -276,6 +362,8 @@ func scanVault(dir string) (*scan, error) {
 			if err := s.scanInbox(dir); err != nil {
 				return nil, err
 			}
+		case isJunk(e):
+			s.junk = append(s.junk, display(name))
 		default:
 			s.classifyOther(name, e)
 		}
@@ -304,7 +392,13 @@ func (s *scan) scanObjects(dir string) error {
 	}
 	for _, e := range entries {
 		rel := path.Join(core.ObjectsDir, e.Name())
-		if !e.IsDir() || !isPrefixDir(e.Name()) {
+		switch {
+		case isJunk(e):
+			s.junk = append(s.junk, display(rel))
+			continue
+		case e.Type()&os.ModeSymlink != 0 && isPrefixDir(e.Name()):
+			continue // reported by dirProblems
+		case !e.IsDir() || !isPrefixDir(e.Name()):
 			s.classifyOther(rel, e)
 			continue
 		}
@@ -314,6 +408,10 @@ func (s *scan) scanObjects(dir string) error {
 		}
 		for _, f := range files {
 			frel := path.Join(rel, f.Name())
+			if isJunk(f) {
+				s.junk = append(s.junk, display(frel))
+				continue
+			}
 			if !f.Type().IsRegular() || strings.HasSuffix(f.Name(), core.PartSuffix) {
 				s.classifyOther(frel, f)
 				continue
@@ -336,6 +434,7 @@ func (s *scan) scanInbox(dir string) error {
 	}
 	s.inbox = files.inbox
 	s.partial = append(s.partial, files.partial...)
+	s.junk = append(s.junk, files.junk...)
 	s.unexpected = append(s.unexpected, files.unexpected...)
 	return nil
 }
@@ -349,6 +448,10 @@ func scanInboxDir(dir, relPrefix string) (*scan, error) {
 	}
 	for _, e := range entries {
 		rel := path.Join(relPrefix, e.Name())
+		if isJunk(e) {
+			s.junk = append(s.junk, display(rel))
+			continue
+		}
 		if !e.Type().IsRegular() || strings.HasSuffix(e.Name(), core.PartSuffix) {
 			s.classifyOther(rel, e)
 			continue

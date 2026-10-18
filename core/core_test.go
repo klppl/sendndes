@@ -436,34 +436,69 @@ func TestRecoverVault(t *testing.T) {
 		t.Fatal(err)
 	}
 	ours := sampleOf(t, obj.Bytes(), id)
+	theirs := sampleOf(t, foreign.Bytes(), foreignID)
+	damaged := ours
+	damaged.Size = 10 // fails the structural check: not readable
 
-	// Right key: a foreign object first, then one of ours.
-	newData, checked, err := RecoverVault(rk, "new", []ObjectSample{sampleOf(t, foreign.Bytes(), foreignID), ours})
-	if err != nil || !checked {
-		t.Fatalf("recover: %v (checked %v)", err, checked)
+	var inb bytes.Buffer
+	inID, _ := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(ChunkSize+10)))
+	genuine := InboxSample{Prefix: inb.Bytes(), Size: int64(inb.Len()), ID: inID}
+	var forged bytes.Buffer
+	forgedID, _ := SealInbox(&forged, keys.InboxPub, [KeySize]byte{1}, testMeta, strings.NewReader("planted"))
+	planted := InboxSample{Prefix: forged.Bytes(), Size: int64(forged.Len()), ID: forgedID}
+	var garbageID FileID
+	randomBytes(garbageID[:])
+	garbage := InboxSample{Prefix: randomContent(300), Size: 300, ID: garbageID}
+
+	cases := []struct {
+		name    string
+		s       RecoverySamples
+		want    Verification
+		wantErr error
+	}{
+		{"1: a foreign object, then one of ours", RecoverySamples{Objects: []ObjectSample{theirs, ours}}, VerifiedByObject, nil},
+		{"2: readable objects, none unwraps", RecoverySamples{Objects: []ObjectSample{theirs}, Inbox: []InboxSample{genuine}}, 0, ErrWrongRecoveryKey},
+		{"3: damaged object, genuine inbox file", RecoverySamples{Objects: []ObjectSample{damaged}, Inbox: []InboxSample{planted, genuine}}, VerifiedByInbox, nil},
+		{"3: no objects, genuine inbox file", RecoverySamples{Inbox: []InboxSample{genuine}}, VerifiedByInbox, nil},
+		{"4: only damaged objects", RecoverySamples{Objects: []ObjectSample{damaged}}, Unverifiable, ErrKeyUnverifiable},
+		{"4: planted garbage inbox file", RecoverySamples{Inbox: []InboxSample{garbage}}, Unverifiable, ErrKeyUnverifiable},
+		{"4: inbox file forged without K_auth", RecoverySamples{Inbox: []InboxSample{planted}}, Unverifiable, ErrKeyUnverifiable},
+		{"5: nothing to check against", RecoverySamples{}, ChecksumOnly, nil},
 	}
-	c, _ := ParseConfig(newData)
-	k, err := Unlock(c, "new")
-	if err != nil || k.VK != keys.VK {
-		t.Fatalf("unlock recovered vault: %v", err)
+	for _, c := range cases {
+		v, err := CheckRecoveryKey(rk, c.s)
+		if c.wantErr != nil {
+			if !errors.Is(err, c.wantErr) {
+				t.Errorf("%s: got %v, want %v", c.name, err, c.wantErr)
+			}
+		} else if err != nil || v != c.want {
+			t.Errorf("%s: got %v, %v; want %v", c.name, v, err, c.want)
+		}
+		data, v2, err := RecoverVault(rk, "new", c.s, false)
+		if (c.wantErr == nil) != (err == nil) || (err != nil && data != nil) {
+			t.Errorf("%s: RecoverVault: %v", c.name, err)
+		}
+		if err == nil {
+			cfg, _ := ParseConfig(data)
+			k, err := Unlock(cfg, "new")
+			if err != nil || k.VK != keys.VK || v2 != c.want {
+				t.Errorf("%s: recovered vault: %v", c.name, err)
+			}
+		}
 	}
 
-	// Wrong key: unwraps none, nothing to write.
-	var vk [KeySize]byte
-	randomBytes(vk[:])
-	out, checked, err := RecoverVault(EncodeRecoveryKey(vk), "new", []ObjectSample{ours})
-	if !errors.Is(err, ErrWrongRecoveryKey) || out != nil || !checked {
-		t.Fatalf("wrong key: %v", err)
+	// Case 4 is accepted with the override; case 2 never is.
+	if data, v, err := RecoverVault(rk, "new", RecoverySamples{Inbox: []InboxSample{garbage}}, true); err != nil || v != Unverifiable || data == nil {
+		t.Fatalf("case 4 with override: %v, %v", v, err)
+	}
+	if _, _, err := RecoverVault(rk, "new", RecoverySamples{Objects: []ObjectSample{theirs}}, true); !errors.Is(err, ErrWrongRecoveryKey) {
+		t.Fatalf("case 2 with override: %v", err)
 	}
 
-	// No objects: only the checksum vouches for the key, still writes.
-	if out, checked, err := RecoverVault(rk, "new", nil); err != nil || checked || out == nil {
-		t.Fatalf("no objects: %v", err)
-	}
 	// Review H4: a key with a typo is refused even on an empty vault.
 	flat := strings.ReplaceAll(rk, "-", "")
 	typo := flat[:5] + map[bool]string{true: "B", false: "A"}[flat[5] == 'A'] + flat[6:]
-	if out, _, err := RecoverVault(typo, "new", nil); !errors.Is(err, ErrRecoveryKeyTypo) || out != nil {
+	if out, _, err := RecoverVault(typo, "new", RecoverySamples{}, true); !errors.Is(err, ErrRecoveryKeyTypo) || out != nil {
 		t.Fatalf("typo on an empty vault: %v", err)
 	}
 }

@@ -15,6 +15,7 @@ Goals
 - A write-only server can add files to the vault without ever being able to read it (the "inbox").
 - One spec, two implementations (Go for reference and server, Swift for Mac/iOS) that must agree byte for byte.
 - The vault does not care where it is stored. Any storage that can put/get/list/delete files works (section 8).
+- Platforms: macOS, iOS and Linux only. Windows is unsupported; the Go code refuses to build there.
 
 Non-goals
 - Multi-user, sharing, compatibility with other tools, hiding file count or approximate sizes, protecting against malware on an unlocked device, freshness/rollback protection (v1).
@@ -46,7 +47,7 @@ Non-goals
   - `"valv/v1/inbox-x25519"` -> inbox X25519 private key. Clamp per RFC 7748 (`b[0] &= 248; b[31] &= 127; b[31] |= 64`) and use the clamped bytes as the private key.
   - `"valv/v1/inbox-auth"` -> K_auth, the upload-authentication secret (section 6.2). This label defines inbox epoch 0. A future version may add an epoch field to vault.json (bound in `config_aad`) and a rotate command; epoch-0 inbox files keep deriving their keys exactly as here.
 - **inbox_pub** = X25519(inbox private key, base point 9). It is stored in vault.json and bound into the AAD of `wrapped_vk` (section 4.2).
-- **Inbox server configuration**: the server holds `inbox_pub` and K_auth, both supplied by the user (the CLI's `server-config` prints them after unlocking). It never reads vault.json and never holds VK or the inbox private key. K_auth is a secret; `inbox_pub` is not.
+- **Inbox server configuration**: the server holds `inbox_pub` and K_auth, both supplied by the user (the CLI's `server-config` prints them after unlocking). It never reads vault.json and never holds VK or the inbox private key. K_auth is a secret; `inbox_pub` is not. Move K_auth straight into the server's secret store; do not leave it in shell history or terminal scrollback. Prefer redirecting `server-config` to a file: when its stdout is a regular file, the CLI sets that file's mode to 0600 before writing; otherwise it just prints. It always warns on stderr.
 - **FK**: per-file random 32-byte key. Subkeys: `HKDF(ikm=FK, salt=empty, info="valv/v1/content")` -> K_content, `HKDF(ikm=FK, salt=empty, info="valv/v1/meta")` -> K_meta.
 - **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("valv/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". If the passphrase is lost and there is no recovery key, the data is gone.
 - Changing the passphrase only re-wraps VK (section 4.4).
@@ -118,7 +119,7 @@ Passphrase unlock:
 `init`:
 1. Generate VK, salt and nonce, and build vault.json in memory.
 2. Show the recovery key and check that writing it out succeeded. Interactively, the user must retype it, and it must decode to the same VK. Non-interactively (`--passphrase-stdin`) there is no retype, but a failed write of the key is still an error.
-3. Only then write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, `init` fails and leaves no vault.json.
+3. Only then create the vault directories and write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, or `init` is interrupted by a handled signal (section 8) before vault.json is in place, it removes vault.json's temp file and the directories it created itself, and nothing that existed before.
 
 Recovery-key unlock (no `wrapped_vk` involved):
 1. Parse and check vault.json (section 4.2).
@@ -140,9 +141,16 @@ Changing the passphrase does not rotate VK. It does not help if the old passphra
 
 Objects need only VK, so the recovery key must work even when vault.json is missing, damaged or altered (the CLI's `recover`).
 
-1. Decode the recovery key, including its checksum (section 3), and take a new passphrase.
-2. If the vault has at least one object, the recovered VK must unwrap the `wrapped_fk` of at least one existing object with K_wrap. Each try opens the object like any reader: the path check (section 4.1) and the structural check (section 5.3) come first. If none unwraps, refuse and write nothing. With no objects only the checksum vouches for the key; warn the user.
-3. Write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK, replaced as in section 4.4.
+1. Decode the recovery key, including its checksum (section 3).
+2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. The cases, in order:
+   1. A readable object unwraps: verified.
+   2. Readable objects exist but none unwraps: report "wrong key" and refuse. There is no override.
+   3. No readable object, but an inbox file authenticates: verified.
+   4. No readable object and no inbox file authenticates (damaged objects, damaged or planted inbox files): report that the key cannot be verified (never "wrong key") and refuse, unless the user explicitly overrides (`--unverified-key`). A failed inbox file proves nothing, since the host can plant one.
+   5. Nothing to check against (no objects, no inbox files): only the checksum vouches for the key; warn the user.
+
+   In cases 4 (with the override) and 5, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
+3. Take a new passphrase and write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK, replaced as in section 4.4.
 
 ## 5. Object file (kind 0x01)
 
@@ -204,6 +212,8 @@ Readers accept only the canonical form:
 5. Check the field rules above. Readers do not check or apply NFC: any valid UTF-8 is accepted, so a name written on another Unicode version stays readable. Tools may warn about a non-NFC `name` or `dir` (`verify` does), but must not reject it.
 6. Re-serialize the parsed values; the result must equal the stripped plaintext byte for byte.
 
+Names that differ only in Unicode normalization form can coexist as separate files: `get` by path reports the ambiguity and asks for an id, and `verify` warns about them.
+
 Adding a field requires a format version bump.
 
 ### 5.3 Content chunks
@@ -229,8 +239,8 @@ Adding a field requires a format version bump.
 Adding (`add`): after the source file has been read, check the open file again; if its size or modification time changed since reading started, fail and write nothing. This narrows, but cannot fully close, the window in which a concurrent writer can produce an object that mixes old and new content.
 
 Extracting (`get`):
-- Output never goes inside the vault directory. Resolve the output's directory (following symlinks) and refuse if it is the vault directory or below it.
-- Without an explicit output path, the output goes to the current directory under the stored `name`, but only if the name contains no control character (U+0000 to U+001F, U+007F), no backslash, no bidi control (U+202A to U+202E, U+2066 to U+2069), has no leading or trailing space, is at most 200 bytes, and is not `vault.json`. Otherwise refuse and ask for an explicit output path. An explicit output path works for any name.
+- Output never goes inside the vault directory. The directory the temp file is created in (the output's parent directory) is resolved, following symlinks, and the write is refused if it is the vault directory or below it. An output path that resolves to an existing directory is refused.
+- Without an explicit output path, the output goes to the current directory under the stored `name`, but only if the name contains no control character (U+0000 to U+001F, U+007F, U+0080 to U+009F), no backslash, no bidi control (U+202A to U+202E, U+2066 to U+2069), does not start with `.`, has no leading or trailing space, is at most 200 bytes, and is not `vault.json`. Otherwise refuse and ask for an explicit output path. An explicit output path works for any name. This is extraction policy only; section 5.2's rules for writers are unchanged.
 - Plaintext is written to a temp file (section 8) and renamed into place only after the whole object authenticates. An existing output is replaced only on request.
 - Streaming to stdout emits plaintext before authentication finishes, so a truncated or damaged object can produce a valid-looking prefix. It is refused unless explicitly requested (`--unverified-stream`), and the exit status is then the only signal of failure.
 
@@ -293,7 +303,10 @@ The vault needs only four operations from its storage: `put(path, bytes)`, `get(
 
 Rules that make this safe on dumb storage:
 - Temp files: writers create them in the destination directory, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600, and remove them on any error or interruption. They finish with a rename (or a final put); a writer that must not replace an existing file uses a no-replace move. Readers skip `*.part`.
+- Signals: every command handles SIGINT, SIGTERM, SIGHUP and SIGQUIT the same way: remove its temp files (and, for `init`, the directories it created), restore the terminal if a passphrase prompt had changed it, and exit with 128 + the signal number (130, 143, 129, 131). SIGKILL cannot be handled; it can leave a temp file behind, which readers skip and `verify` reports as a note.
 - Every vault file that is opened must be a regular file: no symlinks, FIFOs or devices.
+- `objects/`, `inbox/` and each `objects/xx/` must be real directories. Before opening anything under the vault, tools check each of them without following symlinks; a symlinked directory is an error in `verify` and makes every other command refuse.
+- OS junk: these names are notes, not failures, in the vault root, `objects/` (including `objects/xx/`) and `inbox/`: `.DS_Store`, any name starting with `._`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `Thumbs.db`, `desktop.ini`, `.localized`. Matching is exact on the file name (plus the `._` prefix). Only regular files and directories with these names count; a junk-named symlink, FIFO or other special file still fails `verify`. A junk-named directory's contents are not scanned. Tools never open, modify or delete junk. `verify` lists it as notes; other commands ignore it.
 - Readers treat any file that fails to parse or authenticate as "incomplete or corrupt": skip it, report it, retry later. Never delete it automatically.
 - An unrecognized file in `objects/` or `inbox/` (e.g. "conflicted copy") must be surfaced to the user, not ignored or deleted.
 - If duplicates of the same file_id appear, they are the same logical file. Delete a duplicate only if it is byte-identical to the one kept.
@@ -333,7 +346,7 @@ Deployment (v1, "mode B", chosen first):
    - Positive vectors: vault.json, recovery key (with checksum; valid and invalid inputs), K_auth, a passphrase given in NFD and in NFC that derive the same KEK, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, an object whose name is NFD (accepted; tools warn), and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
    - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, rev 0; a renamed file (file_id mismatch), a wrong prefix directory, an uppercase hex name; an inbox file built without K_auth and one built with a wrong K_auth.
    - Round trips for 0, 1, 65535, 65536, 65537 bytes and 3 full chunks + 1 byte.
-2. **Go core library + CLI**: `init`, `add`, `ls`, `get`, `ingest`, `verify`, `passwd` (change passphrase), `recover` (section 4.5), `server-config` (section 3).
+2. **Go core library + CLI** (macOS and Linux): `init`, `add`, `ls`, `get`, `ingest`, `verify`, `passwd` (change passphrase), `recover` (section 4.5), `server-config` (section 3).
 3. **Swift core library**: must decrypt every Go vector and re-encrypt to identical bytes.
 4. **Inbox server (Go)**: streaming upload, seal, store. API from section 8.
 5. **Mac app.**
@@ -402,6 +415,15 @@ A log of what was decided after the first draft and where each rule now lives. T
 | R-L5 | Minimum passphrase length 12 with an override | 3 |
 | R-I3 | Rollback of an older `meta_blob` documented | 7 |
 | R-S2 | Readers no longer check NFC; writers still normalize; `verify` warns | 5.2 |
+| N1, N2 | SIGHUP and SIGQUIT handled like SIGINT/SIGTERM in every command; terminal restored; SIGKILL caveat | 8 |
+| N3 | Temp-file directory checked against the vault; existing-directory outputs refused | 5.4 |
+| N4, N7 | Recovery key verification order, inbox fallback, `--unverified-key` | 4.5 |
+| N5 | `init` removes only directories it created, on error or signal | 4.3 |
+| N6 | Default names: no leading `.`, no C1 controls; macOS, iOS, Linux only | 1, 5.4 |
+| N8 | OS junk names are notes | 8 |
+| N9 | Symlinked vault directories refused | 8 |
+| N10 | Handling K_auth output from `server-config` | 3 |
+| N11 | Names differing only in normalization coexist; `get` and `verify` behaviour | 5.2 |
 
 ## 14. Changelog from the original draft
 
@@ -440,3 +462,14 @@ Third revision (independent review of step 2):
 - Section 11: new vectors (recovery checksum, K_auth negatives, NFD name now positive); `server-config`.
 - Section 12: K_auth rotation.
 - Section 13: rows R-H1 to R-S2.
+
+Fourth revision (re-review of step2-fixed):
+- Section 1: macOS, iOS and Linux only.
+- Section 3: how to handle K_auth from `server-config`; output file mode 0600.
+- Section 4.3: `init` cleans up only what it created, on error or signal.
+- Section 4.5: verification order with the inbox fallback, "cannot be verified" versus "wrong key", `--unverified-key`, retype for unverified keys.
+- Section 5.2: names that differ only in normalization.
+- Section 5.4: the temp-file directory is what is checked; existing directories refused; default names exclude a leading `.` and C1 controls.
+- Section 8: signal handling (SIGHUP, SIGQUIT, SIGKILL caveat), real directories only, OS junk names.
+- Section 11: step 2 targets macOS and Linux.
+- Section 13: rows N1 to N11.
