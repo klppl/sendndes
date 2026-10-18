@@ -119,7 +119,7 @@ Passphrase unlock:
 `init`:
 1. Generate VK, salt and nonce, and build vault.json in memory.
 2. Show the recovery key and check that writing it out succeeded. Interactively, the user must retype it, and it must decode to the same VK. Non-interactively (`--passphrase-stdin`) there is no retype, but a failed write of the key is still an error.
-3. Only then create the vault directories and write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, or `init` is interrupted by a handled signal (section 8) before vault.json is in place, it removes vault.json's temp file and the directories it created itself, and nothing that existed before.
+3. Only then create the vault directories and write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, or `init` is interrupted by a handled signal (section 8) before vault.json is in place, it removes vault.json's temp file and the directories it created itself, and nothing that existed before. SIGKILL or a power loss can leave a half-created tree (empty `objects/` and `inbox/`, possibly a temp file): delete the directory by hand and run `init` again. `init` refuses a non-empty directory and never deletes anything itself; when the directory holds only empty `objects/` and `inbox/` directories and `.valv-*.part` files, the error says it looks like an interrupted `init`.
 
 Recovery-key unlock (no `wrapped_vk` involved):
 1. Parse and check vault.json (section 4.2).
@@ -145,7 +145,7 @@ Objects need only VK, so the recovery key must work even when vault.json is miss
 2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. A correct key must never be refusable by files the host can plant, so no failed check counts against the key on its own. The cases, in order:
    1. At least one readable object unwraps: verified. If other readable objects do not unwrap, say how many ("N of M objects do not unwrap with this key; run verify after recovery").
    2. No object unwraps, but an inbox file authenticates: verified.
-   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told to run `valv ls` and confirm their files appear; if they do not, the key was wrong, and recovery should be run again with the right key (and `--force`).
+   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told: run `valv ls`; if every file fails with an authentication error, the key was probably wrong, so run recovery again with the right key and `--force`; if only some files fail, those objects may be damaged, so run `valv verify`.
    4. Nothing to check against (no objects, no inbox files): only the checksum vouches for the key; warn the user.
 
    In cases 3 (with the override) and 4, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
@@ -238,7 +238,7 @@ Adding a field requires a format version bump.
 Adding (`add`): after the source file has been read, check the open file again; if its size or modification time changed since reading started, fail and write nothing. This narrows, but cannot fully close, the window in which a concurrent writer can produce an object that mixes old and new content.
 
 Extracting (`get`):
-- Output never goes inside the vault directory. The output path is split into its directory part and final name without lexical cleaning, and the directory part is opened as the OS resolves it (symlinks, and `..` after a symlink, physically). From the opened directory handle, tools walk up through `..` to the file system root and refuse if any directory on the way is the vault directory (same device and inode). The check happens before any temp file is created, and the write then happens relative to that same handle (section 8). An output path whose final name is empty, `.` or `..`, or that resolves to an existing directory, is refused.
+- Output never goes inside the vault directory. The output path is split into its directory part and final name without lexical cleaning, and the directory part is opened as the OS resolves it (symlinks, and `..` after a symlink, physically). From the opened directory handle, tools walk up through `..` to the file system root and refuse if any directory on the way is the vault directory (same device and inode). The check happens before the passphrase prompt and before any temp file is created, and is repeated on the same output-directory handle after decryption, immediately before the final rename; the write happens relative to that handle (section 8). A race between that final check and the rename remains in principle and is accepted. An output path whose final name is empty, `.` or `..`, or that resolves to an existing directory, is refused.
 - Without an explicit output path, the output goes to the current directory under the stored `name`, but only if the name contains no control character (U+0000 to U+001F, U+007F, U+0080 to U+009F), no backslash, no bidi control (U+202A to U+202E, U+2066 to U+2069), does not start with `.`, has no leading or trailing space, is at most 200 bytes, and is not `vault.json`. Otherwise refuse and ask for an explicit output path. An explicit output path works for any name. This is extraction policy only; section 5.2's rules for writers are unchanged.
 - Plaintext is written to a temp file (section 8) and renamed into place only after the whole object authenticates. An existing output is replaced only on request.
 - Streaming to stdout emits plaintext before authentication finishes, so a truncated or damaged object can produce a valid-looking prefix. It is refused unless explicitly requested (`--unverified-stream`), and the exit status is then the only signal of failure.
@@ -301,6 +301,7 @@ Does not protect against: malware on an unlocked device, a weak passphrase, losi
 The vault needs only four operations from its storage: `put(path, bytes)`, `get(path)`, `list(prefix)`, `delete(path)`. A rename is a bonus, not a requirement. Do not assume rename is atomic (Google Drive's is not). Do not assume file names are unique (Drive allows duplicates).
 
 Rules that make this safe on dumb storage:
+- One vault handle per command: every command opens the vault directory exactly once, at its start and before any passphrase prompt, with no-follow (a vault path whose last component is a symlink is refused; give the real directory), and checks the directory rules below on that handle. Every later read and write for the rest of the command (vault.json, `objects/`, `inbox/`, `objects/xx/`, temp files, renames, read-back, cleanup) goes through that handle; the vault path is never resolved again. The same holds for an inbox directory given with `--inbox`, for `get`'s output directory, and for `init`, which opens the target directory, or its nearest existing parent, before prompting and creates everything relative to that handle.
 - Temp files: writers open the destination directory once and do everything relative to that handle: create the temp file in it, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600 (`openat`); verify it by reopening it through the handle; and move it into place with `renameat`, or for a writer that must not replace an existing file, a no-replace move (`linkat`, then removing the temp name). The directory that was checked is the directory that is written; no path is resolved again in between. Inside the vault, `objects/` and `objects/xx/` are opened from the vault directory's handle without following symlinks. If the final name is an existing symlink or hard link, it is replaced, never followed. Temp files are removed on any error or interruption. Readers skip `*.part`.
 - Signals: every command handles SIGINT, SIGTERM, SIGHUP and SIGQUIT the same way: remove its temp files (and, for `init`, the directories it created), restore the terminal if a passphrase prompt had changed it, and exit with 128 + the signal number (130, 143, 129, 131). SIGKILL cannot be handled; it can leave a temp file behind, which readers skip and `verify` reports as a note.
 - Every vault file that is opened must be a regular file: no symlinks, FIFOs or devices.
@@ -426,6 +427,10 @@ A log of what was decided after the first draft and where each rule now lives. T
 | F1 | Physical resolution of output paths; outside-the-vault walk on the directory handle; writes relative to directory handles | 5.4, 8 |
 | F2 | Recovery: four cases; nothing the host can plant blocks a correct key (replaces N4/N7's "wrong key" case) | 4.5 |
 | F3 | Junk-renamed files equal deletion; junk count in `verify` | 7, 8 |
+| R4-1 | `get` repeats the outside-the-vault check before the final rename | 5.4 |
+| R4-2 | One vault handle per command, opened before any prompt | 8 |
+| R4-3 | SIGKILL and power loss during `init`; interrupted-init hint | 4.3 |
+| R4-W | Advice after an unverified recovery | 4.5 |
 
 ## 14. Changelog from the original draft
 
@@ -482,3 +487,10 @@ Fifth revision (round 3 re-verification):
 - Section 7: junk-renamed files are indistinguishable from deletion.
 - Section 8: writes relative to directory handles (`openat`, `renameat`, `linkat`); junk count in `verify`'s summary.
 - Section 13: rows F1 to F3.
+
+Sixth revision (round 4 re-verification):
+- Section 4.3: SIGKILL and power loss can leave a half-created `init` tree; interrupted-init hint; nothing deleted automatically.
+- Section 4.5: new advice after an unverified recovery.
+- Section 5.4: the outside-the-vault check is repeated before the final rename; the remaining race is accepted.
+- Section 8: one vault handle per command, opened before any prompt, with no-follow; `--inbox`, output and `init` directories likewise.
+- Section 13: rows R4-1 to R4-W.

@@ -3,11 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/klppl/valv/core"
+	"golang.org/x/sys/unix"
 )
 
 var errExists = errors.New("already exists")
@@ -25,45 +24,6 @@ var errNotRegular = errors.New("not a regular file")
 
 // maxConfigSize caps how much of vault.json is read (SPEC 4.2).
 const maxConfigSize = 4096
-
-// openRegular opens a vault file for reading. It never follows a symlink,
-// never blocks on a FIFO, and refuses anything but a regular file.
-func openRegular(p string) (*os.File, int64, error) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
-			return nil, 0, errNotRegular
-		}
-		return nil, 0, err
-	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, 0, err
-	}
-	if !st.Mode().IsRegular() {
-		f.Close()
-		return nil, 0, errNotRegular
-	}
-	return f, st.Size(), nil
-}
-
-// readConfig reads a vault.json-sized file: regular, at most 4096 bytes.
-func readConfig(p string) ([]byte, error) {
-	f, _, err := openRegular(p)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxConfigSize {
-		return nil, fmt.Errorf("%s is larger than %d bytes", core.ConfigFile, maxConfigSize)
-	}
-	return data, nil
-}
 
 // What a signal handler must undo: temp files that exist right now, and
 // hooks such as restoring the terminal or removing directories init created.
@@ -160,9 +120,9 @@ func display(p string) string {
 
 // vaultFile is an object or inbox file found in the vault.
 type vaultFile struct {
-	rel string // "/"-separated path relative to the vault root
-	abs string
-	id  core.FileID
+	rel  string // "/"-separated path relative to the scanned root (for reports and openFileRel)
+	name string // final component
+	id   core.FileID
 }
 
 // scan is the result of walking a vault directory (SPEC 4.1, 8).
@@ -192,20 +152,26 @@ func isJunk(e os.DirEntry) bool {
 const symlinkedDir = "symlinked directory in vault"
 
 // dirProblems lists symlinked (or non-directory) objects/, inbox/ and
-// objects/xx/ entries, checked without following symlinks (SPEC 8).
-func dirProblems(dir string) []string {
+// objects/xx/ entries under the vault handle, checked without following
+// symlinks (SPEC 8).
+func dirProblems(v *dirHandle) []string {
 	var probs []string
 	for _, name := range []string{core.ObjectsDir, core.InboxDir} {
-		st, err := os.Lstat(filepath.Join(dir, name))
+		st, err := v.lstat(name)
 		switch {
 		case err != nil:
-		case st.Mode()&os.ModeSymlink != 0:
+		case st.Mode&unix.S_IFMT == unix.S_IFLNK:
 			probs = append(probs, name+": "+symlinkedDir)
-		case !st.IsDir():
+		case st.Mode&unix.S_IFMT != unix.S_IFDIR:
 			probs = append(probs, name+": not a directory")
 		}
 	}
-	entries, err := os.ReadDir(filepath.Join(dir, core.ObjectsDir))
+	o, err := v.openSub(core.ObjectsDir)
+	if err != nil {
+		return probs
+	}
+	defer o.Close()
+	entries, err := o.list()
 	if err != nil {
 		return probs
 	}
@@ -218,19 +184,19 @@ func dirProblems(dir string) []string {
 }
 
 // requireRealDirs refuses a vault with a symlinked directory (SPEC 8).
-func requireRealDirs(dir string) error {
-	if probs := dirProblems(dir); len(probs) > 0 {
+func requireRealDirs(v *dirHandle) error {
+	if probs := dirProblems(v); len(probs) > 0 {
 		return errors.New(probs[0])
 	}
 	return nil
 }
 
-// scanVault lists a vault's files and sorts out anything that does not
-// belong. It does not open or decrypt anything, and does not descend into
-// symlinked directories (they are listed in symlinkDirs).
-func scanVault(dir string) (*scan, error) {
-	s := &scan{symlinkDirs: dirProblems(dir)}
-	root, err := os.ReadDir(dir)
+// scanVault lists a vault's files through its handle and sorts out anything
+// that does not belong. It does not open or decrypt files, and does not
+// descend into symlinked directories (they are listed in symlinkDirs).
+func scanVault(v *dirHandle) (*scan, error) {
+	s := &scan{symlinkDirs: dirProblems(v)}
+	root, err := v.list()
 	if err != nil {
 		return nil, err
 	}
@@ -242,13 +208,23 @@ func scanVault(dir string) (*scan, error) {
 		case (name == core.ObjectsDir || name == core.InboxDir) && symlink:
 			// reported by dirProblems
 		case name == core.ObjectsDir && e.IsDir():
-			if err := s.scanObjects(dir); err != nil {
+			if err := s.scanObjects(v); err != nil {
 				return nil, err
 			}
 		case name == core.InboxDir && e.IsDir():
-			if err := s.scanInbox(dir); err != nil {
+			in, err := v.openSub(core.InboxDir)
+			if err != nil {
 				return nil, err
 			}
+			files, err := scanInboxDir(in, core.InboxDir)
+			in.Close()
+			if err != nil {
+				return nil, err
+			}
+			s.inbox = files.inbox
+			s.partial = append(s.partial, files.partial...)
+			s.junk = append(s.junk, files.junk...)
+			s.unexpected = append(s.unexpected, files.unexpected...)
 		case isJunk(e):
 			s.junk = append(s.junk, display(name))
 		default:
@@ -272,8 +248,13 @@ func isPrefixDir(name string) bool {
 	return len(name) == 2 && strings.Trim(name, "0123456789abcdef") == ""
 }
 
-func (s *scan) scanObjects(dir string) error {
-	entries, err := os.ReadDir(filepath.Join(dir, core.ObjectsDir))
+func (s *scan) scanObjects(v *dirHandle) error {
+	o, err := v.openSub(core.ObjectsDir)
+	if err != nil {
+		return err
+	}
+	defer o.Close()
+	entries, err := o.list()
 	if err != nil {
 		return err
 	}
@@ -289,7 +270,13 @@ func (s *scan) scanObjects(dir string) error {
 			s.classifyOther(rel, e)
 			continue
 		}
-		files, err := os.ReadDir(filepath.Join(dir, filepath.FromSlash(rel)))
+		xx, err := o.openSub(e.Name())
+		if err != nil {
+			s.unexpected = append(s.unexpected, display(rel)+": "+err.Error())
+			continue
+		}
+		files, err := xx.list()
+		xx.Close()
 		if err != nil {
 			return err
 		}
@@ -308,28 +295,17 @@ func (s *scan) scanObjects(dir string) error {
 				s.unexpected = append(s.unexpected, display(frel)+": "+err.Error())
 				continue
 			}
-			s.objects = append(s.objects, vaultFile{frel, filepath.Join(dir, filepath.FromSlash(frel)), id})
+			s.objects = append(s.objects, vaultFile{frel, f.Name(), id})
 		}
 	}
 	return nil
 }
 
-func (s *scan) scanInbox(dir string) error {
-	files, err := scanInboxDir(filepath.Join(dir, core.InboxDir), core.InboxDir)
-	if err != nil {
-		return err
-	}
-	s.inbox = files.inbox
-	s.partial = append(s.partial, files.partial...)
-	s.junk = append(s.junk, files.junk...)
-	s.unexpected = append(s.unexpected, files.unexpected...)
-	return nil
-}
-
-// scanInboxDir lists inbox files in dir; relPrefix is used in reports.
-func scanInboxDir(dir, relPrefix string) (*scan, error) {
+// scanInboxDir lists inbox files through the handle d; relPrefix is used in
+// reports and is the prefix of each file's rel.
+func scanInboxDir(d *dirHandle, relPrefix string) (*scan, error) {
 	s := &scan{}
-	entries, err := os.ReadDir(dir)
+	entries, err := d.list()
 	if err != nil {
 		return nil, err
 	}
@@ -348,13 +324,13 @@ func scanInboxDir(dir, relPrefix string) (*scan, error) {
 			s.unexpected = append(s.unexpected, display(rel)+": "+err.Error())
 			continue
 		}
-		s.inbox = append(s.inbox, vaultFile{rel, filepath.Join(dir, e.Name()), id})
+		s.inbox = append(s.inbox, vaultFile{rel, e.Name(), id})
 	}
 	return s, nil
 }
 
-func readObjectInfo(f vaultFile, keys *core.VaultKeys) (core.ObjectInfo, error) {
-	r, size, err := openRegular(f.abs)
+func readObjectInfo(v *dirHandle, f vaultFile, keys *core.VaultKeys) (core.ObjectInfo, error) {
+	r, size, err := v.openFileRel(f.rel)
 	if err != nil {
 		return core.ObjectInfo{}, err
 	}

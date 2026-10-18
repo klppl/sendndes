@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -132,12 +131,13 @@ func (a *app) confirmRecoveryKey(vk *[core.KeySize]byte) error {
 	return nil
 }
 
-// unlock reads vault.json from dir and unlocks it with a passphrase.
-func (a *app) unlock(dir string) (*core.VaultKeys, error) {
-	data, err := readConfig(filepath.Join(dir, core.ConfigFile))
+// unlock reads vault.json through the vault handle and unlocks it with a
+// passphrase.
+func (a *app) unlock(v *dirHandle) (*core.VaultKeys, error) {
+	data, err := v.readConfig()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no %s in %s (not a vault?)", core.ConfigFile, dir)
+			return nil, fmt.Errorf("no %s in %s (not a vault?)", core.ConfigFile, display(v.path))
 		}
 		return nil, fmt.Errorf("%s: %w", core.ConfigFile, err)
 	}
