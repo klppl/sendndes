@@ -429,14 +429,15 @@ func TestRecoverVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherKeys := testKeys(t)
-	var foreign bytes.Buffer
-	foreignID, err := EncryptObject(&foreign, otherKeys, testMeta, strings.NewReader("y"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	ours := sampleOf(t, obj.Bytes(), id)
-	theirs := sampleOf(t, foreign.Bytes(), foreignID)
+	// A decoy: structurally valid, random wrapped_fk.
+	decoyBytes := bytes.Clone(obj.Bytes())
+	copy(decoyBytes[34:82], randomContent(wrappedFKSize))
+	decoy := sampleOf(t, decoyBytes, id)
+	// One bit flipped in wrapped_fk.
+	flippedBytes := bytes.Clone(obj.Bytes())
+	flippedBytes[40] ^= 1
+	flipped := sampleOf(t, flippedBytes, id)
 	damaged := ours
 	damaged.Size = 10 // fails the structural check: not readable
 
@@ -450,49 +451,57 @@ func TestRecoverVault(t *testing.T) {
 	randomBytes(garbageID[:])
 	garbage := InboxSample{Prefix: randomContent(300), Size: 300, ID: garbageID}
 
-	cases := []struct {
-		name    string
-		s       RecoverySamples
-		want    Verification
-		wantErr error
-	}{
-		{"1: a foreign object, then one of ours", RecoverySamples{Objects: []ObjectSample{theirs, ours}}, VerifiedByObject, nil},
-		{"2: readable objects, none unwraps", RecoverySamples{Objects: []ObjectSample{theirs}, Inbox: []InboxSample{genuine}}, 0, ErrWrongRecoveryKey},
-		{"3: damaged object, genuine inbox file", RecoverySamples{Objects: []ObjectSample{damaged}, Inbox: []InboxSample{planted, genuine}}, VerifiedByInbox, nil},
-		{"3: no objects, genuine inbox file", RecoverySamples{Inbox: []InboxSample{genuine}}, VerifiedByInbox, nil},
-		{"4: only damaged objects", RecoverySamples{Objects: []ObjectSample{damaged}}, Unverifiable, ErrKeyUnverifiable},
-		{"4: planted garbage inbox file", RecoverySamples{Inbox: []InboxSample{garbage}}, Unverifiable, ErrKeyUnverifiable},
-		{"4: inbox file forged without K_auth", RecoverySamples{Inbox: []InboxSample{planted}}, Unverifiable, ErrKeyUnverifiable},
-		{"5: nothing to check against", RecoverySamples{}, ChecksumOnly, nil},
-	}
-	for _, c := range cases {
-		v, err := CheckRecoveryKey(rk, c.s)
-		if c.wantErr != nil {
-			if !errors.Is(err, c.wantErr) {
-				t.Errorf("%s: got %v, want %v", c.name, err, c.wantErr)
-			}
-		} else if err != nil || v != c.want {
-			t.Errorf("%s: got %v, %v; want %v", c.name, v, err, c.want)
-		}
-		data, v2, err := RecoverVault(rk, "new", c.s, false)
-		if (c.wantErr == nil) != (err == nil) || (err != nil && data != nil) {
-			t.Errorf("%s: RecoverVault: %v", c.name, err)
-		}
-		if err == nil {
-			cfg, _ := ParseConfig(data)
-			k, err := Unlock(cfg, "new")
-			if err != nil || k.VK != keys.VK || v2 != c.want {
-				t.Errorf("%s: recovered vault: %v", c.name, err)
-			}
-		}
+	// A wrong but valid key: another vault's recovery key.
+	_, _, otherRK, err := CreateVault("other")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	// Case 4 is accepted with the override; case 2 never is.
-	if data, v, err := RecoverVault(rk, "new", RecoverySamples{Inbox: []InboxSample{garbage}}, true); err != nil || v != Unverifiable || data == nil {
-		t.Fatalf("case 4 with override: %v, %v", v, err)
+	cases := []struct {
+		name              string
+		key               string
+		s                 RecoverySamples
+		want              Verification
+		readable, unwraps int
+		unverifiable      bool
+	}{
+		{"1: one object unwraps, a decoy does not", rk, RecoverySamples{Objects: []ObjectSample{decoy, ours}}, VerifiedByObject, 2, 1, false},
+		{"1: a bit-flipped wrapped_fk next to a good object", rk, RecoverySamples{Objects: []ObjectSample{flipped, ours, damaged}}, VerifiedByObject, 2, 1, false},
+		{"2: decoy only, genuine inbox file", rk, RecoverySamples{Objects: []ObjectSample{decoy}, Inbox: []InboxSample{planted, genuine}}, VerifiedByInbox, 1, 0, false},
+		{"2: no objects, genuine inbox file", rk, RecoverySamples{Inbox: []InboxSample{genuine}}, VerifiedByInbox, 0, 0, false},
+		{"3: right key, only a decoy", rk, RecoverySamples{Objects: []ObjectSample{decoy}}, Unverifiable, 1, 0, true},
+		{"3: right key, only a bit-flipped wrapped_fk", rk, RecoverySamples{Objects: []ObjectSample{flipped}}, Unverifiable, 1, 0, true},
+		{"3: wrong but valid key from another vault", otherRK, RecoverySamples{Objects: []ObjectSample{ours}, Inbox: []InboxSample{genuine}}, Unverifiable, 1, 0, true},
+		{"3: only damaged objects", rk, RecoverySamples{Objects: []ObjectSample{damaged}}, Unverifiable, 0, 0, true},
+		{"3: planted garbage inbox file", rk, RecoverySamples{Inbox: []InboxSample{garbage}}, Unverifiable, 0, 0, true},
+		{"3: inbox file forged without K_auth", rk, RecoverySamples{Inbox: []InboxSample{planted}}, Unverifiable, 0, 0, true},
+		{"4: nothing to check against", rk, RecoverySamples{}, ChecksumOnly, 0, 0, false},
 	}
-	if _, _, err := RecoverVault(rk, "new", RecoverySamples{Objects: []ObjectSample{theirs}}, true); !errors.Is(err, ErrWrongRecoveryKey) {
-		t.Fatalf("case 2 with override: %v", err)
+	for _, c := range cases {
+		rc, err := CheckRecoveryKey(c.key, c.s)
+		if rc.How != c.want || rc.Readable != c.readable || rc.Unwrapped != c.unwraps || errors.Is(err, ErrKeyUnverifiable) != c.unverifiable {
+			t.Errorf("%s: got %+v, %v", c.name, rc, err)
+		}
+		if c.unverifiable && !strings.Contains(err.Error(), "readable objects unwrap with this key") {
+			t.Errorf("%s: message %q", c.name, err)
+		}
+		if errors.Is(err, ErrWrongRecoveryKey) {
+			t.Errorf("%s: a plantable file made the key \"wrong\"", c.name)
+		}
+		data, rc2, err := RecoverVault(c.key, "new", c.s, false)
+		if c.unverifiable != (err != nil) || (err != nil && data != nil) {
+			t.Errorf("%s: RecoverVault without override: %v", c.name, err)
+		}
+		// Every case can be written with the override.
+		data, rc2, err = RecoverVault(c.key, "new", c.s, true)
+		if err != nil || data == nil || rc2.How != c.want {
+			t.Errorf("%s: RecoverVault with override: %+v, %v", c.name, rc2, err)
+			continue
+		}
+		cfg, _ := ParseConfig(data)
+		if _, err := Unlock(cfg, "new"); err != nil {
+			t.Errorf("%s: recovered vault.json does not unlock: %v", c.name, err)
+		}
 	}
 
 	// Review H4: a key with a typo is refused even on an empty vault.

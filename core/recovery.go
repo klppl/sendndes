@@ -105,51 +105,62 @@ type Verification int
 
 const (
 	VerifiedByObject Verification = iota + 1 // case 1
-	VerifiedByInbox                          // case 3
-	Unverifiable                             // case 4, accepted only with an explicit override
-	ChecksumOnly                             // case 5
+	VerifiedByInbox                          // case 2
+	Unverifiable                             // case 3, accepted only with an explicit override
+	ChecksumOnly                             // case 4
 )
 
+// RecoveryCheck is the result of checking a recovery key.
+type RecoveryCheck struct {
+	How       Verification
+	Readable  int // readable objects (SPEC 4.5)
+	Unwrapped int // readable objects that unwrap with the key
+}
+
 // CheckRecoveryKey checks a recovery key against the vault in the order of
-// SPEC 4.5. It returns ErrWrongRecoveryKey when readable objects exist but
-// none unwraps (case 2), and an error wrapping ErrKeyUnverifiable in case 4.
-func CheckRecoveryKey(recoveryKey string, s RecoverySamples) (Verification, error) {
+// SPEC 4.5. Nothing the host can plant makes it reject a correct key: when
+// no object unwraps and no inbox file authenticates it returns an error
+// wrapping ErrKeyUnverifiable (case 3), which the user may override.
+func CheckRecoveryKey(recoveryKey string, s RecoverySamples) (RecoveryCheck, error) {
+	var rc RecoveryCheck
 	vk, err := DecodeRecoveryKey(recoveryKey)
 	if err != nil {
-		return 0, err
+		return rc, err
 	}
 	defer clear(vk[:])
 	keys, err := DeriveVaultKeys(vk)
 	if err != nil {
-		return 0, err
+		return rc, err
 	}
 	defer keys.Wipe()
-	readable := false
 	for _, o := range s.Objects {
 		fk, err := o.unwrapFK(keys)
-		if err == nil {
+		switch {
+		case err == nil:
 			clear(fk[:])
-			return VerifiedByObject, nil
-		}
-		if errors.Is(err, ErrAuth) {
-			readable = true // it passed every check before the unwrap
+			rc.Readable++
+			rc.Unwrapped++
+		case errors.Is(err, ErrAuth):
+			rc.Readable++ // it passed every check before the unwrap
 		}
 	}
-	if readable {
-		return 0, fmt.Errorf("%w: readable objects exist but none unwraps with this key", ErrWrongRecoveryKey)
+	if rc.Unwrapped > 0 {
+		rc.How = VerifiedByObject
+		return rc, nil
 	}
 	for _, in := range s.Inbox {
 		if in.authenticates(keys) {
-			return VerifiedByInbox, nil
+			rc.How = VerifiedByInbox
+			return rc, nil
 		}
 	}
-	switch {
-	case len(s.Objects) > 0:
-		return Unverifiable, fmt.Errorf("%w: objects exist but none can be read, so the key cannot be verified", ErrKeyUnverifiable)
-	case len(s.Inbox) > 0:
-		return Unverifiable, fmt.Errorf("%w: inbox files exist but none authenticate, so the key cannot be verified", ErrKeyUnverifiable)
+	if len(s.Objects) > 0 || len(s.Inbox) > 0 {
+		rc.How = Unverifiable
+		return rc, fmt.Errorf("%w: 0 of %d readable objects unwrap with this key; the key may be wrong or the objects damaged",
+			ErrKeyUnverifiable, rc.Readable)
 	}
-	return ChecksumOnly, nil
+	rc.How = ChecksumOnly
+	return rc, nil
 }
 
 // authenticates reports whether the sample's meta_blob and first chunk
@@ -188,9 +199,9 @@ func (s *InboxSample) authenticates(keys *VaultKeys) bool {
 
 // RecoverVault rebuilds vault.json from the recovery key and a new passphrase
 // (SPEC 4.5). It runs CheckRecoveryKey first and writes nothing on an error;
-// case 4 is accepted only if allowUnverified is set. The interactive retype
-// SPEC 4.5 asks for in cases 4 and 5 is the caller's job.
-func RecoverVault(recoveryKey, newPassphrase string, s RecoverySamples, allowUnverified bool) ([]byte, Verification, error) {
+// case 3 is accepted only if allowUnverified is set. The interactive retype
+// SPEC 4.5 asks for in cases 3 and 4 is the caller's job.
+func RecoverVault(recoveryKey, newPassphrase string, s RecoverySamples, allowUnverified bool) ([]byte, RecoveryCheck, error) {
 	v, err := CheckRecoveryKey(recoveryKey, s)
 	if errors.Is(err, ErrKeyUnverifiable) && allowUnverified {
 		err = nil

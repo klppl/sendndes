@@ -21,13 +21,14 @@ var (
 	ErrInboxKeyMismatch = errors.New("valv: inbox_pub in vault.json does not match the vault key")
 	// ErrVaultAltered: recovery key is right but vault.json was changed (SPEC 4.3).
 	ErrVaultAltered = errors.New("valv: vault.json has been altered")
-	// ErrWrongRecoveryKey: recovery key unlock failed and the cause can't be told apart.
+	// ErrWrongRecoveryKey: recovery-key unlock against an existing vault.json
+	// failed and the cause can't be told apart (SPEC 4.3).
 	ErrWrongRecoveryKey = errors.New("valv: wrong recovery key or altered vault.json")
 	// ErrPathMismatch: a file's path is not a valid name for it, or does not
 	// match the file_id in its header (SPEC 4.1).
 	ErrPathMismatch = errors.New("valv: file path does not match its file_id")
-	// ErrKeyUnverifiable: nothing in the vault can confirm the recovery key (SPEC 4.5 case 4).
-	ErrKeyUnverifiable = errors.New("valv: the recovery key cannot be verified")
+	// ErrKeyUnverifiable: nothing in the vault confirms the recovery key (SPEC 4.5 case 3).
+	ErrKeyUnverifiable = errors.New("valv: cannot be verified")
 	// ErrRecoveryKeyTypo: the recovery key's checksum does not match.
 	ErrRecoveryKeyTypo = errors.New("valv: recovery key has a typo (checksum does not match)")
 	// ErrConflict: an object with the inbox file's id exists but is not its ingest result.

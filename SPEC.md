@@ -142,14 +142,13 @@ Changing the passphrase does not rotate VK. It does not help if the old passphra
 Objects need only VK, so the recovery key must work even when vault.json is missing, damaged or altered (the CLI's `recover`).
 
 1. Decode the recovery key, including its checksum (section 3).
-2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. The cases, in order:
-   1. A readable object unwraps: verified.
-   2. Readable objects exist but none unwraps: report "wrong key" and refuse. There is no override.
-   3. No readable object, but an inbox file authenticates: verified.
-   4. No readable object and no inbox file authenticates (damaged objects, damaged or planted inbox files): report that the key cannot be verified (never "wrong key") and refuse, unless the user explicitly overrides (`--unverified-key`). A failed inbox file proves nothing, since the host can plant one.
-   5. Nothing to check against (no objects, no inbox files): only the checksum vouches for the key; warn the user.
+2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. A correct key must never be refusable by files the host can plant, so no failed check counts against the key on its own. The cases, in order:
+   1. At least one readable object unwraps: verified. If other readable objects do not unwrap, say how many ("N of M objects do not unwrap with this key; run verify after recovery").
+   2. No object unwraps, but an inbox file authenticates: verified.
+   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told to run `valv ls` and confirm their files appear; if they do not, the key was wrong, and recovery should be run again with the right key (and `--force`).
+   4. Nothing to check against (no objects, no inbox files): only the checksum vouches for the key; warn the user.
 
-   In cases 4 (with the override) and 5, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
+   In cases 3 (with the override) and 4, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
 3. Take a new passphrase and write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK, replaced as in section 4.4.
 
 ## 5. Object file (kind 0x01)
@@ -239,7 +238,7 @@ Adding a field requires a format version bump.
 Adding (`add`): after the source file has been read, check the open file again; if its size or modification time changed since reading started, fail and write nothing. This narrows, but cannot fully close, the window in which a concurrent writer can produce an object that mixes old and new content.
 
 Extracting (`get`):
-- Output never goes inside the vault directory. The directory the temp file is created in (the output's parent directory) is resolved, following symlinks, and the write is refused if it is the vault directory or below it. An output path that resolves to an existing directory is refused.
+- Output never goes inside the vault directory. The output path is split into its directory part and final name without lexical cleaning, and the directory part is opened as the OS resolves it (symlinks, and `..` after a symlink, physically). From the opened directory handle, tools walk up through `..` to the file system root and refuse if any directory on the way is the vault directory (same device and inode). The check happens before any temp file is created, and the write then happens relative to that same handle (section 8). An output path whose final name is empty, `.` or `..`, or that resolves to an existing directory, is refused.
 - Without an explicit output path, the output goes to the current directory under the stored `name`, but only if the name contains no control character (U+0000 to U+001F, U+007F, U+0080 to U+009F), no backslash, no bidi control (U+202A to U+202E, U+2066 to U+2069), does not start with `.`, has no leading or trailing space, is at most 200 bytes, and is not `vault.json`. Otherwise refuse and ask for an explicit output path. An explicit output path works for any name. This is extraction policy only; section 5.2's rules for writers are unchanged.
 - Plaintext is written to a temp file (section 8) and renamed into place only after the whole object authenticates. An existing output is replaced only on request.
 - Streaming to stdout emits plaintext before authentication finishes, so a truncated or damaged object can produce a valid-looking prefix. It is refused unless explicitly requested (`--unverified-stream`), and the exit status is then the only signal of failure.
@@ -295,18 +294,18 @@ Inbox uploads:
 
 Leaks: object count, approximate sizes (granularity of one chunk), and modification times and access patterns visible to the host.
 
-Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates.
+Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates. A genuine object or inbox file that the host renames to a name on the OS junk list (section 8) is treated as a note, which is indistinguishable from deleting it; deletion is already accepted (no freshness guarantee).
 
 ## 8. Storage backends and deployment
 
 The vault needs only four operations from its storage: `put(path, bytes)`, `get(path)`, `list(prefix)`, `delete(path)`. A rename is a bonus, not a requirement. Do not assume rename is atomic (Google Drive's is not). Do not assume file names are unique (Drive allows duplicates).
 
 Rules that make this safe on dumb storage:
-- Temp files: writers create them in the destination directory, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600, and remove them on any error or interruption. They finish with a rename (or a final put); a writer that must not replace an existing file uses a no-replace move. Readers skip `*.part`.
+- Temp files: writers open the destination directory once and do everything relative to that handle: create the temp file in it, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600 (`openat`); verify it by reopening it through the handle; and move it into place with `renameat`, or for a writer that must not replace an existing file, a no-replace move (`linkat`, then removing the temp name). The directory that was checked is the directory that is written; no path is resolved again in between. Inside the vault, `objects/` and `objects/xx/` are opened from the vault directory's handle without following symlinks. If the final name is an existing symlink or hard link, it is replaced, never followed. Temp files are removed on any error or interruption. Readers skip `*.part`.
 - Signals: every command handles SIGINT, SIGTERM, SIGHUP and SIGQUIT the same way: remove its temp files (and, for `init`, the directories it created), restore the terminal if a passphrase prompt had changed it, and exit with 128 + the signal number (130, 143, 129, 131). SIGKILL cannot be handled; it can leave a temp file behind, which readers skip and `verify` reports as a note.
 - Every vault file that is opened must be a regular file: no symlinks, FIFOs or devices.
 - `objects/`, `inbox/` and each `objects/xx/` must be real directories. Before opening anything under the vault, tools check each of them without following symlinks; a symlinked directory is an error in `verify` and makes every other command refuse.
-- OS junk: these names are notes, not failures, in the vault root, `objects/` (including `objects/xx/`) and `inbox/`: `.DS_Store`, any name starting with `._`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `Thumbs.db`, `desktop.ini`, `.localized`. Matching is exact on the file name (plus the `._` prefix). Only regular files and directories with these names count; a junk-named symlink, FIFO or other special file still fails `verify`. A junk-named directory's contents are not scanned. Tools never open, modify or delete junk. `verify` lists it as notes; other commands ignore it.
+- OS junk: these names are notes, not failures, in the vault root, `objects/` (including `objects/xx/`) and `inbox/`: `.DS_Store`, any name starting with `._`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`, `Thumbs.db`, `desktop.ini`, `.localized`. Matching is exact on the file name (plus the `._` prefix). Only regular files and directories with these names count; a junk-named symlink, FIFO or other special file still fails `verify`. A junk-named directory's contents are not scanned. Tools never open, modify or delete junk. `verify` lists it as notes and gives the number of ignored junk files in its summary line, so a sudden jump is visible; other commands ignore it.
 - Readers treat any file that fails to parse or authenticate as "incomplete or corrupt": skip it, report it, retry later. Never delete it automatically.
 - An unrecognized file in `objects/` or `inbox/` (e.g. "conflicted copy") must be surfaced to the user, not ignored or deleted.
 - If duplicates of the same file_id appear, they are the same logical file. Delete a duplicate only if it is byte-identical to the one kept.
@@ -424,6 +423,9 @@ A log of what was decided after the first draft and where each rule now lives. T
 | N9 | Symlinked vault directories refused | 8 |
 | N10 | Handling K_auth output from `server-config` | 3 |
 | N11 | Names differing only in normalization coexist; `get` and `verify` behaviour | 5.2 |
+| F1 | Physical resolution of output paths; outside-the-vault walk on the directory handle; writes relative to directory handles | 5.4, 8 |
+| F2 | Recovery: four cases; nothing the host can plant blocks a correct key (replaces N4/N7's "wrong key" case) | 4.5 |
+| F3 | Junk-renamed files equal deletion; junk count in `verify` | 7, 8 |
 
 ## 14. Changelog from the original draft
 
@@ -473,3 +475,10 @@ Fourth revision (re-review of step2-fixed):
 - Section 8: signal handling (SIGHUP, SIGQUIT, SIGKILL caveat), real directories only, OS junk names.
 - Section 11: step 2 targets macOS and Linux.
 - Section 13: rows N1 to N11.
+
+Fifth revision (round 3 re-verification):
+- Section 4.5: four cases instead of five; readable objects that do not unwrap no longer refuse a key outright ("cannot be verified" with an override); note for partly unwrapping vaults; `valv ls` hint after an unverified write.
+- Section 5.4: output paths resolved physically; outside-the-vault check walks up from the opened directory handle; empty, `.` and `..` final names refused.
+- Section 7: junk-renamed files are indistinguishable from deletion.
+- Section 8: writes relative to directory handles (`openat`, `renameat`, `linkat`); junk count in `verify`'s summary.
+- Section 13: rows F1 to F3.

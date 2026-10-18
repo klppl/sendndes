@@ -1,12 +1,9 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
 	"path"
@@ -16,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 	"unicode"
 
 	"github.com/klppl/valv/core"
@@ -73,14 +69,16 @@ func readConfig(p string) ([]byte, error) {
 // hooks such as restoring the terminal or removing directories init created.
 var cleanup = struct {
 	sync.Mutex
-	temps map[string]struct{}
+	temps map[string]func()
 	hooks map[int]func()
 	next  int
-}{temps: map[string]struct{}{}, hooks: map[int]func(){}}
+}{temps: map[string]func(){}, hooks: map[int]func(){}}
 
-func registerTemp(p string) {
+// registerTemp records a temp file and how to remove it (relative to the
+// directory handle it was created in).
+func registerTemp(p string, remove func()) {
 	cleanup.Lock()
-	cleanup.temps[p] = struct{}{}
+	cleanup.temps[p] = remove
 	cleanup.Unlock()
 }
 
@@ -109,8 +107,8 @@ func addCleanupHook(f func()) (remove func()) {
 func runCleanup() {
 	cleanup.Lock()
 	defer cleanup.Unlock()
-	for p := range cleanup.temps {
-		os.Remove(p)
+	for p, remove := range cleanup.temps {
+		remove()
 		delete(cleanup.temps, p)
 	}
 	ids := make([]int, 0, len(cleanup.hooks))
@@ -145,117 +143,6 @@ func installSignalCleanup(exit func(int)) func() {
 	return func() {
 		signal.Stop(ch)
 		close(done)
-	}
-}
-
-// createTemp makes a temp file in dir named .valv-<16 hex>.part, created
-// exclusively, never through a symlink, mode 0600 (SPEC 8).
-func createTemp(dir string) (string, *os.File, error) {
-	for range 8 {
-		var b [8]byte
-		rand.Read(b[:])
-		p := filepath.Join(dir, ".valv-"+hex.EncodeToString(b[:])+core.PartSuffix)
-		f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
-		if errors.Is(err, fs.ErrExist) {
-			continue
-		}
-		if err != nil {
-			return "", nil, err
-		}
-		return p, f, nil
-	}
-	return "", nil, errors.New("could not create a temp file")
-}
-
-// writeOpts control writeAtomic.
-type writeOpts struct {
-	overwrite bool                   // replace an existing destination
-	mtime     *time.Time             // set on the file before it is moved into place
-	check     func(tmp string) error // verify the finished temp file before it is moved into place
-}
-
-// writeAtomic writes dst through a temp file in the same directory: fill
-// writes the content, the file is synced and checked, then moved into place.
-// On any error, or on SIGINT/SIGTERM, the temp file is removed and nothing is
-// left behind. Without overwrite, an existing dst is never replaced.
-func writeAtomic(dst string, opts writeOpts, fill func(io.Writer) error) (err error) {
-	if !opts.overwrite {
-		if _, err := os.Lstat(dst); err == nil {
-			return errExists
-		}
-	}
-	dir := tempDirFor(dst)
-	tmp, f, err := createTemp(dir)
-	if err != nil {
-		return err
-	}
-	registerTemp(tmp)
-	defer unregisterTemp(tmp)
-	defer func() {
-		if err != nil {
-			if f != nil {
-				f.Close()
-			}
-			os.Remove(tmp)
-		}
-	}()
-	if err = fill(f); err != nil {
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
-	err = f.Close()
-	f = nil
-	if err != nil {
-		return err
-	}
-	if opts.mtime != nil {
-		if err = os.Chtimes(tmp, time.Now(), *opts.mtime); err != nil {
-			return err
-		}
-	}
-	if opts.check != nil {
-		if err = opts.check(tmp); err != nil {
-			return err
-		}
-	}
-	if opts.overwrite {
-		err = os.Rename(tmp, dst)
-	} else {
-		err = moveNoReplace(tmp, dst)
-	}
-	if err != nil {
-		return err
-	}
-	syncDir(dir)
-	return nil
-}
-
-// tempDirFor is the directory writeAtomic creates dst's temp file in.
-func tempDirFor(dst string) string { return filepath.Dir(dst) }
-
-// moveNoReplace moves tmp to dst unless dst exists. A hard link makes the
-// check atomic; without hard links it falls back to check-then-rename.
-func moveNoReplace(tmp, dst string) error {
-	err := os.Link(tmp, dst)
-	if err == nil {
-		os.Remove(tmp)
-		return nil
-	}
-	if errors.Is(err, fs.ErrExist) {
-		return errExists
-	}
-	if _, serr := os.Lstat(dst); serr == nil {
-		return errExists
-	}
-	return os.Rename(tmp, dst)
-}
-
-func syncDir(dir string) {
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
 	}
 }
 
