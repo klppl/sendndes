@@ -58,6 +58,12 @@ type vaultVector struct {
 	InboxPub           hexBytes `json:"inbox_pub"`
 	RecoveryKey        string   `json:"recovery_key"`
 	VaultJSONHex       hexBytes `json:"vault_json_hex"`
+	// The same passphrase in NFD and NFC must give the same KEK (with Salt).
+	PassphraseNormalization struct {
+		NFD hexBytes `json:"nfd_hex"`
+		NFC hexBytes `json:"nfc_hex"`
+		KEK hexBytes `json:"kek"`
+	} `json:"passphrase_normalization"`
 }
 
 // metaFields gives metadata values: strings as UTF-8 hex, integers as
@@ -108,6 +114,7 @@ type chunkVector struct {
 type encryptedFile struct {
 	Description     string        `json:"description"`
 	File            string        `json:"file"`
+	Path            string        `json:"path"` // where it lives in a vault
 	FileSHA256      hexBytes      `json:"file_sha256"`
 	FileHex         hexBytes      `json:"file_hex,omitempty"`
 	PlaintextFile   string        `json:"plaintext_file"`
@@ -165,6 +172,7 @@ type negativeVector struct {
 	Description   string   `json:"description"`
 	Kind          string   `json:"kind"` // vault, object, inbox
 	File          string   `json:"file"`
+	Path          string   `json:"path,omitempty"` // vault path for object and inbox cases
 	Passphrase    string   `json:"passphrase,omitempty"`
 	MetaPlaintext hexBytes `json:"meta_plaintext,omitempty"`
 	Expect        string   `json:"expect"`
@@ -179,6 +187,7 @@ var errorClasses = map[string]error{
 	"metadata":           ErrMetadata,
 	"wrong_passphrase":   ErrWrongPassphrase,
 	"inbox_key_mismatch": ErrInboxKeyMismatch,
+	"path":               ErrPathMismatch,
 }
 
 func errorClass(err error) string {

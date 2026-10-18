@@ -11,11 +11,11 @@ Generation is deterministic: every key, id and nonce is `SHA-256("valv-testvecto
 ## Layout
 
 - `vectors.json`: describes every vector. All byte fields are lowercase hex. Metadata strings are given as UTF-8 hex (`*_hex`), and `mtime` and `rev` as decimal strings so no JSON parser rounds them through a float. `readable` fields are for humans only.
-- `vault/vault.json`: the vault config, as stored (base64 as the format requires). `vectors.json` → `vault` has the hex breakdown: passphrase, salt, KEK, VK, wrap nonce, `config_aad`, `wrapped_vk`, K_wrap, the inbox private key before and after clamping, `inbox_pub` and the recovery key.
-- `objects/*.obj` with `objects/*.plain`: object files and their plaintext. `vectors.json` → `objects` lists file_id, FK, K_content, K_meta, wrap nonce and AAD, `wrapped_fk`, metadata (fields, padded plaintext, nonce, AAD, blob), the full header, `ct_total`, and each chunk's offset, lengths, nonce and tag. Files up to 4096 bytes are also inlined as hex.
+- `vault/vault.json`: the vault config, as stored (base64 as the format requires). `vectors.json` → `vault` has the hex breakdown: passphrase, salt, KEK, VK, wrap nonce, `config_aad`, `wrapped_vk`, K_wrap, the inbox private key before and after clamping, `inbox_pub` and the recovery key. `passphrase_normalization` gives one passphrase in NFD and NFC; both must derive the listed KEK with the vault salt.
+- `objects/*.obj` with `objects/*.plain`: object files and their plaintext. `path` is where each file lives in a vault; readers derive the expected file_id from it (SPEC 4.1). `vectors.json` → `objects` lists file_id, FK, K_content, K_meta, wrap nonce and AAD, `wrapped_fk`, metadata (fields, padded plaintext, nonce, AAD, blob), the full header, `ct_total`, and each chunk's offset, lengths, nonce and tag. Files up to 4096 bytes are also inlined as hex.
 - `inbox/inbox.inb`, `inbox/inbox.plain`, `inbox/inbox_ingested.obj`: an inbox file, its plaintext, and the object produced by ingesting it with `ingest.wrap_nonce`. Also lists eph_priv (raw; X25519 clamps it), eph_pub, the DH result and the HKDF salt.
 - `vectors.json` → `metadata`: writer encodings. For each input, the canonical JSON (unpadded) and padded length, or `"error": "metadata"` if a writer must reject the input.
-- `negative/*`: files that must be rejected. `vectors.json` → `negative` gives the kind (`vault`, `object`, `inbox`), the passphrase for vault cases, and the expected error class. Object and inbox cases use the keys from `vault/vault.json`. For metadata cases `meta_plaintext` is the raw padded plaintext inside the (correctly encrypted) object.
+- `negative/*`: files that must be rejected. `vectors.json` → `negative` gives the kind (`vault`, `object`, `inbox`), the passphrase for vault cases, the vault `path` for object and inbox cases (the expected file_id comes from it), and the expected error class. Object and inbox cases use the keys from `vault/vault.json`. For metadata cases `meta_plaintext` is the raw padded plaintext inside the (correctly encrypted) object.
 
 All object and inbox vectors are decrypted with the keys from `vault/vault.json` and its passphrase.
 
@@ -29,5 +29,6 @@ All object and inbox vectors are decrypted with the keys from `vault/vault.json`
 | `metadata` | Metadata decrypted but is not canonical or breaks a field rule (SPEC 5.2). |
 | `wrong_passphrase` | `wrapped_vk` did not open: wrong passphrase or altered vault.json. |
 | `inbox_key_mismatch` | `wrapped_vk` opened but `inbox_pub` is not the one derived from VK. |
+| `path` | The path is not a valid name (uppercase hex, wrong prefix directory) or does not match the header file_id. |
 
 An implementation must reject each negative vector; matching the class is the goal.

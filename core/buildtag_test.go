@@ -61,7 +61,8 @@ func TestNoDeterministicHookInReleaseBuild(t *testing.T) {
 	}
 
 	// No exported function in the release package takes a key, id, nonce,
-	// salt or random source as a parameter.
+	// salt or random source as a parameter. Pure path formatting is allowed.
+	allowed := []string{"ObjectPath", "InboxName"}
 	forbidden := []string{"fk", "fileid", "id", "nonce", "wrapnonce", "metanonce", "ephpriv", "salt", "rand", "random", "seed"}
 	fset := token.NewFileSet()
 	for _, f := range pkg.GoFiles {
@@ -71,7 +72,7 @@ func TestNoDeterministicHookInReleaseBuild(t *testing.T) {
 		}
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !fn.Name.IsExported() {
+			if !ok || !fn.Name.IsExported() || slices.Contains(allowed, fn.Name.Name) {
 				continue
 			}
 			for _, field := range fn.Type.Params.List {

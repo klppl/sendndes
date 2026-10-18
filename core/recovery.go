@@ -40,6 +40,43 @@ func DecodeRecoveryKey(s string) ([KeySize]byte, error) {
 	return vk, nil
 }
 
+// RecoverVault rebuilds vault.json from the recovery key and a new passphrase
+// (SPEC 4.5). objectPrefixes holds the first 82 bytes of each existing object
+// (any order, possibly empty). If it is non-empty, the recovered VK must
+// unwrap at least one of them, or RecoverVault fails with ErrWrongRecoveryKey
+// and returns nothing to write. checked reports whether that check ran.
+func RecoverVault(recoveryKey, newPassphrase string, objectPrefixes [][]byte) (vaultJSON []byte, checked bool, err error) {
+	vk, err := DecodeRecoveryKey(recoveryKey)
+	if err != nil {
+		return nil, false, err
+	}
+	defer clear(vk[:])
+	keys, err := DeriveVaultKeys(vk)
+	if err != nil {
+		return nil, false, err
+	}
+	defer keys.Wipe()
+	if len(objectPrefixes) > 0 {
+		ok := false
+		for _, p := range objectPrefixes {
+			if fk, err := unwrapFKFromPrefix(p, keys); err == nil {
+				clear(fk[:])
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return nil, true, fmt.Errorf("%w: it unwraps none of the existing objects", ErrWrongRecoveryKey)
+		}
+	}
+	salt := make([]byte, SaltSize)
+	nonce := make([]byte, NonceSize)
+	randomBytes(salt)
+	randomBytes(nonce)
+	data, err := writeAndVerifyConfig(newPassphrase, &keys.VK, salt, nonce, &keys.InboxPub)
+	return data, len(objectPrefixes) > 0, err
+}
+
 // UnlockWithRecoveryKey unlocks the vault from a recovery key (SPEC 4.3).
 // sampleObjectHeader is the start of any one object file (at least the first
 // 82 bytes), or nil if the vault has no objects. It is only used to tell

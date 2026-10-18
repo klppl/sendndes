@@ -38,6 +38,7 @@ Non-goals
 
 - **VK**: 32 random bytes, the vault master key. Generated once at `init`.
 - **KEK** = Argon2id(passphrase, salt, t=3, m=65536 KiB, p=1) -> 32 bytes. Its only job is to wrap VK (section 4.2).
+- **Passphrase encoding.** Reject a passphrase that is not valid UTF-8, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest.
 - **HKDF salt.** Every HKDF derivation from VK or FK uses an empty salt. Per RFC 5869 an empty salt is the same as 32 zero bytes; both implementations must match the test vectors on this. The only HKDF call with a non-empty salt is the inbox FK derivation (section 6.2). Every derivation outputs L=32 bytes.
 - **Subkeys from VK**: `HKDF-SHA256(ikm=VK, salt=empty, info=LABEL, L=32)`
   - `"valv/v1/wrap"` -> K_wrap (wraps per-file keys)
@@ -59,6 +60,12 @@ vault/
 ```
 
 - `file_id`: 16 random bytes, written as 32 lowercase hex chars. File names reveal nothing about content.
+- Readers derive the expected file_id from the path and reject any object or inbox file whose path does not match it:
+  - the name must be exactly `<32 lowercase hex>.obj` (or `.inb`); uppercase hex is rejected;
+  - an object's directory under `objects/` must equal the first two hex chars of its file_id;
+  - the file_id in the header must equal the one in the name.
+
+  Every function that opens an object or inbox file takes the expected file_id as a parameter, so this check cannot be skipped.
 - No directory objects. Folder structure lives in each file's encrypted metadata (`dir`).
 - Writers upload under a temporary name (`<name>.part`) and then rename (see section 8). Readers ignore `*.part`.
 - Local-only scratch/cache (never in the synced vault): temp files, a SQLite listing cache. The cache is derived data and is rebuildable by scanning object headers.
@@ -112,9 +119,19 @@ Recovery-key unlock (no `wrapped_vk` involved):
 3. Derive `inbox_pub` from VK. If it equals the one in vault.json, unlock succeeds.
 4. Otherwise unlock fails. If the vault has at least one object, try to unwrap one object's `wrapped_fk` with K_wrap from this VK. If that works, report "vault.json has been altered". If it fails, or there are no objects, report "wrong recovery key or altered vault.json". Never guess beyond that.
 
+Failing is the default. Rebuilding vault.json from the recovery key is a separate, explicit operation (section 4.5).
+
 ### 4.4 Changing the passphrase
 
 Every passphrase change generates a fresh random 16-byte salt and a fresh random wrap nonce. The KDF parameters stay as section 4.2 requires. `config_aad` is recomputed (it includes the new salt). VK and all objects are unchanged. vault.json is replaced via temp + rename.
+
+### 4.5 Rebuilding vault.json from the recovery key
+
+Objects need only VK, so the recovery key must work even when vault.json is missing, damaged or altered (the CLI's `recover`).
+
+1. Decode the recovery key (section 3) and take a new passphrase.
+2. If the vault has at least one object, the recovered VK must unwrap the `wrapped_fk` of at least one existing object with K_wrap. If none unwraps, refuse and write nothing. With no objects this check cannot be made.
+3. Write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK. Write via temp + rename, then run passphrase unlock (section 4.3) on what was written.
 
 ## 5. Object file (kind 0x01)
 
@@ -154,9 +171,9 @@ Fields:
 |---|---|---|
 | `name` | string | Non-empty. Must not contain `/` or U+0000. Must not be `.` or `..`. |
 | `dir` | string | `""` for the root, otherwise components joined by `/` with no leading or trailing `/`. Each component follows the `name` rules. |
-| `mtime` | int64 | Unix time in nanoseconds. |
+| `mtime` | int64 | Unix time in nanoseconds. Any int64, including negative (pre-1970 dates). |
 | `mime` | string | `""` if unknown. |
-| `rev` | int64 | 1 when a file is created (also by the inbox server), incremented on every rewrite. Helps spot conflicts. |
+| `rev` | int64 | At least 1. 1 when a file is created (also by the inbox server), incremented on every rewrite. Helps spot conflicts. |
 
 Plaintext size is not stored (it is derived, see section 5.3).
 
@@ -225,7 +242,7 @@ Magic, version, `meta_len`, metadata and chunks follow sections 5.1 to 5.3, with
 
 ### 6.3 Client ingest (holds VK)
 
-1. Run the structural check. Derive the inbox private key from VK, compute DH with eph_pub (reject an all-zero result), derive FK.
+1. Check the inbox file's path (section 4.1) and run the structural check. Derive the inbox private key from VK, compute DH with eph_pub (reject an all-zero result), derive FK.
 2. Decrypt meta_blob and check it (section 5.2).
 3. Write an object file under a `.part` name: same file_id, FK wrapped under K_wrap with a fresh random wrap_nonce, meta_blob copied verbatim, chunks copied byte for byte. The body is not re-encrypted. Every chunk is authenticated while streaming, before it is copied.
 4. Only after every chunk has authenticated, finish the object in `objects/` (rename or final put), then delete the inbox file.
@@ -285,10 +302,10 @@ Deployment (v1, "mode B", chosen first):
 ## 11. Build order
 
 1. **Spec + test vectors.** A reference generator (Go), in test-only code behind the `valv_testvectors` build tag, with fixed seeds (fixed VK, file_ids, FKs, nonces). Regenerating needs `-tags valv_testvectors`; the verification and negative tests read the committed vector files and run without the tag. Vector files give every field in hex; vault.json is also committed as-is (base64 as the format requires) with a hex breakdown next to it.
-   - Positive vectors: vault.json, recovery key, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
-   - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, an NFD name.
+   - Positive vectors: vault.json, recovery key, a passphrase given in NFD and in NFC that derive the same KEK, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
+   - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, an NFD name, rev 0; a renamed file (file_id mismatch), a wrong prefix directory, an uppercase hex name.
    - Round trips for 0, 1, 65535, 65536, 65537 bytes and 3 full chunks + 1 byte.
-2. **Go core library + CLI**: `init`, `add`, `ls`, `get`, `ingest`, `rekey-passphrase`.
+2. **Go core library + CLI**: `init`, `add`, `ls`, `get`, `ingest`, `verify`, `passwd` (change passphrase), `recover` (section 4.5).
 3. **Swift core library**: must decrypt every Go vector and re-encrypt to identical bytes.
 4. **Inbox server (Go)**: streaming upload, seal, store. API from section 8.
 5. **Mac app.**
@@ -334,6 +351,14 @@ A log of what was decided after the first draft and where each rule now lives. T
 | L | Deterministic values only behind the `valv_testvectors` build tag | 10, 11 |
 | M | Fresh salt and wrap nonce on every passphrase change | 4.4 |
 | N | Vector file format; an mtime above 2^53 | 11 |
+| C1 | Byte-exact vault.json writer format; canonical-only readers | 4.2 |
+| C2 | Minimal metadata padding | 5.2 |
+| C3 | Recovery-key unlock fails on an altered vault.json; `recover` rebuilds it | 4.3, 4.5 |
+| C4 | Wrong magic or kind is malformed, wrong version unsupported | 5.1 |
+| C5 | Lowercase hex in paths; uppercase rejected | 4.1 |
+| Q1 | Passphrase: valid UTF-8, NFC, no trimming or case folding | 3 |
+| Q2 | `rev >= 1`; `mtime` any int64 | 5.2 |
+| Q3 | Path must match the header file_id; expected file_id is a parameter | 4.1 |
 
 ## 14. Changelog from the original draft
 
@@ -345,3 +370,13 @@ A log of what was decided after the first draft and where each rule now lives. T
 - Section 10: rule 5 points to the exact `meta_len` bounds; new rule 9 on test-only deterministic values.
 - Section 11: step 1 lists the full positive and negative vector set, the vector file format, and the build tag.
 - Sections 13 and 14 added.
+
+Second revision (answers to the step 1 questions):
+- Section 3: passphrase encoding (UTF-8, NFC) and the Unicode-version caveat.
+- Section 4.1: path rules (lowercase hex, prefix directory, header file_id must match the name; expected file_id is a parameter).
+- Section 4.3: failing on an altered vault.json is the default; points to 4.5.
+- Section 4.5 added: rebuilding vault.json from the recovery key.
+- Section 5.2: `rev >= 1`; `mtime` may be negative.
+- Section 6.3: ingest checks the inbox file's path.
+- Section 11: new vectors (passphrase normalization, rev 0, path mismatches); step 2 command list (`passwd` replaces `rekey-passphrase`, `verify` and `recover` added).
+- Section 13: rows C1 to C5 and Q1 to Q3.

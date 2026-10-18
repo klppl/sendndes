@@ -49,16 +49,21 @@ func TestObjectRoundTrip(t *testing.T) {
 			t.Fatalf("%d: PlaintextSize = %d, %v", n, size, err)
 		}
 		var out bytes.Buffer
-		gotID, meta, err := DecryptObject(bytes.NewReader(data), int64(len(data)), keys, &out)
+		meta, err := DecryptObject(bytes.NewReader(data), int64(len(data)), id, keys, &out)
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
-		if gotID != id || meta != testMeta || !bytes.Equal(out.Bytes(), plain) {
+		if meta != testMeta || !bytes.Equal(out.Bytes(), plain) {
 			t.Fatalf("%d: round trip differs", n)
 		}
-		infoID, infoMeta, err := ReadObjectInfo(bytes.NewReader(data), int64(len(data)), keys)
-		if err != nil || infoID != id || infoMeta != testMeta {
+		info, err := ReadObjectInfo(bytes.NewReader(data), int64(len(data)), id, keys)
+		if err != nil || info.ID != id || info.Meta != testMeta || info.PlaintextSize != int64(n) {
 			t.Fatalf("%d: ReadObjectInfo: %v", n, err)
+		}
+		var other FileID
+		randomBytes(other[:])
+		if _, err := DecryptObject(bytes.NewReader(data), int64(len(data)), other, keys, &out); !errors.Is(err, ErrPathMismatch) {
+			t.Fatalf("%d: wrong expected id: %v", n, err)
 		}
 	}
 }
@@ -74,13 +79,16 @@ func TestInboxRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
+		if _, err := VerifyInbox(bytes.NewReader(inb.Bytes()), int64(inb.Len()), id, keys); err != nil {
+			t.Fatalf("%d: verify: %v", n, err)
+		}
 		var obj bytes.Buffer
-		gotID, gotMeta, err := IngestInbox(bytes.NewReader(inb.Bytes()), int64(inb.Len()), keys, &obj)
-		if err != nil || gotID != id || gotMeta.Rev != 1 {
+		gotMeta, err := IngestInbox(bytes.NewReader(inb.Bytes()), int64(inb.Len()), id, keys, &obj)
+		if err != nil || gotMeta.Rev != 1 {
 			t.Fatalf("%d: ingest: %v", n, err)
 		}
 		var out bytes.Buffer
-		if _, _, err := DecryptObject(bytes.NewReader(obj.Bytes()), int64(obj.Len()), keys, &out); err != nil || !bytes.Equal(out.Bytes(), plain) {
+		if _, err := DecryptObject(bytes.NewReader(obj.Bytes()), int64(obj.Len()), id, keys, &out); err != nil || !bytes.Equal(out.Bytes(), plain) {
 			t.Fatalf("%d: decrypt ingested: %v", n, err)
 		}
 	}
@@ -114,7 +122,7 @@ func TestStructuralCheck(t *testing.T) {
 }
 
 func TestCreateUnlockChangePassphrase(t *testing.T) {
-	data, keys, rk, err := CreateVault([]byte("first"))
+	data, keys, rk, err := CreateVault("first")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +130,7 @@ func TestCreateUnlockChangePassphrase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Unlock(c, []byte("nope")); !errors.Is(err, ErrWrongPassphrase) {
+	if _, err := Unlock(c, "nope"); !errors.Is(err, ErrWrongPassphrase) {
 		t.Fatalf("wrong passphrase: %v", err)
 	}
 	k2, err := UnlockWithRecoveryKey(c, strings.ToLower(strings.ReplaceAll(rk, "-", " ")), nil)
@@ -130,7 +138,7 @@ func TestCreateUnlockChangePassphrase(t *testing.T) {
 		t.Fatalf("recovery key: %v", err)
 	}
 
-	newData, err := ChangePassphrase(keys, []byte("second"))
+	newData, err := ChangePassphrase(keys, "second")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,10 +146,10 @@ func TestCreateUnlockChangePassphrase(t *testing.T) {
 	if c2.Salt == c.Salt || [NonceSize]byte(c2.WrappedVK[:NonceSize]) == [NonceSize]byte(c.WrappedVK[:NonceSize]) {
 		t.Fatal("passphrase change reused salt or nonce")
 	}
-	if _, err := Unlock(c2, []byte("first")); !errors.Is(err, ErrWrongPassphrase) {
+	if _, err := Unlock(c2, "first"); !errors.Is(err, ErrWrongPassphrase) {
 		t.Fatal("old passphrase still works")
 	}
-	k3, err := Unlock(c2, []byte("second"))
+	k3, err := Unlock(c2, "second")
 	if err != nil || k3.VK != keys.VK {
 		t.Fatalf("new passphrase: %v", err)
 	}
@@ -199,19 +207,20 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	keys := testKeys(t)
 	plain := randomContent(ChunkSize + 100)
 	var inb bytes.Buffer
-	if _, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(plain)); err != nil {
+	id, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(plain))
+	if err != nil {
 		t.Fatal(err)
 	}
 	inbox := inb.Bytes()
 	ingest := func() []byte {
 		var obj bytes.Buffer
-		if _, _, err := IngestInbox(bytes.NewReader(inbox), int64(len(inbox)), keys, &obj); err != nil {
+		if _, err := IngestInbox(bytes.NewReader(inbox), int64(len(inbox)), id, keys, &obj); err != nil {
 			t.Fatal(err)
 		}
 		return obj.Bytes()
 	}
 	check := func(obj []byte) error {
-		return CheckAlreadyIngested(bytes.NewReader(inbox), int64(len(inbox)), bytes.NewReader(obj), int64(len(obj)), keys)
+		return CheckAlreadyIngested(bytes.NewReader(inbox), int64(len(inbox)), bytes.NewReader(obj), int64(len(obj)), id, keys)
 	}
 
 	obj := ingest()
@@ -220,7 +229,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	}
 
 	// Renamed after ingest: new meta_blob under the same FK. Still ingested.
-	o, err := openObject(bytes.NewReader(obj), int64(len(obj)), keys)
+	o, err := openObject(bytes.NewReader(obj), int64(len(obj)), id, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,14 +273,15 @@ func TestCheckAlreadyIngested(t *testing.T) {
 func TestIngestWritesNothingAfterBadChunk(t *testing.T) {
 	keys := testKeys(t)
 	var inb bytes.Buffer
-	if _, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(randomContent(2*ChunkSize+10))); err != nil {
+	id, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(randomContent(2*ChunkSize+10)))
+	if err != nil {
 		t.Fatal(err)
 	}
 	data := inb.Bytes()
 	headerLen := inboxFixedHeader + metaBlock + metaOverhead
 	data[headerLen+StoredChunkSize+5] ^= 1 // corrupt chunk 1
 	var obj bytes.Buffer
-	_, _, err := IngestInbox(bytes.NewReader(data), int64(len(data)), keys, &obj)
+	_, err = IngestInbox(bytes.NewReader(data), int64(len(data)), id, keys, &obj)
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("got %v", err)
 	}
@@ -311,4 +321,107 @@ func padTo512(s string) []byte {
 		panic(err)
 	}
 	return p
+}
+
+func TestPaths(t *testing.T) {
+	var id FileID
+	randomBytes(id[:])
+	id[0] = 0xab
+	p := ObjectPath(id)
+	if got, err := ParseObjectPath(p); err != nil || got != id {
+		t.Fatalf("ParseObjectPath(%s) = %v, %v", p, got, err)
+	}
+	if got, err := ParseInboxName(InboxName(id)); err != nil || got != id {
+		t.Fatalf("ParseInboxName: %v", err)
+	}
+	s := id.String()
+	for _, bad := range []string{
+		"objects/AB/" + strings.ToUpper(s) + ".obj",
+		"objects/ab/" + strings.ToUpper(s) + ".obj",
+		"objects/00/" + s + ".obj",
+		"objects/ab/" + s + ".OBJ",
+		"objects/ab/" + s,
+		"objects/ab/" + s[:31] + ".obj",
+		"objects/ab/" + s + "0.obj",
+		"objects/ab/" + s + ".obj.part",
+		"objects/" + s + ".obj",
+		"inbox/ab/" + s + ".obj",
+		"objects/ab/x/" + s + ".obj",
+	} {
+		if _, err := ParseObjectPath(bad); !errors.Is(err, ErrPathMismatch) {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+	for _, bad := range []string{strings.ToUpper(s) + ".inb", s + ".obj", s, s + ".inb.part"} {
+		if _, err := ParseInboxName(bad); !errors.Is(err, ErrPathMismatch) {
+			t.Errorf("accepted inbox name %s", bad)
+		}
+	}
+}
+
+func TestPassphraseNormalization(t *testing.T) {
+	if _, err := Unlock(&Config{}, "bad\xff"); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("invalid UTF-8 passphrase: %v", err)
+	}
+	if _, _, _, err := CreateVault("bad\xff"); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("CreateVault with invalid UTF-8: %v", err)
+	}
+	// NFD at create, NFC at unlock. Spaces are kept, case matters.
+	data, _, _, err := CreateVault(" Ko\u0308k ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := ParseConfig(data)
+	if k, err := Unlock(c, " K\u00f6k "); err != nil {
+		t.Fatalf("NFC form: %v", err)
+	} else {
+		k.Wipe()
+	}
+	for _, wrong := range []string{"K\u00f6k", " k\u00f6k "} {
+		if _, err := Unlock(c, wrong); !errors.Is(err, ErrWrongPassphrase) {
+			t.Errorf("%q unlocked", wrong)
+		}
+	}
+}
+
+func TestRecoverVault(t *testing.T) {
+	data, keys, rk, err := CreateVault("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = data
+	var obj bytes.Buffer
+	if _, err := EncryptObject(&obj, keys, testMeta, strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	var otherKeys = testKeys(t)
+	var foreign bytes.Buffer
+	if _, err := EncryptObject(&foreign, otherKeys, testMeta, strings.NewReader("y")); err != nil {
+		t.Fatal(err)
+	}
+	prefix := obj.Bytes()[:82]
+
+	// Right key: a foreign object first, then one of ours.
+	newData, checked, err := RecoverVault(rk, "new", [][]byte{foreign.Bytes()[:82], prefix})
+	if err != nil || !checked {
+		t.Fatalf("recover: %v (checked %v)", err, checked)
+	}
+	c, _ := ParseConfig(newData)
+	k, err := Unlock(c, "new")
+	if err != nil || k.VK != keys.VK {
+		t.Fatalf("unlock recovered vault: %v", err)
+	}
+
+	// Wrong key: unwraps none, nothing to write.
+	var vk [KeySize]byte
+	randomBytes(vk[:])
+	out, checked, err := RecoverVault(EncodeRecoveryKey(vk), "new", [][]byte{prefix})
+	if !errors.Is(err, ErrWrongRecoveryKey) || out != nil || !checked {
+		t.Fatalf("wrong key: %v", err)
+	}
+
+	// No objects: cannot check, still writes.
+	if out, checked, err := RecoverVault(rk, "new", nil); err != nil || checked || out == nil {
+		t.Fatalf("no objects: %v", err)
+	}
 }

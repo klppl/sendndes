@@ -103,9 +103,12 @@ func (o *openedInbox) wipe() {
 }
 
 // openInbox does ingest steps 1 and 2 (SPEC 6.3). r is left at the first chunk.
-func openInbox(r io.Reader, size int64, keys *VaultKeys) (*openedInbox, error) {
+func openInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*openedInbox, error) {
 	hdr, err := readInboxHeader(r)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkExpected(hdr.fileID, expected); err != nil {
 		return nil, err
 	}
 	o := &openedInbox{hdr: hdr, ctTotal: size - hdr.size()}
@@ -127,17 +130,29 @@ func openInbox(r io.Reader, size int64, keys *VaultKeys) (*openedInbox, error) {
 }
 
 // IngestInbox verifies an inbox file of length size and writes the equivalent
-// object file to w (SPEC 6.3). Each chunk is authenticated before it is
-// written. On error the caller must discard what was written to w and keep
-// the inbox file.
-func IngestInbox(r io.Reader, size int64, keys *VaultKeys, w io.Writer) (FileID, Metadata, error) {
+// object file to w (SPEC 6.3). expected is the file_id from its name. Each
+// chunk is authenticated before it is written. On error the caller must
+// discard what was written to w and keep the inbox file.
+func IngestInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys, w io.Writer) (Metadata, error) {
 	var wrapNonce [NonceSize]byte
 	randomBytes(wrapNonce[:])
-	return ingestInbox(r, size, keys, w, wrapNonce[:])
+	_, meta, err := ingestInbox(r, size, expected, keys, w, wrapNonce[:])
+	return meta, err
 }
 
-func ingestInbox(r io.Reader, size int64, keys *VaultKeys, w io.Writer, wrapNonce []byte) (FileID, Metadata, error) {
-	in, err := openInbox(r, size, keys)
+// VerifyInbox authenticates every byte of an inbox file without writing anything.
+func VerifyInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys) (Metadata, error) {
+	in, err := openInbox(r, size, expected, keys)
+	if err != nil {
+		return Metadata{}, err
+	}
+	defer in.wipe()
+	err = readChunks(r, in.ctTotal, &in.keys.content, in.hdr.fileID, func(_, _ []byte) error { return nil })
+	return in.meta, err
+}
+
+func ingestInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys, w io.Writer, wrapNonce []byte) (FileID, Metadata, error) {
+	in, err := openInbox(r, size, expected, keys)
 	if err != nil {
 		return FileID{}, Metadata{}, err
 	}
@@ -165,8 +180,8 @@ func ingestInbox(r io.Reader, size int64, keys *VaultKeys, w io.Writer, wrapNonc
 // differ. It returns nil if so, so the inbox file may be deleted, and an
 // error wrapping ErrConflict if not. Any other error means the inbox file
 // itself is bad. Nothing is deleted here.
-func CheckAlreadyIngested(inbox io.Reader, inboxSize int64, object io.Reader, objectSize int64, keys *VaultKeys) error {
-	in, err := openInbox(inbox, inboxSize, keys)
+func CheckAlreadyIngested(inbox io.Reader, inboxSize int64, object io.Reader, objectSize int64, expected FileID, keys *VaultKeys) error {
+	in, err := openInbox(inbox, inboxSize, expected, keys)
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"unicode/utf8"
+
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Fixed KDF parameters (SPEC 4.2). v1 accepts nothing else.
@@ -113,6 +116,15 @@ func configAAD(salt *[SaltSize]byte, inboxPub *[KeySize]byte) []byte {
 	return b
 }
 
+// normalizePassphrase checks UTF-8 and returns the NFC form's bytes (SPEC 3).
+func normalizePassphrase(passphrase string) ([]byte, error) {
+	if !utf8.ValidString(passphrase) {
+		return nil, fmt.Errorf("%w: passphrase is not valid UTF-8", ErrMalformed)
+	}
+	return []byte(norm.NFC.String(passphrase)), nil
+}
+
+// deriveKEK runs Argon2id on an already normalized passphrase.
 func deriveKEK(passphrase []byte, salt *[SaltSize]byte) [KeySize]byte {
 	var kek [KeySize]byte
 	k := argon2.IDKey(passphrase, salt[:], kdfT, kdfMKiB, kdfP, KeySize)
@@ -121,7 +133,8 @@ func deriveKEK(passphrase []byte, salt *[SaltSize]byte) [KeySize]byte {
 	return kek
 }
 
-// newConfig wraps vk under a KEK from passphrase and salt, binding inboxPub.
+// newConfig wraps vk under a KEK from a normalized passphrase and salt,
+// binding inboxPub.
 func newConfig(passphrase []byte, vk *[KeySize]byte, salt, wrapNonce []byte, inboxPub *[KeySize]byte) *Config {
 	c := &Config{InboxPub: *inboxPub}
 	copy(c.Salt[:], salt)
@@ -134,8 +147,13 @@ func newConfig(passphrase []byte, vk *[KeySize]byte, salt, wrapNonce []byte, inb
 }
 
 // Unlock opens wrapped_vk with the passphrase and checks inbox_pub (SPEC 4.3).
-func Unlock(c *Config, passphrase []byte) (*VaultKeys, error) {
-	kek := deriveKEK(passphrase, &c.Salt)
+func Unlock(c *Config, passphrase string) (*VaultKeys, error) {
+	pass, err := normalizePassphrase(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	kek := deriveKEK(pass, &c.Salt)
+	clear(pass)
 	defer clear(kek[:])
 	vkb, err := open(&kek, c.WrappedVK[:NonceSize], c.WrappedVK[NonceSize:], configAAD(&c.Salt, &c.InboxPub))
 	if err != nil {
@@ -163,7 +181,7 @@ func keysCheckingInboxPub(c *Config, vk [KeySize]byte) (*VaultKeys, error) {
 // CreateVault generates a new VK and returns the vault.json bytes, the
 // unlocked keys and the recovery key. Before returning it unlocks the written
 // bytes with the passphrase and checks they give the same VK (SPEC 4.3).
-func CreateVault(passphrase []byte) (vaultJSON []byte, keys *VaultKeys, recoveryKey string, err error) {
+func CreateVault(passphrase string) (vaultJSON []byte, keys *VaultKeys, recoveryKey string, err error) {
 	var vk [KeySize]byte
 	randomBytes(vk[:])
 	defer clear(vk[:])
@@ -189,7 +207,7 @@ func CreateVault(passphrase []byte) (vaultJSON []byte, keys *VaultKeys, recovery
 
 // ChangePassphrase re-wraps VK under a new passphrase with a fresh salt and
 // nonce (SPEC 4.4) and returns the new vault.json bytes.
-func ChangePassphrase(keys *VaultKeys, newPassphrase []byte) ([]byte, error) {
+func ChangePassphrase(keys *VaultKeys, newPassphrase string) ([]byte, error) {
 	salt := make([]byte, SaltSize)
 	nonce := make([]byte, NonceSize)
 	randomBytes(salt)
@@ -198,8 +216,13 @@ func ChangePassphrase(keys *VaultKeys, newPassphrase []byte) ([]byte, error) {
 }
 
 // writeAndVerifyConfig builds vault.json and checks it unlocks to vk.
-func writeAndVerifyConfig(passphrase []byte, vk *[KeySize]byte, salt, nonce []byte, inboxPub *[KeySize]byte) ([]byte, error) {
-	data := newConfig(passphrase, vk, salt, nonce, inboxPub).Marshal()
+func writeAndVerifyConfig(passphrase string, vk *[KeySize]byte, salt, nonce []byte, inboxPub *[KeySize]byte) ([]byte, error) {
+	pass, err := normalizePassphrase(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	data := newConfig(pass, vk, salt, nonce, inboxPub).Marshal()
+	clear(pass)
 	check, err := unlockBytes(data, passphrase)
 	if err != nil {
 		return nil, fmt.Errorf("valv: written vault.json does not unlock: %w", err)
@@ -211,7 +234,7 @@ func writeAndVerifyConfig(passphrase []byte, vk *[KeySize]byte, salt, nonce []by
 	return data, nil
 }
 
-func unlockBytes(data, passphrase []byte) (*VaultKeys, error) {
+func unlockBytes(data []byte, passphrase string) (*VaultKeys, error) {
 	c, err := ParseConfig(data)
 	if err != nil {
 		return nil, err

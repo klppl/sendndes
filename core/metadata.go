@@ -59,6 +59,9 @@ func (m *Metadata) check() error {
 	if !validDir(m.Dir) {
 		return fmt.Errorf("%w: invalid dir", ErrMetadata)
 	}
+	if m.Rev < 1 {
+		return fmt.Errorf("%w: rev must be at least 1", ErrMetadata)
+	}
 	if !norm.NFC.IsNormalString(m.Name) || !norm.NFC.IsNormalString(m.Dir) {
 		return fmt.Errorf("%w: name or dir is not NFC", ErrMetadata)
 	}

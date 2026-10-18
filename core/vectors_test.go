@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -15,7 +16,7 @@ func vectorKeys(t *testing.T, v *vectorFile) *VaultKeys {
 	if err != nil {
 		t.Fatalf("parse vault.json: %v", err)
 	}
-	keys, err := Unlock(c, []byte(v.Vault.Passphrase))
+	keys, err := Unlock(c, v.Vault.Passphrase)
 	if err != nil {
 		t.Fatalf("unlock: %v", err)
 	}
@@ -37,9 +38,22 @@ func TestVectorVault(t *testing.T) {
 		t.Fatal("vector parameters")
 	}
 	kek := deriveKEK(vv.PassphraseHex, &c.Salt)
-	keys, err := Unlock(c, vv.PassphraseHex)
+	keys, err := Unlock(c, vv.Passphrase)
 	if err != nil {
 		t.Fatal(err)
+	}
+	pn := vv.PassphraseNormalization
+	if bytes.Equal(pn.NFD, pn.NFC) {
+		t.Error("normalization vector: NFD and NFC inputs are equal")
+	}
+	for _, in := range []hexBytes{pn.NFD, pn.NFC} {
+		p, err := normalizePassphrase(string(in))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k := deriveKEK(p, &c.Salt); !bytes.Equal(k[:], pn.KEK) || !bytes.Equal(p, pn.NFC) {
+			t.Errorf("passphrase %x: KEK %x, want %x", in, k, pn.KEK)
+		}
 	}
 	unclamped := hkdf32(keys.VK[:], nil, infoInboxX25519)
 	checks := []struct {
@@ -135,8 +149,12 @@ func TestVectorObjects(t *testing.T) {
 			want := readVectorFile(t, o.PlaintextFile)
 			checkEncryptedFile(t, &o.encryptedFile, file, want)
 
+			id, err := ParseObjectPath(o.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var got bytes.Buffer
-			id, meta, err := DecryptObject(bytes.NewReader(file), int64(len(file)), keys, &got)
+			meta, err := DecryptObject(bytes.NewReader(file), int64(len(file)), id, keys, &got)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +191,11 @@ func TestVectorInbox(t *testing.T) {
 			plain := readVectorFile(t, iv.PlaintextFile)
 			checkEncryptedFile(t, &iv.encryptedFile, file, plain)
 
-			in, err := openInbox(bytes.NewReader(file), int64(len(file)), keys)
+			id, err := ParseInboxName(strings.TrimPrefix(iv.Path, InboxDir+"/"))
+			if err != nil || !bytes.Equal(id[:], iv.FileID) {
+				t.Fatalf("path %s: %v", iv.Path, err)
+			}
+			in, err := openInbox(bytes.NewReader(file), int64(len(file)), id, keys)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,8 +208,6 @@ func TestVectorInbox(t *testing.T) {
 			}
 
 			// Server side: re-seal with the same values.
-			var id FileID
-			copy(id[:], iv.FileID)
 			var ephPriv, inboxPub [KeySize]byte
 			copy(ephPriv[:], iv.EphPriv)
 			copy(inboxPub[:], iv.InboxPub)
@@ -202,7 +222,7 @@ func TestVectorInbox(t *testing.T) {
 			// Ingest with the same wrap nonce.
 			wantObj := readVectorFile(t, iv.Ingest.File)
 			var obj bytes.Buffer
-			if _, _, err := ingestInbox(bytes.NewReader(file), int64(len(file)), keys, &obj, iv.Ingest.WrapNonce); err != nil {
+			if _, _, err := ingestInbox(bytes.NewReader(file), int64(len(file)), id, keys, &obj, iv.Ingest.WrapNonce); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(obj.Bytes(), wantObj) || !bytes.HasPrefix(wantObj, iv.Ingest.Header) ||
@@ -217,7 +237,7 @@ func TestVectorInbox(t *testing.T) {
 				t.Fatal("ingested chunks are not byte-identical")
 			}
 			var got bytes.Buffer
-			_, meta, err := DecryptObject(bytes.NewReader(wantObj), int64(len(wantObj)), keys, &got)
+			meta, err := DecryptObject(bytes.NewReader(wantObj), int64(len(wantObj)), id, keys, &got)
 			if err != nil || !bytes.Equal(got.Bytes(), plain) {
 				t.Fatalf("decrypt ingested object: %v", err)
 			}
@@ -271,14 +291,24 @@ func TestVectorNegative(t *testing.T) {
 				var c *Config
 				if c, err = ParseConfig(data); err == nil {
 					var k *VaultKeys
-					if k, err = Unlock(c, []byte(nv.Passphrase)); err == nil {
+					if k, err = Unlock(c, nv.Passphrase); err == nil {
 						k.Wipe()
 					}
 				}
 			case "object":
-				_, _, err = DecryptObject(bytes.NewReader(data), int64(len(data)), keys, &bytes.Buffer{})
+				var id FileID
+				if id, err = ParseObjectPath(nv.Path); err == nil {
+					_, err = DecryptObject(bytes.NewReader(data), int64(len(data)), id, keys, &bytes.Buffer{})
+				}
 			case "inbox":
-				_, _, err = IngestInbox(bytes.NewReader(data), int64(len(data)), keys, &bytes.Buffer{})
+				name, ok := strings.CutPrefix(nv.Path, InboxDir+"/")
+				if !ok {
+					t.Fatalf("bad inbox path %s", nv.Path)
+				}
+				var id FileID
+				if id, err = ParseInboxName(name); err == nil {
+					_, err = IngestInbox(bytes.NewReader(data), int64(len(data)), id, keys, &bytes.Buffer{})
+				}
 			default:
 				t.Fatalf("unknown kind %q", nv.Kind)
 			}
@@ -302,6 +332,7 @@ func TestVectorNegative(t *testing.T) {
 		"obj_tampered_version", "obj_ct_less_than_16", "obj_ct_residue_5", "obj_empty_final_after_full",
 		"meta_duplicate_key", "meta_invalid_utf8", "meta_wrong_key_order", "meta_extra_key",
 		"meta_escaped_slash", "meta_float_mtime", "meta_leading_zero", "meta_non_space_padding", "meta_nfd_name",
+		"meta_rev_zero", "path_renamed_object", "path_wrong_prefix", "path_uppercase_name",
 	} {
 		if !seen[name] {
 			t.Errorf("missing negative vector %s", name)

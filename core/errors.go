@@ -23,6 +23,9 @@ var (
 	ErrVaultAltered = errors.New("valv: vault.json has been altered")
 	// ErrWrongRecoveryKey: recovery key unlock failed and the cause can't be told apart.
 	ErrWrongRecoveryKey = errors.New("valv: wrong recovery key or altered vault.json")
+	// ErrPathMismatch: a file's path is not a valid name for it, or does not
+	// match the file_id in its header (SPEC 4.1).
+	ErrPathMismatch = errors.New("valv: file path does not match its file_id")
 	// ErrConflict: an object with the inbox file's id exists but is not its ingest result.
 	ErrConflict = errors.New("valv: conflicting object with the same file_id")
 )

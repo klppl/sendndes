@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/text/unicode/norm"
 )
 
 const testPassphrase = "correct horse battery staple"
@@ -132,6 +133,19 @@ func (g *generator) genVault() []byte {
 		RecoveryKey:        EncodeRecoveryKey(*vk),
 		VaultJSONHex:       data,
 	}
+	nfd := "Ra\u0308ksmo\u0308rga\u030as pa\u030a O\u0308land"
+	nfc := norm.NFC.String(nfd)
+	if nfd == nfc {
+		g.t.Fatal("NFD passphrase is already NFC")
+	}
+	p1, _ := normalizePassphrase(nfd)
+	p2, _ := normalizePassphrase(nfc)
+	k1, k2 := deriveKEK(p1, &c.Salt), deriveKEK(p2, &c.Salt)
+	if k1 != k2 {
+		g.t.Fatal("NFD and NFC passphrases give different KEKs")
+	}
+	pn := &g.out.Vault.PassphraseNormalization
+	pn.NFD, pn.NFC, pn.KEK = []byte(nfd), []byte(nfc), k1[:]
 	g.write("vault/vault.json", data)
 	return data
 }
@@ -159,6 +173,7 @@ func fillEncrypted(e *encryptedFile, file []byte, headerLen int, plain []byte, i
 	*e = encryptedFile{
 		Description:     e.Description,
 		File:            e.File,
+		Path:            e.Path,
 		FileSHA256:      sha(file),
 		FileHex:         smallHex(file),
 		PlaintextFile:   e.PlaintextFile,
@@ -219,6 +234,7 @@ func (g *generator) genObjects() {
 		v := objectVector{}
 		v.Description = s.desc
 		v.File = "objects/" + s.label + ".obj"
+		v.Path = ObjectPath(fixedID(s.label + "/file_id"))
 		v.PlaintextFile = "objects/" + s.label + ".plain"
 		headerLen := objectFixedHeader + len(metaPlain) + metaOverhead
 		fillEncrypted(&v.encryptedFile, file, headerLen, s.plain, fixedID(s.label+"/file_id"), fixed32(s.label+"/fk"),
@@ -257,6 +273,7 @@ func (g *generator) genInbox() {
 	v := inboxVector{}
 	v.Description = "Inbox file sealed to inbox_pub: one full chunk plus a 5-byte final chunk"
 	v.File = "inbox/inbox.inb"
+	v.Path = InboxDir + "/" + InboxName(id)
 	v.PlaintextFile = "inbox/inbox.plain"
 	headerLen := inboxFixedHeader + len(metaPlain) + metaOverhead
 	fillEncrypted(&v.encryptedFile, file, headerLen, plain, id, &fk, meta, "scan-0001.pdf in Inbox", metaPlain, metaNonce)
@@ -268,7 +285,7 @@ func (g *generator) genInbox() {
 
 	wrapNonce := fixed(label+"/ingest_wrap_nonce", NonceSize)
 	var obj bytes.Buffer
-	if _, _, err := ingestInbox(bytes.NewReader(file), int64(len(file)), g.keys, &obj, wrapNonce); err != nil {
+	if _, _, err := ingestInbox(bytes.NewReader(file), int64(len(file)), id, g.keys, &obj, wrapNonce); err != nil {
 		g.t.Fatal(err)
 	}
 	objBytes := obj.Bytes()
@@ -335,13 +352,25 @@ func (g *generator) genMetadata() {
 	bad("Dir has a trailing slash", m("x", "a/"))
 	bad("Dir has a .. component", m("x", "a/../b"))
 	bad("Dir has a . component", m("x", "./a"))
+	bad("rev 0", Metadata{Name: "x", MTime: mtimeNow, Rev: 0})
 	bad("Padded metadata larger than 65536 bytes", m(strings.Repeat("a", MaxMetaPadded), ""))
 }
 
 func (g *generator) negative(name, kind, desc, expect string, data []byte) *negativeVector {
 	file := "negative/" + name + map[string]string{"vault": ".json", "object": ".obj", "inbox": ".inb"}[kind]
 	g.write(file, data)
-	g.out.Negative = append(g.out.Negative, negativeVector{Name: name, Description: desc, Kind: kind, File: file, Expect: expect})
+	nv := negativeVector{Name: name, Description: desc, Kind: kind, File: file, Expect: expect}
+	if kind != "vault" {
+		// Default: the path the header's file_id asks for.
+		var id FileID
+		copy(id[:], data[6:22])
+		if kind == "object" {
+			nv.Path = ObjectPath(id)
+		} else {
+			nv.Path = InboxDir + "/" + InboxName(id)
+		}
+	}
+	g.out.Negative = append(g.out.Negative, nv)
 	return &g.out.Negative[len(g.out.Negative)-1]
 }
 
@@ -452,6 +481,25 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	meta("meta_nfd_name", "name in NFD (a + combining diaeresis)", sub("a.txt", "a\u0308.txt"), 0, ' ')
 	meta("meta_empty_name", "Empty name", sub(`"name":"a.txt"`, `"name":""`), 0, ' ')
 	meta("meta_dotdot_dir", "dir component ..", sub(`"dir":""`, `"dir":"a/../b"`), 0, ' ')
+	meta("meta_rev_zero", "rev 0", sub(`"rev":1`, `"rev":0`), 0, ' ')
+	meta("meta_rev_negative", "rev -1", sub(`"rev":1`, `"rev":-1`), 0, ' ')
+
+	// Paths (SPEC 4.1), using the valid tiny object.
+	tinyID := fixedID("tiny/file_id")
+	renamedID := fixedID("negative/renamed")
+	g.negative("path_renamed_object", "object", "Valid object stored under another file_id's name", "path", tiny).Path = ObjectPath(renamedID)
+	wrongPrefix := "ff"
+	if tinyID.String()[:2] == wrongPrefix {
+		wrongPrefix = "00"
+	}
+	g.negative("path_wrong_prefix", "object", "Valid object in the wrong prefix directory", "path", tiny).Path =
+		ObjectsDir + "/" + wrongPrefix + "/" + tinyID.String() + ObjectExt
+	upper := strings.ToUpper(tinyID.String())
+	if upper == tinyID.String() {
+		g.t.Fatal("tiny file_id has no letters")
+	}
+	g.negative("path_uppercase_name", "object", "Valid object whose name uses uppercase hex", "path", tiny).Path =
+		ObjectsDir + "/" + upper[:2] + "/" + upper + ObjectExt
 
 	// Inbox. 1 full chunk + 5-byte final chunk.
 	inb, err := os.ReadFile(filepath.Join(vectorDir, g.out.Inbox[0].File))
@@ -459,12 +507,16 @@ func (g *generator) genNegative(vaultJSON []byte) {
 		g.t.Fatal(err)
 	}
 	ih := len(g.out.Inbox[0].Header)
-	in := func(name, desc, expect string, data []byte) { g.negative(name, "inbox", desc, expect, data) }
+	in := func(name, desc, expect string, data []byte) *negativeVector {
+		return g.negative(name, "inbox", desc, expect, data)
+	}
 	in("inb_flipped_chunk_bit", "One bit flipped in chunk 0", "auth", flip(inb, ih+10))
 	in("inb_flipped_eph_pub", "One bit flipped in eph_pub: different FK, meta_blob fails", "auth", flip(inb, 30))
 	in("inb_zero_eph_pub", "eph_pub all zeros: X25519 result is all zero", "malformed", zeroRange(inb, 22, 54))
 	in("inb_tampered_kind", "Header kind byte set to 1 (object)", "malformed", setByte(inb, 5, 1))
 	in("inb_ct_residue_11", "Structural: last 10 bytes removed, final chunk is 11 bytes", "malformed", inb[:len(inb)-10])
+	in("path_renamed_inbox", "Valid inbox file stored under another file_id's name", "path", inb).Path =
+		InboxDir + "/" + InboxName(renamedID)
 }
 
 // emptyFinalAfterFull builds an object whose content is one full non-final
