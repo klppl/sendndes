@@ -134,9 +134,9 @@ func TestReviewM2TempFiles(t *testing.T) {
 	dst := filepath.Join(dir, "out")
 	os.Symlink(victim, dst+".part")
 	var seen string
-	err := writeAtomic(dst, writeOpts{check: func(tmp string) error {
-		seen = filepath.Base(tmp)
-		st, err := os.Lstat(tmp)
+	err := writeAtomic(dst, writeOpts{check: func(r *os.File) error {
+		seen = filepath.Base(r.Name())
+		st, err := os.Lstat(r.Name())
 		if err != nil || st.Mode().Perm() != 0o600 || !st.Mode().IsRegular() {
 			t.Errorf("temp file mode %v, %v", st.Mode(), err)
 		}
@@ -220,4 +220,16 @@ func TestReviewI4SinglePrefix(t *testing.T) {
 	if got := oneLine("valv: objects/x: valv: authentication failed: chunk 1"); got != "objects/x: authentication failed: chunk 1" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// writeAtomic (tests only) writes the path dst through writeAt, relative to a handle on
+// dst's directory part (resolved physically).
+func writeAtomic(dst string, opts writeOpts, fill func(io.Writer) error) error {
+	dir, name := splitPath(dst)
+	d, err := openDir(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return writeAt(d, name, opts, fill)
 }

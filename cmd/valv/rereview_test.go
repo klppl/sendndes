@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -162,7 +163,7 @@ func TestN4RecoverUnverifiable(t *testing.T) {
 	os.Remove(cfg)
 	in := v.recoveryKey + "\nrecovered passphrase\n"
 	r := fails(t, valv(t, in, "recover", "--passphrase-stdin", v.dir))
-	if !strings.Contains(r.stderr, "inbox files exist but none authenticate") || strings.Contains(r.stderr, "wrong") {
+	if !strings.Contains(r.stderr, "cannot be verified: 0 of 0 readable objects unwrap") {
 		t.Fatalf("stderr: %s", r.stderr)
 	}
 	notExist(t, cfg)
@@ -180,22 +181,25 @@ func TestN4RecoverUnverifiable(t *testing.T) {
 	os.Remove(cfg2)
 	in2 := v2.recoveryKey + "\nrecovered passphrase\n"
 	r = fails(t, valv(t, in2, "recover", "--passphrase-stdin", v2.dir))
-	if !strings.Contains(r.stderr, "objects exist but none can be read") || strings.Contains(r.stderr, "wrong") {
+	if !strings.Contains(r.stderr, "cannot be verified: 0 of 0 readable objects unwrap") {
 		t.Fatalf("stderr: %s", r.stderr)
 	}
 	notExist(t, cfg2)
 	ok(t, valv(t, in2, "recover", "--passphrase-stdin", "--unverified-key", v2.dir))
 
-	// Case 2 has no override: readable objects that do not unwrap.
+	// F2: readable objects that do not unwrap are "cannot be verified" too,
+	// never a hard refusal.
 	v3 := newVault(t)
 	v3.add("a.txt", []byte("data"))
 	os.Remove(filepath.Join(v3.dir, "vault.json"))
 	var wrong [core.KeySize]byte
 	rand.Read(wrong[:])
-	r = fails(t, valv(t, core.EncodeRecoveryKey(wrong)+"\nrecovered passphrase\n", "recover", "--passphrase-stdin", "--unverified-key", v3.dir))
-	if !strings.Contains(r.stderr, "wrong") {
+	in3 := core.EncodeRecoveryKey(wrong) + "\nrecovered passphrase\n"
+	r = fails(t, valv(t, in3, "recover", "--passphrase-stdin", v3.dir))
+	if !strings.Contains(r.stderr, "cannot be verified: 0 of 1 readable objects unwrap") {
 		t.Fatalf("stderr: %s", r.stderr)
 	}
+	ok(t, valv(t, in3, "recover", "--passphrase-stdin", "--unverified-key", v3.dir))
 }
 
 // N4/N7: interactively, cases 4 (with the override) and 5 need a retype.
@@ -232,7 +236,7 @@ func TestN5InitCleansUpCreatedDirs(t *testing.T) {
 	}
 
 	// Error: nested new directories are all removed.
-	initTestHook = func(string) error { return errors.New("injected failure") }
+	initTestHook = func() error { return errors.New("injected failure") }
 	nested := filepath.Join(tmp, "a", "b", "vault")
 	if initRun(nested) == 0 {
 		t.Fatal("init succeeded")
@@ -253,7 +257,7 @@ func TestN5InitCleansUpCreatedDirs(t *testing.T) {
 	exited := make(chan int, 1)
 	stop := installSignalCleanup(func(code int) { exited <- code })
 	defer stop()
-	initTestHook = func(string) error {
+	initTestHook = func() error {
 		syscall.Kill(os.Getpid(), syscall.SIGHUP)
 		<-exited
 		return errors.New("interrupted")
@@ -322,6 +326,9 @@ func TestN8OSJunk(t *testing.T) {
 	os.MkdirAll(filepath.Join(v.dir, "objects", ".fseventsd"), 0o700)
 	os.WriteFile(filepath.Join(v.dir, "objects", ".fseventsd", "not-scanned"), []byte("x"), 0o600)
 	r := ok(t, v.run("verify"))
+	if !strings.Contains(r.stdout, fmt.Sprintf("%d junk file(s) ignored", len(junk)+2)) { // F3
+		t.Fatalf("verify summary:\n%s", r.stdout)
+	}
 	if strings.Count(r.stdout, "OS junk") != len(junk)+2 {
 		t.Fatalf("verify notes:\n%s", r.stdout)
 	}
