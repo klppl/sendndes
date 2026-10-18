@@ -160,6 +160,7 @@ func Unlock(c *Config, passphrase string) (*VaultKeys, error) {
 		return nil, ErrWrongPassphrase
 	}
 	var vk [KeySize]byte
+	defer clear(vk[:])
 	copy(vk[:], vkb)
 	clear(vkb)
 	return keysCheckingInboxPub(c, vk)

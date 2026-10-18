@@ -126,18 +126,29 @@ func (h *objectHeader) unwrapFK(keys *VaultKeys) ([KeySize]byte, error) {
 	return fk, nil
 }
 
-// unwrapFKFromPrefix unwraps FK from the first 82 bytes of an object file.
-func unwrapFKFromPrefix(prefix []byte, keys *VaultKeys) ([KeySize]byte, error) {
-	if len(prefix) < 82 {
+// unwrapFK opens a sample like any reader: path check, meta_len and
+// structural check first, then the FK unwrap (SPEC 4.5).
+func (s *ObjectSample) unwrapFK(keys *VaultKeys) ([KeySize]byte, error) {
+	if len(s.Prefix) < objectFixedHeader {
 		return [KeySize]byte{}, fmt.Errorf("%w: object header too short", ErrMalformed)
 	}
 	h := &objectHeader{}
 	var err error
-	if h.fileID, err = checkPrefix(prefix, KindObject); err != nil {
+	if h.fileID, err = checkPrefix(s.Prefix, KindObject); err != nil {
 		return [KeySize]byte{}, err
 	}
-	copy(h.wrapNonce[:], prefix[22:34])
-	copy(h.wrappedFK[:], prefix[34:82])
+	if err := checkExpected(h.fileID, s.ID); err != nil {
+		return [KeySize]byte{}, err
+	}
+	metaLen := binary.BigEndian.Uint32(s.Prefix[82:86])
+	if !validMetaLen(metaLen) {
+		return [KeySize]byte{}, fmt.Errorf("%w: meta_len %d", ErrMalformed, metaLen)
+	}
+	if _, err := chunkCount(s.Size - objectFixedHeader - int64(metaLen)); err != nil {
+		return [KeySize]byte{}, err
+	}
+	copy(h.wrapNonce[:], s.Prefix[22:34])
+	copy(h.wrappedFK[:], s.Prefix[34:82])
 	return h.unwrapFK(keys)
 }
 
@@ -204,17 +215,58 @@ type ObjectInfo struct {
 	PlaintextSize int64
 }
 
+// ObjectReader is an object whose header has been checked and authenticated,
+// ready to stream its content. It reads from the reader it was opened on.
+type ObjectReader struct {
+	o    *openedObject
+	r    io.Reader
+	used bool
+}
+
+// OpenObject reads and authenticates an object's header from r, positioned at
+// the start of a file of length size; expected is the file_id from its path
+// (SPEC 4.1). Call Close when done.
+func OpenObject(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*ObjectReader, error) {
+	o, err := openObject(r, size, expected, keys)
+	if err != nil {
+		return nil, err
+	}
+	return &ObjectReader{o: o, r: r}, nil
+}
+
+// Info returns the object's id, metadata and plaintext size.
+func (or *ObjectReader) Info() ObjectInfo {
+	ps, _ := PlaintextSize(or.o.ctTotal)
+	return ObjectInfo{ID: or.o.hdr.fileID, Meta: or.o.meta, PlaintextSize: ps}
+}
+
+// DecryptTo streams the plaintext to w. The output is valid only if the
+// returned error is nil; otherwise the caller must discard everything written
+// to w. It can be called once.
+func (or *ObjectReader) DecryptTo(w io.Writer) error {
+	if or.used {
+		return errors.New("valv: ObjectReader.DecryptTo called twice")
+	}
+	or.used = true
+	return readChunks(or.r, or.o.ctTotal, &or.o.keys.content, or.o.hdr.fileID, func(_, plain []byte) error {
+		_, err := w.Write(plain)
+		return err
+	})
+}
+
+// Close wipes the object's keys.
+func (or *ObjectReader) Close() { or.o.wipe() }
+
 // ReadObjectInfo authenticates an object's header and returns its metadata
 // and plaintext size without reading the content. size is the full file
 // length and expected the file_id from its path (SPEC 4.1).
 func ReadObjectInfo(r io.Reader, size int64, expected FileID, keys *VaultKeys) (ObjectInfo, error) {
-	o, err := openObject(r, size, expected, keys)
+	or, err := OpenObject(r, size, expected, keys)
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	o.wipe()
-	ps, _ := PlaintextSize(o.ctTotal)
-	return ObjectInfo{ID: o.hdr.fileID, Meta: o.meta, PlaintextSize: ps}, nil
+	defer or.Close()
+	return or.Info(), nil
 }
 
 // DecryptObject decrypts an object file of length size from r and streams the
@@ -222,19 +274,21 @@ func ReadObjectInfo(r io.Reader, size int64, expected FileID, keys *VaultKeys) (
 // only if the returned error is nil; otherwise the caller must discard
 // everything written to w.
 func DecryptObject(r io.Reader, size int64, expected FileID, keys *VaultKeys, w io.Writer) (Metadata, error) {
-	o, err := openObject(r, size, expected, keys)
+	or, err := OpenObject(r, size, expected, keys)
 	if err != nil {
 		return Metadata{}, err
 	}
-	defer o.wipe()
-	err = readChunks(r, o.ctTotal, &o.keys.content, o.hdr.fileID, func(_, plain []byte) error {
-		_, err := w.Write(plain)
-		return err
-	})
-	if err != nil {
+	defer or.Close()
+	if err := or.DecryptTo(w); err != nil {
 		return Metadata{}, err
 	}
-	return o.meta, nil
+	return or.o.meta, nil
+}
+
+// VerifyObject authenticates an object's metadata and every chunk without
+// keeping any plaintext.
+func VerifyObject(r io.Reader, size int64, expected FileID, keys *VaultKeys) (Metadata, error) {
+	return DecryptObject(r, size, expected, keys, io.Discard)
 }
 
 // NewObject is an object about to be written: its random file_id, FK and
@@ -246,6 +300,7 @@ type NewObject struct {
 	metaNonce [NonceSize]byte
 	metaPlain []byte
 	meta      Metadata
+	used      bool
 }
 
 // PrepareObject checks and normalizes meta and draws a new file_id, FK and
@@ -268,8 +323,13 @@ func (o *NewObject) ID() FileID { return o.id }
 // Meta is the normalized metadata that will be written.
 func (o *NewObject) Meta() Metadata { return o.meta }
 
-// Encrypt writes the object file for content to w. Call it once.
+// Encrypt writes the object file for content to w. It can be called only
+// once: a second call would reuse the FK and nonces.
 func (o *NewObject) Encrypt(w io.Writer, keys *VaultKeys, content io.Reader) error {
+	if o.used {
+		return errors.New("valv: NewObject.Encrypt called twice")
+	}
+	o.used = true
 	return encryptObject(w, keys, o.metaPlain, content, o.id, &o.fk, o.wrapNonce[:], o.metaNonce[:])
 }
 

@@ -5,11 +5,12 @@
 //	valv init <vault-dir>
 //	valv add <file> [--dir <path>] [--name <name>]
 //	valv ls [--dir <path>]
-//	valv get <id-or-path> [-o <out>] [--force]
+//	valv get <id-or-path> [-o <out>] [--force] [--unverified-stream]
 //	valv ingest [--inbox <dir>]
 //	valv verify
 //	valv passwd
 //	valv recover <vault-dir> [--force]
+//	valv server-config
 //
 // Every command except init and recover finds the vault through --vault,
 // then $VALV_VAULT, then the current directory. Passphrases are read from the
@@ -31,15 +32,23 @@ commands:
   init <vault-dir>                       create a new vault
   add <file> [--dir <path>] [--name <n>] encrypt a file into the vault
   ls [--dir <path>]                      list files
-  get <id-or-path> [-o <out>] [--force]  decrypt a file (-o - writes to stdout)
+  get <id-or-path> [-o <out>] [--force]  decrypt a file
   ingest [--inbox <dir>]                 move sealed inbox files into the vault
   verify                                 authenticate every file in the vault
   passwd                                 change the passphrase
   recover <vault-dir> [--force]          rebuild vault.json from the recovery key
+  server-config                          print the inbox server's inbox_pub and K_auth
+
+get writes to a temp file and moves it into place only after the whole file
+has been authenticated. It never writes inside the vault directory.
+  -o -                  write to stdout; needs --unverified-stream, because
+                        plaintext is emitted before authentication finishes and
+                        a damaged file can produce a valid-looking prefix
 
 common flags:
-  --vault <dir>         vault directory (default $VALV_VAULT, then .)
-  --passphrase-stdin    read passphrases from stdin, one per line
+  --vault <dir>             vault directory (default $VALV_VAULT, then .)
+  --passphrase-stdin        read passphrases from stdin, one per line
+  --allow-weak-passphrase   accept a new passphrase under 12 characters (tests)
 `
 
 func main() {
@@ -51,61 +60,80 @@ type app struct {
 	stdin     io.Reader
 	stdout    io.Writer
 	stderr    io.Writer
+	term      terminal
 	vault     string
 	passStdin bool
+	allowWeak bool
 	lines     *lineReader
 }
 
+// writingCommands create temp files, so they remove them on SIGINT/SIGTERM.
+var writingCommands = map[string]bool{"init": true, "add": true, "get": true, "ingest": true, "passwd": true, "recover": true}
+
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	a := &app{stdin: stdin, stdout: stdout, stderr: stderr, term: osTerminal{in: stdin, prompt: stderr}}
+	if len(args) > 0 && writingCommands[args[0]] {
+		defer installSignalCleanup(os.Exit)()
+	}
+	return a.run(args)
+}
+
+func (a *app) run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprint(stderr, usage)
+		fmt.Fprint(a.stderr, usage)
 		return 1
 	}
-	a := &app{stdin: stdin, stdout: stdout, stderr: stderr}
 	commands := map[string]func([]string) error{
-		"init":    a.cmdInit,
-		"add":     a.cmdAdd,
-		"ls":      a.cmdLs,
-		"get":     a.cmdGet,
-		"ingest":  a.cmdIngest,
-		"verify":  a.cmdVerify,
-		"passwd":  a.cmdPasswd,
-		"recover": a.cmdRecover,
+		"init":          a.cmdInit,
+		"add":           a.cmdAdd,
+		"ls":            a.cmdLs,
+		"get":           a.cmdGet,
+		"ingest":        a.cmdIngest,
+		"verify":        a.cmdVerify,
+		"passwd":        a.cmdPasswd,
+		"recover":       a.cmdRecover,
+		"server-config": a.cmdServerConfig,
 	}
 	name := args[0]
 	if name == "help" || name == "-h" || name == "--help" {
-		fmt.Fprint(stdout, usage)
+		fmt.Fprint(a.stdout, usage)
 		return 0
 	}
 	cmd, ok := commands[name]
 	if !ok {
-		fmt.Fprintf(stderr, "valv: unknown command %q (see valv help)\n", name)
+		fmt.Fprintf(a.stderr, "valv: unknown command %q (see valv help)\n", name)
 		return 1
 	}
 	if err := cmd(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stdout, usage)
+			fmt.Fprint(a.stdout, usage)
 			return 0
 		}
-		fmt.Fprintf(stderr, "valv: %s\n", oneLine(err.Error()))
+		fmt.Fprintf(a.stderr, "valv: %s\n", oneLine(err.Error()))
 		return 1
 	}
 	return 0
 }
 
+// oneLine makes an error a single line with a single "valv: " prefix: core
+// errors carry their own.
 func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "valv: ", "")), " ")
 }
 
 // flags returns a flag set with the common flags. withVault is false for
-// commands that take the vault directory as an argument.
-func (a *app) flags(name string, withVault bool) *flag.FlagSet {
+// commands that take the vault directory as an argument; newPass adds
+// --allow-weak-passphrase.
+func (a *app) flags(name string, withVault, newPass bool) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	if withVault {
 		fs.StringVar(&a.vault, "vault", "", "vault directory")
 	}
 	fs.BoolVar(&a.passStdin, "passphrase-stdin", false, "read passphrases from stdin")
+	if newPass {
+		fs.BoolVar(&a.allowWeak, "allow-weak-passphrase", false, "accept a short new passphrase")
+	}
 	return fs
 }
 

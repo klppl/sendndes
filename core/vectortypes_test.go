@@ -31,12 +31,13 @@ func (h *hexBytes) UnmarshalJSON(b []byte) error {
 }
 
 type vectorFile struct {
-	Format   string           `json:"format"`
-	Vault    vaultVector      `json:"vault"`
-	Objects  []objectVector   `json:"objects"`
-	Inbox    []inboxVector    `json:"inbox"`
-	Metadata []metadataVector `json:"metadata"`
-	Negative []negativeVector `json:"negative"`
+	RecoveryKeys []recoveryVector `json:"recovery_keys"`
+	Format       string           `json:"format"`
+	Vault        vaultVector      `json:"vault"`
+	Objects      []objectVector   `json:"objects"`
+	Inbox        []inboxVector    `json:"inbox"`
+	Metadata     []metadataVector `json:"metadata"`
+	Negative     []negativeVector `json:"negative"`
 }
 
 type vaultVector struct {
@@ -53,10 +54,12 @@ type vaultVector struct {
 	ConfigAAD          hexBytes `json:"config_aad"`
 	WrappedVK          hexBytes `json:"wrapped_vk"`
 	KWrap              hexBytes `json:"k_wrap"`
+	KAuth              hexBytes `json:"k_auth"`
 	InboxPrivUnclamped hexBytes `json:"inbox_priv_unclamped"`
 	InboxPriv          hexBytes `json:"inbox_priv"`
 	InboxPub           hexBytes `json:"inbox_pub"`
 	RecoveryKey        string   `json:"recovery_key"`
+	RecoveryChecksum   hexBytes `json:"recovery_checksum"`
 	VaultJSONHex       hexBytes `json:"vault_json_hex"`
 	// The same passphrase in NFD and NFC must give the same KEK (with Salt).
 	PassphraseNormalization struct {
@@ -137,9 +140,11 @@ type encryptedFile struct {
 
 type objectVector struct {
 	encryptedFile
-	WrapNonce hexBytes `json:"wrap_nonce"`
-	WrapAAD   hexBytes `json:"wrap_aad"`
-	WrappedFK hexBytes `json:"wrapped_fk"`
+	// WarnNonNFC: the stored name or dir is not NFC. Readers accept it; tools warn.
+	WarnNonNFC bool     `json:"warn_non_nfc,omitempty"`
+	WrapNonce  hexBytes `json:"wrap_nonce"`
+	WrapAAD    hexBytes `json:"wrap_aad"`
+	WrappedFK  hexBytes `json:"wrapped_fk"`
 }
 
 type inboxVector struct {
@@ -148,6 +153,8 @@ type inboxVector struct {
 	EphPriv  hexBytes `json:"eph_priv"`
 	EphPub   hexBytes `json:"eph_pub"`
 	DH       hexBytes `json:"dh"`
+	KAuth    hexBytes `json:"k_auth"`
+	HKDFIKM  hexBytes `json:"hkdf_ikm"` // DH | K_auth
 	HKDFSalt hexBytes `json:"hkdf_salt"`
 	Ingest   struct {
 		File       string   `json:"file"`
@@ -157,6 +164,15 @@ type inboxVector struct {
 		WrappedFK  hexBytes `json:"wrapped_fk"`
 		Header     hexBytes `json:"header"`
 	} `json:"ingest"`
+}
+
+// recoveryVector is a recovery key input: VK if it must decode, otherwise
+// the expected error class.
+type recoveryVector struct {
+	Description string   `json:"description"`
+	Input       string   `json:"input"`
+	VK          hexBytes `json:"vk,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 type metadataVector struct {
@@ -188,6 +204,7 @@ var errorClasses = map[string]error{
 	"wrong_passphrase":   ErrWrongPassphrase,
 	"inbox_key_mismatch": ErrInboxKeyMismatch,
 	"path":               ErrPathMismatch,
+	"recovery_typo":      ErrRecoveryKeyTypo,
 }
 
 func errorClass(err error) string {

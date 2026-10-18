@@ -26,6 +26,8 @@ var (
 	// ErrPathMismatch: a file's path is not a valid name for it, or does not
 	// match the file_id in its header (SPEC 4.1).
 	ErrPathMismatch = errors.New("valv: file path does not match its file_id")
+	// ErrRecoveryKeyTypo: the recovery key's checksum does not match.
+	ErrRecoveryKeyTypo = errors.New("valv: recovery key has a typo (checksum does not match)")
 	// ErrConflict: an object with the inbox file's id exists but is not its ingest result.
 	ErrConflict = errors.New("valv: conflicting object with the same file_id")
 )

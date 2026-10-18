@@ -67,6 +67,8 @@ func TestVectorVault(t *testing.T) {
 		{"config_aad", configAAD(&c.Salt, &c.InboxPub), vv.ConfigAAD},
 		{"wrapped_vk", c.WrappedVK[:], vv.WrappedVK},
 		{"k_wrap", keys.Wrap[:], vv.KWrap},
+		{"k_auth", keys.InboxAuth[:], vv.KAuth},
+		{"recovery_checksum", recoveryChecksum(&keys.VK), vv.RecoveryChecksum},
 		{"inbox_priv_unclamped", unclamped[:], vv.InboxPrivUnclamped},
 		{"inbox_priv", keys.InboxPriv[:], vv.InboxPriv},
 		{"inbox_pub", keys.InboxPub[:], vv.InboxPub},
@@ -165,6 +167,9 @@ func TestVectorObjects(t *testing.T) {
 			if meta != wantMeta {
 				t.Fatalf("metadata %+v, want %+v", meta, wantMeta)
 			}
+			if meta.IsNFC() == o.WarnNonNFC {
+				t.Fatalf("IsNFC = %v but warn_non_nfc = %v", meta.IsNFC(), o.WarnNonNFC)
+			}
 			if !bytes.Equal(wrapAAD(id), o.WrapAAD) || !bytes.Equal(file[34:82], o.WrappedFK) {
 				t.Fatal("wrap_aad or wrapped_fk")
 			}
@@ -206,13 +211,16 @@ func TestVectorInbox(t *testing.T) {
 			if !bytes.Equal(dh, iv.DH) || !bytes.Equal(iv.HKDFSalt, append(append([]byte{}, iv.EphPub...), iv.InboxPub...)) {
 				t.Fatal("dh or hkdf_salt")
 			}
+			if !bytes.Equal(iv.KAuth, keys.InboxAuth[:]) || !bytes.Equal(iv.HKDFIKM, append(append([]byte{}, dh...), iv.KAuth...)) {
+				t.Fatal("k_auth or hkdf_ikm")
+			}
 
 			// Server side: re-seal with the same values.
 			var ephPriv, inboxPub [KeySize]byte
 			copy(ephPriv[:], iv.EphPriv)
 			copy(inboxPub[:], iv.InboxPub)
 			var re bytes.Buffer
-			if err := sealInbox(&re, &inboxPub, iv.MetaPlaintext, bytes.NewReader(plain), id, &ephPriv, iv.MetaNonce); err != nil {
+			if err := sealInbox(&re, &inboxPub, iv.KAuth, iv.MetaPlaintext, bytes.NewReader(plain), id, &ephPriv, iv.MetaNonce); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(re.Bytes(), file) {
@@ -331,7 +339,8 @@ func TestVectorNegative(t *testing.T) {
 		"obj_dropped_middle_chunk", "obj_swapped_chunks", "vault_wrong_passphrase", "obj_wrong_file_id",
 		"obj_tampered_version", "obj_ct_less_than_16", "obj_ct_residue_5", "obj_empty_final_after_full",
 		"meta_duplicate_key", "meta_invalid_utf8", "meta_wrong_key_order", "meta_extra_key",
-		"meta_escaped_slash", "meta_float_mtime", "meta_leading_zero", "meta_non_space_padding", "meta_nfd_name",
+		"meta_escaped_slash", "meta_float_mtime", "meta_leading_zero", "meta_non_space_padding",
+		"inb_no_k_auth", "inb_wrong_k_auth",
 		"meta_rev_zero", "path_renamed_object", "path_wrong_prefix", "path_uppercase_name",
 	} {
 		if !seen[name] {
@@ -348,4 +357,28 @@ func TestVectorMTimeAbove2To53(t *testing.T) {
 		}
 	}
 	t.Fatal("no object vector has an mtime above 2^53")
+}
+
+func TestVectorRecoveryKeys(t *testing.T) {
+	v := loadVectors(t)
+	if len(v.RecoveryKeys) == 0 {
+		t.Fatal("no recovery key vectors")
+	}
+	for _, rv := range v.RecoveryKeys {
+		t.Run(rv.Description, func(t *testing.T) {
+			vk, err := DecodeRecoveryKey(rv.Input)
+			if rv.Error != "" {
+				if got := errorClass(err); got != rv.Error {
+					t.Fatalf("got %s (%v), want %s", got, err, rv.Error)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(vk[:], rv.VK) {
+				t.Fatalf("decode: %v", err)
+			}
+		})
+	}
+	if rk := v.Vault.RecoveryKey; len(rk) != 56+13 || strings.Count(rk, "-") != 13 {
+		t.Fatalf("recovery key format: %s", rk)
+	}
 }

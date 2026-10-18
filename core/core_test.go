@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -75,7 +76,7 @@ func TestInboxRoundTrip(t *testing.T) {
 		meta := testMeta
 		meta.Rev = 7 // SealInbox must force rev 1
 		var inb bytes.Buffer
-		id, err := SealInbox(&inb, keys.InboxPub, meta, bytes.NewReader(plain))
+		id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, meta, bytes.NewReader(plain))
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
@@ -159,7 +160,7 @@ func TestRecoveryKeyFormat(t *testing.T) {
 	var vk [KeySize]byte
 	randomBytes(vk[:])
 	rk := EncodeRecoveryKey(vk)
-	if len(rk) != 52+12 || strings.Count(rk, "-") != 12 || strings.ToUpper(rk) != rk {
+	if len(rk) != 56+13 || strings.Count(rk, "-") != 13 || strings.ToUpper(rk) != rk {
 		t.Fatalf("format: %s", rk)
 	}
 	for _, in := range []string{rk, strings.ToLower(rk), strings.ReplaceAll(rk, "-", ""), strings.ReplaceAll(rk, "-", " ")} {
@@ -168,26 +169,60 @@ func TestRecoveryKeyFormat(t *testing.T) {
 		}
 	}
 	flat := strings.ReplaceAll(rk, "-", "")
-	// The last character carries 1 data bit and 4 unused bits, so only A or Q
-	// is canonical there. A+1 or Q+1 sets an unused bit.
-	nonCanonical := flat[:51] + string(flat[51]+1)
-	for _, in := range []string{flat[:51], flat + "A", flat[:51] + "1", nonCanonical} {
-		if _, err := DecodeRecoveryKey(in); err == nil {
-			t.Errorf("accepted %q", in)
+	// Every single-character change is caught by the checksum or the alphabet.
+	for i := 0; i < len(flat); i++ {
+		for _, c := range "A7Q2" {
+			if byte(c) == flat[i] {
+				continue
+			}
+			in := flat[:i] + string(c) + flat[i+1:]
+			if _, err := DecodeRecoveryKey(in); !errors.Is(err, ErrRecoveryKeyTypo) {
+				t.Fatalf("change at %d: got %v", i, err)
+			}
 		}
 	}
+	for _, in := range []string{flat[:52], flat + "A", flat[:55] + "1", "\u0131" + flat[1:]} {
+		if _, err := DecodeRecoveryKey(in); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%q: got %v", in, err)
+		}
+	}
+}
+
+// TestRecoveryKeyASCIIUppercaseOnly is the regression test for review I1:
+// strings.ToUpper turned the dotless i into I.
+func TestRecoveryKeyASCIIUppercaseOnly(t *testing.T) {
+	for {
+		var vk [KeySize]byte
+		randomBytes(vk[:])
+		flat := strings.ReplaceAll(EncodeRecoveryKey(vk), "-", "")
+		i := strings.IndexAny(flat, "IS")
+		if i < 0 {
+			continue
+		}
+		repl := map[byte]string{'I': "\u0131", 'S': "\u017f"}[flat[i]]
+		if _, err := DecodeRecoveryKey(flat[:i] + repl + flat[i+1:]); err == nil {
+			t.Fatalf("accepted a non-ASCII look-alike of %c", flat[i])
+		}
+		return
+	}
+}
+
+func sampleOf(t *testing.T, file []byte, id FileID) ObjectSample {
+	t.Helper()
+	return ObjectSample{Prefix: file[:min(len(file), 86)], Size: int64(len(file)), ID: id}
 }
 
 func TestRecoveryUnlockDiagnosis(t *testing.T) {
 	v := loadVectors(t)
 	data := readVectorFile(t, v.Vault.File)
 	c, _ := ParseConfig(data)
-	sample := readVectorFile(t, v.Objects[0].File)[:82]
+	id, _ := ParseObjectPath(v.Objects[0].Path)
+	samples := []ObjectSample{sampleOf(t, readVectorFile(t, v.Objects[0].File), id)}
 
 	// Right key, vault.json with another inbox_pub.
 	altered := *c
 	altered.InboxPub[0] ^= 1
-	if _, err := UnlockWithRecoveryKey(&altered, v.Vault.RecoveryKey, sample); !errors.Is(err, ErrVaultAltered) {
+	if _, err := UnlockWithRecoveryKey(&altered, v.Vault.RecoveryKey, samples); !errors.Is(err, ErrVaultAltered) {
 		t.Fatalf("altered vault.json: %v", err)
 	}
 	if _, err := UnlockWithRecoveryKey(&altered, v.Vault.RecoveryKey, nil); !errors.Is(err, ErrWrongRecoveryKey) {
@@ -195,10 +230,10 @@ func TestRecoveryUnlockDiagnosis(t *testing.T) {
 	}
 	var other [KeySize]byte
 	randomBytes(other[:])
-	if _, err := UnlockWithRecoveryKey(c, EncodeRecoveryKey(other), sample); !errors.Is(err, ErrWrongRecoveryKey) {
+	if _, err := UnlockWithRecoveryKey(c, EncodeRecoveryKey(other), samples); !errors.Is(err, ErrWrongRecoveryKey) {
 		t.Fatalf("wrong key: %v", err)
 	}
-	if _, err := UnlockWithRecoveryKey(c, v.Vault.RecoveryKey, sample); err != nil {
+	if _, err := UnlockWithRecoveryKey(c, v.Vault.RecoveryKey, samples); err != nil {
 		t.Fatalf("right key: %v", err)
 	}
 }
@@ -207,7 +242,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	keys := testKeys(t)
 	plain := randomContent(ChunkSize + 100)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(plain))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(plain))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +308,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 func TestIngestWritesNothingAfterBadChunk(t *testing.T) {
 	keys := testKeys(t)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, testMeta, bytes.NewReader(randomContent(2*ChunkSize+10)))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(2*ChunkSize+10)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,24 +420,25 @@ func TestPassphraseNormalization(t *testing.T) {
 }
 
 func TestRecoverVault(t *testing.T) {
-	data, keys, rk, err := CreateVault("old")
+	_, keys, rk, err := CreateVault("old")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = data
 	var obj bytes.Buffer
-	if _, err := EncryptObject(&obj, keys, testMeta, strings.NewReader("x")); err != nil {
+	id, err := EncryptObject(&obj, keys, testMeta, strings.NewReader("x"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	var otherKeys = testKeys(t)
+	otherKeys := testKeys(t)
 	var foreign bytes.Buffer
-	if _, err := EncryptObject(&foreign, otherKeys, testMeta, strings.NewReader("y")); err != nil {
+	foreignID, err := EncryptObject(&foreign, otherKeys, testMeta, strings.NewReader("y"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := obj.Bytes()[:82]
+	ours := sampleOf(t, obj.Bytes(), id)
 
 	// Right key: a foreign object first, then one of ours.
-	newData, checked, err := RecoverVault(rk, "new", [][]byte{foreign.Bytes()[:82], prefix})
+	newData, checked, err := RecoverVault(rk, "new", []ObjectSample{sampleOf(t, foreign.Bytes(), foreignID), ours})
 	if err != nil || !checked {
 		t.Fatalf("recover: %v (checked %v)", err, checked)
 	}
@@ -415,13 +451,145 @@ func TestRecoverVault(t *testing.T) {
 	// Wrong key: unwraps none, nothing to write.
 	var vk [KeySize]byte
 	randomBytes(vk[:])
-	out, checked, err := RecoverVault(EncodeRecoveryKey(vk), "new", [][]byte{prefix})
+	out, checked, err := RecoverVault(EncodeRecoveryKey(vk), "new", []ObjectSample{ours})
 	if !errors.Is(err, ErrWrongRecoveryKey) || out != nil || !checked {
 		t.Fatalf("wrong key: %v", err)
 	}
 
-	// No objects: cannot check, still writes.
+	// No objects: only the checksum vouches for the key, still writes.
 	if out, checked, err := RecoverVault(rk, "new", nil); err != nil || checked || out == nil {
 		t.Fatalf("no objects: %v", err)
+	}
+	// Review H4: a key with a typo is refused even on an empty vault.
+	flat := strings.ReplaceAll(rk, "-", "")
+	typo := flat[:5] + map[bool]string{true: "B", false: "A"}[flat[5] == 'A'] + flat[6:]
+	if out, _, err := RecoverVault(typo, "new", nil); !errors.Is(err, ErrRecoveryKeyTypo) || out != nil {
+		t.Fatalf("typo on an empty vault: %v", err)
+	}
+}
+
+// TestRecoverySampleOpensLikeAReader is the regression test for review L1:
+// the key check must bind to the expected file_id and run the structural check.
+func TestRecoverySampleOpensLikeAReader(t *testing.T) {
+	keys := testKeys(t)
+	var obj bytes.Buffer
+	id, _ := EncryptObject(&obj, keys, testMeta, strings.NewReader("hello"))
+	good := sampleOf(t, obj.Bytes(), id)
+	if fk, err := good.unwrapFK(keys); err != nil {
+		t.Fatal(err)
+	} else {
+		clear(fk[:])
+	}
+	var other FileID
+	randomBytes(other[:])
+	wrongID := good
+	wrongID.ID = other
+	if _, err := wrongID.unwrapFK(keys); !errors.Is(err, ErrPathMismatch) {
+		t.Fatalf("wrong expected id: %v", err)
+	}
+	truncated := good
+	truncated.Size = int64(objectFixedHeader + metaBlock + metaOverhead + 5)
+	if _, err := truncated.unwrapFK(keys); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("structural check: %v", err)
+	}
+	short := good
+	short.Prefix = short.Prefix[:82]
+	if _, err := short.unwrapFK(keys); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("short prefix: %v", err)
+	}
+}
+
+// TestNewObjectEncryptOnce is the regression test for review M7: a second
+// Encrypt would reuse the FK and nonces (ct1 XOR ct2 == pt1 XOR pt2).
+func TestNewObjectEncryptOnce(t *testing.T) {
+	keys := testKeys(t)
+	o, err := PrepareObject(testMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer o.Wipe()
+	var a, b bytes.Buffer
+	if err := o.Encrypt(&a, keys, strings.NewReader("first")); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Encrypt(&b, keys, strings.NewReader("other")); err == nil || b.Len() != 0 {
+		t.Fatalf("second Encrypt: err %v, wrote %d bytes", err, b.Len())
+	}
+	// The same holds for streaming an opened object twice.
+	data := a.Bytes()
+	or, err := OpenObject(bytes.NewReader(data), int64(len(data)), o.ID(), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer or.Close()
+	if err := or.DecryptTo(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := or.DecryptTo(io.Discard); err == nil {
+		t.Fatal("second DecryptTo succeeded")
+	}
+}
+
+// TestAlreadyIngestedNeedsIntactMetadata is the reviewer's H1 PoC: ingest,
+// restore the inbox file, flip one bit in the object's meta_blob. The
+// idempotency check must report a conflict, not "already ingested".
+func TestAlreadyIngestedNeedsIntactMetadata(t *testing.T) {
+	keys := testKeys(t)
+	var inb bytes.Buffer
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(1000)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj bytes.Buffer
+	if _, err := IngestInbox(bytes.NewReader(inb.Bytes()), int64(inb.Len()), id, keys, &obj); err != nil {
+		t.Fatal(err)
+	}
+	damaged := bytes.Clone(obj.Bytes())
+	damaged[objectFixedHeader+NonceSize+3] ^= 1 // inside meta_blob ciphertext
+	err = CheckAlreadyIngested(bytes.NewReader(inb.Bytes()), int64(inb.Len()), bytes.NewReader(damaged), int64(len(damaged)), id, keys)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("damaged meta_blob: got %v, want a conflict", err)
+	}
+}
+
+// TestInboxNeedsKAuth is the reviewer's H2 PoC: someone holding only
+// inbox_pub seals a file with a name of their choice. Ingest must reject it.
+func TestInboxNeedsKAuth(t *testing.T) {
+	keys := testKeys(t)
+	plain, _, _ := EncodeMetadata(Metadata{Name: "vault.json", MTime: 1, Rev: 1})
+	for name, kAuth := range map[string][]byte{"without K_auth": nil, "wrong K_auth": randomContent(KeySize)} {
+		var forged bytes.Buffer
+		var eph [KeySize]byte
+		randomBytes(eph[:])
+		id := newFileID()
+		nonce := randomContent(NonceSize)
+		if err := sealInbox(&forged, &keys.InboxPub, kAuth, plain, strings.NewReader("hi"), id, &eph, nonce); err != nil {
+			t.Fatal(err)
+		}
+		data := forged.Bytes()
+		if _, err := IngestInbox(bytes.NewReader(data), int64(len(data)), id, keys, io.Discard); !errors.Is(err, ErrAuth) {
+			t.Errorf("%s: got %v, want an authentication failure", name, err)
+		}
+		if _, err := VerifyInbox(bytes.NewReader(data), int64(len(data)), id, keys); !errors.Is(err, ErrAuth) {
+			t.Errorf("%s: VerifyInbox: %v", name, err)
+		}
+	}
+}
+
+// TestReadersAcceptNonNFC covers review S2: readers no longer reject NFD.
+func TestReadersAcceptNonNFC(t *testing.T) {
+	m := Metadata{Name: "Ra\u0308ksmo\u0308rga\u030as.txt", Dir: "Ko\u0308k", MTime: 1, Rev: 1}
+	padded, err := padMetadata(canonicalMetadataJSON(&m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeMetadata(padded)
+	if err != nil || got != m || got.IsNFC() {
+		t.Fatalf("decode NFD: %+v, %v", got, err)
+	}
+	// Writers still normalize.
+	_, norm, err := EncodeMetadata(m)
+	if err != nil || !norm.IsNFC() {
+		t.Fatalf("writer did not normalize: %v", err)
 	}
 }

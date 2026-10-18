@@ -31,7 +31,7 @@ Non-goals
 
 - Go: golang.org/x/crypto (argon2, chacha20poly1305, hkdf, curve25519).
 - Swift: CryptoKit (ChaChaPoly, HKDF, Curve25519.KeyAgreement). CryptoKit has no Argon2, so use a vetted package (e.g. a libsodium wrapper; libsodium's Argon2id supports p=1, which is all v1 needs). Do not hand-roll Argon2.
-- No other algorithms. No algorithm fields that let a file choose its cipher.
+- No other algorithms. No algorithm fields that let a file choose its cipher. The one direct use of SHA-256 outside HKDF is the recovery-key checksum (section 3).
 - Non-crypto dependency: Unicode NFC normalization (section 5.2). Go: golang.org/x/text/unicode/norm. Swift: `String.precomposedStringWithCanonicalMapping`.
 
 ## 3. Keys
@@ -39,13 +39,16 @@ Non-goals
 - **VK**: 32 random bytes, the vault master key. Generated once at `init`.
 - **KEK** = Argon2id(passphrase, salt, t=3, m=65536 KiB, p=1) -> 32 bytes. Its only job is to wrap VK (section 4.2).
 - **Passphrase encoding.** Reject a passphrase that is not valid UTF-8, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest.
+- **Passphrase length.** Tools refuse to set a passphrase (`init`, `passwd`, `recover`) shorter than 12 Unicode code points, counted after NFC, unless the user passes an explicit override (`--allow-weak-passphrase`, meant for tests). Unlocking accepts any passphrase.
 - **HKDF salt.** Every HKDF derivation from VK or FK uses an empty salt. Per RFC 5869 an empty salt is the same as 32 zero bytes; both implementations must match the test vectors on this. The only HKDF call with a non-empty salt is the inbox FK derivation (section 6.2). Every derivation outputs L=32 bytes.
 - **Subkeys from VK**: `HKDF-SHA256(ikm=VK, salt=empty, info=LABEL, L=32)`
   - `"valv/v1/wrap"` -> K_wrap (wraps per-file keys)
   - `"valv/v1/inbox-x25519"` -> inbox X25519 private key. Clamp per RFC 7748 (`b[0] &= 248; b[31] &= 127; b[31] |= 64`) and use the clamped bytes as the private key.
-- **inbox_pub** = X25519(inbox private key, base point 9). It is stored in vault.json and bound into the AAD of `wrapped_vk` (section 4.2). The inbox server holds the public key only, and gets it from its own configuration (supplied by the user), never by reading vault.json.
+  - `"valv/v1/inbox-auth"` -> K_auth, the upload-authentication secret (section 6.2). This label defines inbox epoch 0. A future version may add an epoch field to vault.json (bound in `config_aad`) and a rotate command; epoch-0 inbox files keep deriving their keys exactly as here.
+- **inbox_pub** = X25519(inbox private key, base point 9). It is stored in vault.json and bound into the AAD of `wrapped_vk` (section 4.2).
+- **Inbox server configuration**: the server holds `inbox_pub` and K_auth, both supplied by the user (the CLI's `server-config` prints them after unlocking). It never reads vault.json and never holds VK or the inbox private key. K_auth is a secret; `inbox_pub` is not.
 - **FK**: per-file random 32-byte key. Subkeys: `HKDF(ikm=FK, salt=empty, info="valv/v1/content")` -> K_content, `HKDF(ikm=FK, salt=empty, info="valv/v1/meta")` -> K_meta.
-- **Recovery key**: VK encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: 52 characters, written as 13 groups of 4 separated by `-`. Shown once at init, to be stored offline. On input, case, spaces and hyphens are ignored; what remains must be exactly 52 base32 characters that decode to 32 bytes and re-encode to the same 52 characters (the 4 unused trailing bits are zero). There is no separate checksum; section 4.3 says how it is verified. If the passphrase is lost and there is no recovery key, the data is gone.
+- **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("valv/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". If the passphrase is lost and there is no recovery key, the data is gone.
 - Changing the passphrase only re-wraps VK (section 4.4).
 
 ## 4. Vault layout
@@ -67,7 +70,7 @@ vault/
 
   Every function that opens an object or inbox file takes the expected file_id as a parameter, so this check cannot be skipped.
 - No directory objects. Folder structure lives in each file's encrypted metadata (`dir`).
-- Writers upload under a temporary name (`<name>.part`) and then rename (see section 8). Readers ignore `*.part`.
+- Temporary files follow section 8. Readers ignore `*.part`.
 - Local-only scratch/cache (never in the synced vault): temp files, a SQLite listing cache. The cache is derived data and is rebuildable by scanning object headers.
 
 ### 4.2 vault.json (plaintext, public)
@@ -87,6 +90,7 @@ Writers produce exactly these bytes: LF line endings, two-space indent, the `kdf
 - `kdf` must be exactly `alg` = `"argon2id"`, `t` = 3, `m_kib` = 65536, `p` = 1, and `salt` must decode to exactly 16 bytes. Anything else is rejected before the KDF runs. Changing the parameters requires a new format version.
 - `wrapped_vk` decodes to exactly 60 bytes, `inbox_pub` to exactly 32.
 - Base64 is RFC 4648 standard alphabet with padding, canonical (unused trailing bits zero).
+- Readers refuse a vault.json larger than 4096 bytes before parsing it.
 - Readers parse the file, check the rules above, re-serialize the parsed values in the writer format, and reject the file unless the result is byte-identical. Unknown keys are therefore rejected.
 
 `wrapped_vk` = ChaCha20-Poly1305 under KEK with a random nonce, plaintext VK, AAD = `config_aad`:
@@ -111,7 +115,10 @@ Passphrase unlock:
 2. Compute KEK and open `wrapped_vk` with `config_aad`. On failure report "wrong passphrase or altered vault.json".
 3. Derive the inbox key pair from VK and compare the derived public key with `inbox_pub` in constant time. On mismatch, refuse to continue.
 
-`init` generates VK, salt and nonce, writes vault.json, then runs passphrase unlock on what it wrote. If that fails, `init` fails.
+`init`:
+1. Generate VK, salt and nonce, and build vault.json in memory.
+2. Show the recovery key and check that writing it out succeeded. Interactively, the user must retype it, and it must decode to the same VK. Non-interactively (`--passphrase-stdin`) there is no retype, but a failed write of the key is still an error.
+3. Only then write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, `init` fails and leaves no vault.json.
 
 Recovery-key unlock (no `wrapped_vk` involved):
 1. Parse and check vault.json (section 4.2).
@@ -123,15 +130,19 @@ Failing is the default. Rebuilding vault.json from the recovery key is a separat
 
 ### 4.4 Changing the passphrase
 
-Every passphrase change generates a fresh random 16-byte salt and a fresh random wrap nonce. The KDF parameters stay as section 4.2 requires. `config_aad` is recomputed (it includes the new salt). VK and all objects are unchanged. vault.json is replaced via temp + rename.
+Every passphrase change generates a fresh random 16-byte salt and a fresh random wrap nonce. The KDF parameters stay as section 4.2 requires. `config_aad` is recomputed (it includes the new salt). VK and all objects are unchanged.
+
+Replacing vault.json (here and in section 4.5): write the new file to a temp file (section 8), read it back and unlock it with the new passphrase, then rename it over vault.json. No backup copy is kept: old wrapped keys would linger on the host. On storage whose rename is not atomic, a crash can leave vault.json missing; the recovery key and section 4.5 are the fallback.
+
+Changing the passphrase does not rotate VK. It does not help if the old passphrase and an old copy of vault.json are both compromised. VK rotation is out of scope for v1.
 
 ### 4.5 Rebuilding vault.json from the recovery key
 
 Objects need only VK, so the recovery key must work even when vault.json is missing, damaged or altered (the CLI's `recover`).
 
-1. Decode the recovery key (section 3) and take a new passphrase.
-2. If the vault has at least one object, the recovered VK must unwrap the `wrapped_fk` of at least one existing object with K_wrap. If none unwraps, refuse and write nothing. With no objects this check cannot be made.
-3. Write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK. Write via temp + rename, then run passphrase unlock (section 4.3) on what was written.
+1. Decode the recovery key, including its checksum (section 3), and take a new passphrase.
+2. If the vault has at least one object, the recovered VK must unwrap the `wrapped_fk` of at least one existing object with K_wrap. Each try opens the object like any reader: the path check (section 4.1) and the structural check (section 5.3) come first. If none unwraps, refuse and write nothing. With no objects only the checksum vouches for the key; warn the user.
+3. Write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK, replaced as in section 4.4.
 
 ## 5. Object file (kind 0x01)
 
@@ -190,7 +201,7 @@ Readers accept only the canonical form:
 2. Remove trailing spaces. Fewer than 512 may have been removed (padding is minimal), and the padded length must be a multiple of 512.
 3. Reject invalid UTF-8.
 4. Parse with a small hand-written strict parser for exactly this schema. Reject duplicate keys, unknown keys, missing keys, wrong key order, any escape the writer does not emit, any whitespace outside the trailing padding, floats, leading zeros, and int64 overflow. `mtime` and `rev` are parsed as int64, never as float.
-5. Check the field rules above, including that `name` and `dir` are already NFC. Readers do not re-normalize.
+5. Check the field rules above. Readers do not check or apply NFC: any valid UTF-8 is accepted, so a name written on another Unicode version stays readable. Tools may warn about a non-NFC `name` or `dir` (`verify` does), but must not reject it.
 6. Re-serialize the parsed values; the result must equal the stripped plaintext byte for byte.
 
 Adding a field requires a format version bump.
@@ -211,13 +222,23 @@ Adding a field requires a format version bump.
 - Plaintext size = `ct_total - 16 * ceil(ct_total / 65552)`, for a `ct_total` that passed the structural check.
 - When a file's content changes, generate a new FK. Never reuse an FK for different content.
 - Streaming encryption needs a one-chunk lookahead, because the writer must know whether a chunk is the last one before encrypting it. Never buffer a whole file in memory.
-- Streaming decryption hands out plaintext before later chunks are checked. The output is valid only if the whole file authenticates; write it to a temp file and discard it on failure.
+- Streaming decryption hands out plaintext before later chunks are checked. The output is valid only if the whole file authenticates; write it to a temp file and discard it on failure (section 5.4).
+
+### 5.4 Adding and extracting files
+
+Adding (`add`): after the source file has been read, check the open file again; if its size or modification time changed since reading started, fail and write nothing. This narrows, but cannot fully close, the window in which a concurrent writer can produce an object that mixes old and new content.
+
+Extracting (`get`):
+- Output never goes inside the vault directory. Resolve the output's directory (following symlinks) and refuse if it is the vault directory or below it.
+- Without an explicit output path, the output goes to the current directory under the stored `name`, but only if the name contains no control character (U+0000 to U+001F, U+007F), no backslash, no bidi control (U+202A to U+202E, U+2066 to U+2069), has no leading or trailing space, is at most 200 bytes, and is not `vault.json`. Otherwise refuse and ask for an explicit output path. An explicit output path works for any name.
+- Plaintext is written to a temp file (section 8) and renamed into place only after the whole object authenticates. An existing output is replaced only on request.
+- Streaming to stdout emits plaintext before authentication finishes, so a truncated or damaged object can produce a valid-looking prefix. It is refused unless explicitly requested (`--unverified-stream`), and the exit status is then the only signal of failure.
 
 ## 6. Inbox file (kind 0x02), sealed to the vault
 
 ### 6.1 Format
 
-Written by the server, which only knows `inbox_pub`.
+Written by the inbox server, which holds `inbox_pub` and K_auth (section 3).
 
 ```
 offset  size       field
@@ -236,37 +257,43 @@ Magic, version, `meta_len`, metadata and chunks follow sections 5.1 to 5.3, with
 ### 6.2 Server procedure per upload
 
 1. Generate an ephemeral X25519 keypair. `DH = X25519(eph_priv, inbox_pub)`, with `inbox_pub` from the server's own configuration. Reject an all-zero result.
-2. `FK = HKDF-SHA256(ikm=DH, salt=eph_pub | inbox_pub, info="valv/v1/inbox-fk", L=32)`.
+2. `FK = HKDF-SHA256(ikm = DH | K_auth, salt = eph_pub | inbox_pub, info = "valv/v1/inbox-fk", L = 32)`, with K_auth from the server's own configuration.
 3. Derive K_content and K_meta from FK as in section 3. Build the metadata as any writer does (section 5.2, `rev` = 1), encrypt it, and stream-encrypt the chunks as in section 5, with the inbox file_id.
 4. Discard eph_priv and FK. After the upload completes the server can no longer decrypt the file.
 
 ### 6.3 Client ingest (holds VK)
 
-1. Check the inbox file's path (section 4.1) and run the structural check. Derive the inbox private key from VK, compute DH with eph_pub (reject an all-zero result), derive FK.
-2. Decrypt meta_blob and check it (section 5.2).
-3. Write an object file under a `.part` name: same file_id, FK wrapped under K_wrap with a fresh random wrap_nonce, meta_blob copied verbatim, chunks copied byte for byte. The body is not re-encrypted. Every chunk is authenticated while streaming, before it is copied.
-4. Only after every chunk has authenticated, finish the object in `objects/` (rename or final put), then delete the inbox file.
+1. Check the inbox file's path (section 4.1) and run the structural check. Derive the inbox private key and K_auth from VK, compute DH with eph_pub (reject an all-zero result), derive FK as in section 6.2.
+2. Decrypt meta_blob and check it (section 5.2). A file made without the right K_auth fails here; report it as "not authentic".
+3. Write an object file to a temp file (section 8): same file_id, FK wrapped under K_wrap with a fresh random wrap_nonce, meta_blob copied verbatim, chunks copied byte for byte. The body is not re-encrypted. Every chunk is authenticated while streaming, before it is copied.
+4. Only after every chunk has authenticated, move the object into place in `objects/` (rename or final put).
+5. Open the object again from its final path and authenticate its metadata and every chunk. Only then delete the inbox file. If this read-back fails, remove the object just written and keep the inbox file.
 
-On any ingest failure, discard our own `.part` file, keep the inbox file, and report the error. Nothing in `inbox/` is ever deleted except after a fully verified successful ingest, or by the idempotency rule below.
+On any ingest failure, discard our own temp file, keep the inbox file, and report the error. Nothing in `inbox/` is ever deleted except after a fully verified successful ingest, or by the idempotency rule below.
 
-Idempotency: if `objects/.../<file_id>.obj` already exists, treat the inbox file as already ingested only if (1) the existing object's unwrapped FK equals the FK derived from the inbox file (constant-time compare) AND (2) its chunk bytes are byte-identical to the inbox file's, which are authenticated during the comparison. `meta_blob` may differ (renames). If so, delete the inbox file. Otherwise report a conflict and delete nothing.
-
-The inbox is anonymous. Anyone holding `inbox_pub` can drop files in, so authentication belongs to the transport (Tailscale-only, bearer token, or mTLS), not the file format.
+Idempotency: if `objects/.../<file_id>.obj` already exists, treat the inbox file as already ingested only if (1) the existing object's unwrapped FK equals the FK derived from the inbox file (constant-time compare), (2) the existing object's `meta_blob` decrypts under that FK and passes section 5.2, AND (3) its chunk bytes are byte-identical to the inbox file's, which are authenticated during the comparison. `meta_blob` may differ from the inbox file's (renames). If so, delete the inbox file. Otherwise report a conflict and delete nothing.
 
 ## 7. Threat model
 
-Protects against: a cloud provider, sync service, or compromised server reading file contents, names, or folder structure. A compromised server cannot read previously uploaded files. Any modification of a file is detected.
+Protects against: a cloud provider, sync service, or compromised server reading file contents, names, or folder structure. A compromised inbox server cannot read previously uploaded files. Any modification of a file is detected.
+
+Inbox uploads:
+- The host, and anyone else without K_auth, cannot create inbox files that ingest accepts; ingest rejects them as not authentic.
+- A compromised inbox server holding K_auth can upload files that ingest accepts, but cannot read anything: not past or future uploads, not the vault. Leaking K_auth exposes no content.
+- K_auth cannot be rotated in v1. After a server compromise, treat any inbox the attacker can write to as untrusted: do not run ingest on it blindly; review what is there first.
+- An old valid inbox file can be replayed. While its object exists, the idempotency rule (section 6.3) absorbs it. After the object is deleted, a replay brings the file back; this is accepted in v1.
 
 Leaks: object count, approximate sizes (granularity of one chunk), and modification times and access patterns visible to the host.
 
-Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1).
+Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates.
 
 ## 8. Storage backends and deployment
 
 The vault needs only four operations from its storage: `put(path, bytes)`, `get(path)`, `list(prefix)`, `delete(path)`. A rename is a bonus, not a requirement. Do not assume rename is atomic (Google Drive's is not). Do not assume file names are unique (Drive allows duplicates).
 
 Rules that make this safe on dumb storage:
-- Writers upload under `<name>.part` and finish with a rename (or a final put). Readers skip `*.part`.
+- Temp files: writers create them in the destination directory, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600, and remove them on any error or interruption. They finish with a rename (or a final put); a writer that must not replace an existing file uses a no-replace move. Readers skip `*.part`.
+- Every vault file that is opened must be a regular file: no symlinks, FIFOs or devices.
 - Readers treat any file that fails to parse or authenticate as "incomplete or corrupt": skip it, report it, retry later. Never delete it automatically.
 - An unrecognized file in `objects/` or `inbox/` (e.g. "conflicted copy") must be surfaced to the user, not ignored or deleted.
 - If duplicates of the same file_id appear, they are the same logical file. Delete a duplicate only if it is byte-identical to the one kept.
@@ -280,6 +307,7 @@ Deployment (v1, "mode B", chosen first):
   - `GET /inbox/{id}`: download the sealed file.
   - `DELETE /inbox/{id}`: called by the client after a successful ingest.
 - Later ("mode A", optional): the server writes `.inb` files directly into `vault/inbox/` on the real storage. No format change is needed. If you do this, give the server only a limited credential (e.g. Drive `drive.file` scope or a separate account with access to the inbox folder), because a compromised server could delete or overwrite files even though it can't read them.
+- In both modes the server's K_auth is what makes uploads authentic (section 7); transport authentication (Tailscale-only, bearer token, or mTLS) additionally limits who can reach the server. Since K_auth cannot be rotated in v1, a K_auth leak matters most in mode A, where the inbox lives on storage others can write to.
 
 ## 9. Platform notes
 
@@ -302,10 +330,10 @@ Deployment (v1, "mode B", chosen first):
 ## 11. Build order
 
 1. **Spec + test vectors.** A reference generator (Go), in test-only code behind the `valv_testvectors` build tag, with fixed seeds (fixed VK, file_ids, FKs, nonces). Regenerating needs `-tags valv_testvectors`; the verification and negative tests read the committed vector files and run without the tag. Vector files give every field in hex; vault.json is also committed as-is (base64 as the format requires) with a hex breakdown next to it.
-   - Positive vectors: vault.json, recovery key, a passphrase given in NFD and in NFC that derive the same KEK, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
-   - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, an NFD name, rev 0; a renamed file (file_id mismatch), a wrong prefix directory, an uppercase hex name.
+   - Positive vectors: vault.json, recovery key (with checksum; valid and invalid inputs), K_auth, a passphrase given in NFD and in NFC that derive the same KEK, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, an object whose name is NFD (accepted; tools warn), and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
+   - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, rev 0; a renamed file (file_id mismatch), a wrong prefix directory, an uppercase hex name; an inbox file built without K_auth and one built with a wrong K_auth.
    - Round trips for 0, 1, 65535, 65536, 65537 bytes and 3 full chunks + 1 byte.
-2. **Go core library + CLI**: `init`, `add`, `ls`, `get`, `ingest`, `verify`, `passwd` (change passphrase), `recover` (section 4.5).
+2. **Go core library + CLI**: `init`, `add`, `ls`, `get`, `ingest`, `verify`, `passwd` (change passphrase), `recover` (section 4.5), `server-config` (section 3).
 3. **Swift core library**: must decrypt every Go vector and re-encrypt to identical bytes.
 4. **Inbox server (Go)**: streaming upload, seal, store. API from section 8.
 5. **Mac app.**
@@ -319,6 +347,7 @@ Do not start step N+1 until step N passes its tests. Not trustworthy with only-c
 - Optional padding to hide exact file sizes.
 - Whether the Mac app uses loopback WebDAV or a File Provider (iOS needs a File Provider regardless).
 - Conflict policy when two devices rewrite the same file_id (use `rev`; probably keep both, surface to the user).
+- K_auth rotation (inbox epochs, section 3).
 
 ## 13. Resolved decisions
 
@@ -359,6 +388,20 @@ A log of what was decided after the first draft and where each rule now lives. T
 | Q1 | Passphrase: valid UTF-8, NFC, no trimming or case folding | 3 |
 | Q2 | `rev >= 1`; `mtime` any int64 | 5.2 |
 | Q3 | Path must match the header file_id; expected file_id is a parameter | 4.1 |
+| R-H1 | Already-ingested also requires the existing `meta_blob` to decrypt; ingest reads the object back before deleting the inbox file | 6.3 |
+| R-H2 | K_auth: upload authentication in the inbox FK; server config; `server-config` | 3, 6.2, 6.3, 7, 8 |
+| R-H3 | `get` never writes into the vault; default-name sanitization | 5.4 |
+| R-H4 | Recovery key checksum (56 characters) | 3, 4.5 |
+| R-M1 | `init` shows (and interactively confirms) the recovery key before writing vault.json | 4.3 |
+| R-M2 | Temp-file naming and creation flags | 8 |
+| R-M3 | Streaming to stdout needs `--unverified-stream` | 5.4 |
+| R-M4 | `add` re-checks the source file after reading | 5.4 |
+| R-M5 | vault.json replacement via verified temp file, no backup; `passwd` does not rotate VK | 4.4 |
+| R-L1 | Recovery key check opens objects like any reader | 4.5 |
+| R-L4 | Regular files only; 4 KiB cap on vault.json | 4.2, 8 |
+| R-L5 | Minimum passphrase length 12 with an override | 3 |
+| R-I3 | Rollback of an older `meta_blob` documented | 7 |
+| R-S2 | Readers no longer check NFC; writers still normalize; `verify` warns | 5.2 |
 
 ## 14. Changelog from the original draft
 
@@ -380,3 +423,20 @@ Second revision (answers to the step 1 questions):
 - Section 6.3: ingest checks the inbox file's path.
 - Section 11: new vectors (passphrase normalization, rev 0, path mismatches); step 2 command list (`passwd` replaces `rekey-passphrase`, `verify` and `recover` added).
 - Section 13: rows C1 to C5 and Q1 to Q3.
+
+Third revision (independent review of step 2):
+- Section 2: SHA-256 used directly only for the recovery-key checksum.
+- Section 3: K_auth and the inbox epoch-0 note; inbox server configuration (`inbox_pub` and K_auth); recovery key now carries a 3-byte checksum (56 characters, 14 groups), ASCII-only case folding; minimum passphrase length.
+- Section 4.1: temp files point to section 8.
+- Section 4.2: 4 KiB cap on vault.json.
+- Section 4.3: new `init` order (show and confirm the recovery key before writing vault.json).
+- Section 4.4: verified temp-file replacement, no backup, non-atomic-rename fallback, no VK rotation.
+- Section 4.5: checksum check; object checks use the normal open path; warning for empty vaults.
+- Section 5.2: readers no longer check NFC.
+- Section 5.4 added: adding and extracting files (re-check on add; output location, name sanitization, temp file, `--unverified-stream`).
+- Section 6: K_auth in the inbox FK; "not authentic" on ingest; read-back before deleting the inbox file; idempotency also requires the existing `meta_blob` to decrypt. The "inbox is anonymous" paragraph is replaced by section 7's upload guarantees.
+- Section 7: upload guarantees and limits (K_auth, rotation, replay); `meta_blob` rollback.
+- Section 8: temp-file naming and flags; regular files only; K_auth versus transport authentication.
+- Section 11: new vectors (recovery checksum, K_auth negatives, NFD name now positive); `server-config`.
+- Section 12: K_auth rotation.
+- Section 13: rows R-H1 to R-S2.
