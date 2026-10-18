@@ -38,6 +38,84 @@ func openDir(p string) (*dirHandle, error) {
 	return &dirHandle{f: f, path: p}, nil
 }
 
+// openVaultDir opens a vault directory once, at the start of a command
+// (SPEC 8): no-follow, so a vault path whose last component is a symlink is
+// refused.
+func openVaultDir(p string) (*dirHandle, error) {
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		// Linux reports a symlink as ELOOP, macOS (with O_DIRECTORY) as
+		// ENOTDIR; lstat only tells the two cases apart for the message.
+		if errors.Is(err, syscall.ELOOP) || errors.Is(err, syscall.ENOTDIR) {
+			if st, lerr := os.Lstat(p); lerr == nil && st.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("%s is a symlink; give the real vault directory", display(p))
+			}
+			return nil, fmt.Errorf("%s is not a directory", display(p))
+		}
+		return nil, err
+	}
+	return &dirHandle{f: f, path: p}, nil
+}
+
+// list returns d's entries, read through a fresh handle on d so it can be
+// called repeatedly. Only Name and Type may be used: Info would resolve paths.
+func (d *dirHandle) list() ([]os.DirEntry, error) {
+	fd, err := unix.Openat(d.fd(), ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), d.path)
+	defer f.Close()
+	return f.ReadDir(-1)
+}
+
+// identity returns the device and inode of the open directory.
+func (d *dirHandle) identity() (devIno, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(d.fd(), &st); err != nil {
+		return devIno{}, err
+	}
+	return identity(&st), nil
+}
+
+// openFileRel opens the regular file at a "/"-separated path relative to d,
+// opening each directory on the way without following symlinks.
+func (d *dirHandle) openFileRel(rel string) (*os.File, int64, error) {
+	parts := strings.Split(rel, "/")
+	cur := d
+	for _, p := range parts[:len(parts)-1] {
+		h, err := cur.openSub(p)
+		if cur != d {
+			cur.Close()
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		cur = h
+	}
+	if cur != d {
+		defer cur.Close()
+	}
+	return cur.openFile(parts[len(parts)-1])
+}
+
+// readConfig reads vault.json through d: a regular file of at most 4096 bytes.
+func (d *dirHandle) readConfig() ([]byte, error) {
+	f, _, err := d.openFile(core.ConfigFile)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxConfigSize {
+		return nil, fmt.Errorf("%s is larger than %d bytes", core.ConfigFile, maxConfigSize)
+	}
+	return data, nil
+}
+
 // openSub opens the directory name inside d without following a symlink.
 func (d *dirHandle) openSub(name string) (*dirHandle, error) {
 	fd, err := unix.Openat(d.fd(), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -134,16 +212,6 @@ func (d *dirHandle) within(v devIno) (bool, error) {
 	}
 }
 
-// dirIdentity returns the device and inode of a directory path (following
-// symlinks, as the user named it).
-func dirIdentity(p string) (devIno, error) {
-	var st unix.Stat_t
-	if err := unix.Stat(p, &st); err != nil {
-		return devIno{}, err
-	}
-	return identity(&st), nil
-}
-
 // splitPath splits a user path into its directory part and final name
 // without cleaning it, so ".." keeps its physical meaning.
 func splitPath(p string) (dir, name string) {
@@ -157,41 +225,65 @@ func splitPath(p string) (dir, name string) {
 	return p[:i], p[i+1:]
 }
 
-var errOutputIsDir = errors.New("the output path is a directory; give a file name")
+var (
+	errOutputIsDir = errors.New("the output path is a directory; give a file name")
+	errInsideVault = errors.New("refusing to write inside the vault directory; choose another output location with -o")
+)
 
 // openOutput opens the directory an output file will be written in and
 // checks it before anything is created (SPEC 5.4): the final name must be a
 // file name, must not resolve to an existing directory, and the directory
-// must not be the vault directory or inside it.
-func openOutput(out, vault string) (*dirHandle, string, error) {
+// must not be the vault directory (identity vault) or inside it.
+func openOutput(out string, vault devIno) (*dirHandle, string, error) {
 	dir, name := splitPath(out)
 	if name == "" || name == "." || name == ".." {
 		return nil, "", errOutputIsDir
 	}
-	d, err := openDir(dir)
+	d, err := openOutputDir(dir, vault)
 	if err != nil {
 		return nil, "", err
 	}
-	var st unix.Stat_t
-	if err := unix.Fstatat(d.fd(), name, &st, 0); err == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR {
-		d.Close()
-		return nil, "", errOutputIsDir
-	}
-	v, err := dirIdentity(vault)
-	if err != nil {
+	if err := checkOutputName(d, name); err != nil {
 		d.Close()
 		return nil, "", err
-	}
-	inside, err := d.within(v)
-	if err != nil {
-		d.Close()
-		return nil, "", err
-	}
-	if inside {
-		d.Close()
-		return nil, "", errors.New("refusing to write inside the vault directory; choose another output location with -o")
 	}
 	return d, name, nil
+}
+
+// openOutputDir opens an output directory and refuses it if it is the vault
+// directory or inside it.
+func openOutputDir(dir string, vault devIno) (*dirHandle, error) {
+	d, err := openDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkOutside(d, vault); err != nil {
+		d.Close()
+		return nil, err
+	}
+	return d, nil
+}
+
+// checkOutside walks up from the open handle and refuses if it reaches the
+// vault directory.
+func checkOutside(d *dirHandle, vault devIno) error {
+	inside, err := d.within(vault)
+	if err != nil {
+		return err
+	}
+	if inside {
+		return errInsideVault
+	}
+	return nil
+}
+
+// checkOutputName refuses an output name that is an existing directory.
+func checkOutputName(d *dirHandle, name string) error {
+	var st unix.Stat_t
+	if err := unix.Fstatat(d.fd(), name, &st, 0); err == nil && st.Mode&unix.S_IFMT == unix.S_IFDIR {
+		return errOutputIsDir
+	}
+	return nil
 }
 
 // writeOpts control writeAt.
@@ -199,6 +291,8 @@ type writeOpts struct {
 	overwrite bool                 // replace an existing name
 	mtime     *time.Time           // set on the file before it is moved into place
 	check     func(*os.File) error // verify the finished temp file, reopened through the handle
+	// beforeRename runs immediately before the temp file is moved into place.
+	beforeRename func() error
 }
 
 // writeAt writes name inside d through a temp file in d: fill writes the
@@ -258,6 +352,11 @@ func writeAt(d *dirHandle, name string, opts writeOpts, fill func(io.Writer) err
 			return err
 		}
 	}
+	if opts.beforeRename != nil {
+		if err = opts.beforeRename(); err != nil {
+			return err
+		}
+	}
 	if opts.overwrite {
 		err = unix.Renameat(d.fd(), tmp, d.fd(), name)
 	} else {
@@ -307,14 +406,9 @@ func moveNoReplaceAt(d *dirHandle, tmp, name string) error {
 	return unix.Renameat(d.fd(), tmp, d.fd(), name)
 }
 
-// objectsDirFor opens objects/<prefix> in the vault for writing, creating it
-// if needed, without following symlinks at any step (SPEC 8).
-func objectsDirFor(vault string, id core.FileID) (*dirHandle, string, error) {
-	v, err := openDir(vault)
-	if err != nil {
-		return nil, "", err
-	}
-	defer v.Close()
+// objectsDirFor opens objects/<prefix> under the vault handle for writing,
+// creating it if needed, without following symlinks at any step (SPEC 8).
+func objectsDirFor(v *dirHandle, id core.FileID) (*dirHandle, string, error) {
 	o, err := v.openSub(core.ObjectsDir)
 	if err != nil {
 		return nil, "", err
