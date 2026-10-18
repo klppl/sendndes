@@ -46,46 +46,81 @@ func (a *app) cmdInit(args []string) error {
 		return fmt.Errorf("could not write the recovery key (%v); vault not created", err)
 	}
 	if a.interactive() {
-		typed, err := a.readSecret("Retype the recovery key to confirm: ")
-		if err != nil {
+		if err := a.confirmRecoveryKey(&keys.VK); err != nil {
 			return fmt.Errorf("%w; vault not created", err)
-		}
-		vk, err := core.DecodeRecoveryKey(typed)
-		if err != nil {
-			return fmt.Errorf("%w; vault not created", err)
-		}
-		same := subtle.ConstantTimeCompare(vk[:], keys.VK[:]) == 1
-		clear(vk[:])
-		if !same {
-			return errors.New("that is not the recovery key shown; vault not created")
 		}
 	}
 
-	// Write vault.json last; on failure remove the directories created here.
+	// Create the directories and write vault.json last. Until vault.json is
+	// in place, an error or a handled signal removes exactly the directories
+	// created here (SPEC 4.3).
 	var created []string
-	for _, d := range []string{dir, filepath.Join(dir, core.ObjectsDir), filepath.Join(dir, core.InboxDir)} {
-		if _, err := os.Stat(d); errors.Is(err, os.ErrNotExist) {
-			created = append(created, d)
+	removeCreated := func() {
+		for i := len(created) - 1; i >= 0; i-- {
+			os.Remove(created[i]) // only empty directories; never anything else
 		}
-		if err := os.MkdirAll(d, 0o700); err != nil {
+	}
+	unhook := addCleanupHook(func() { removeCreated() })
+	defer unhook()
+	for _, d := range []string{dir, filepath.Join(dir, core.ObjectsDir), filepath.Join(dir, core.InboxDir)} {
+		made, err := mkdirTracked(d)
+		created = append(created, made...)
+		if err != nil {
+			removeCreated()
 			return err
 		}
 	}
 	cfgPath := filepath.Join(dir, core.ConfigFile)
-	err = writeAtomic(cfgPath, writeOpts{check: configChecker(pass, keys)}, func(w io.Writer) error {
+	check := configChecker(pass, keys)
+	err = writeAtomic(cfgPath, writeOpts{check: func(tmp string) error {
+		if initTestHook != nil {
+			if err := initTestHook(tmp); err != nil {
+				return err
+			}
+		}
+		return check(tmp)
+	}}, func(w io.Writer) error {
 		_, err := w.Write(data)
 		return err
 	})
 	if err != nil {
-		for i := len(created) - 1; i >= 0; i-- {
-			os.Remove(created[i])
-		}
+		removeCreated()
 		return fmt.Errorf("writing %s: %w; vault not created", core.ConfigFile, err)
 	}
+	unhook() // vault.json is committed: keep the directories from now on
 	if _, err := fmt.Fprintf(a.stdout, "Created vault in %s. Unlock self-check passed.\n", dir); err != nil {
 		return err
 	}
 	return nil
+}
+
+// initTestHook, if set (only by tests), runs inside init once the vault.json
+// temp file exists and before it is committed.
+var initTestHook func(tmp string) error
+
+// mkdirTracked creates dir and any missing parents, mode 0700, and returns
+// the directories it created, outermost first.
+func mkdirTracked(dir string) ([]string, error) {
+	var missing []string
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Lstat(d); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	var created []string
+	for i := len(missing) - 1; i >= 0; i-- {
+		if err := os.Mkdir(missing[i], 0o700); err != nil {
+			return created, err
+		}
+		created = append(created, missing[i])
+	}
+	return created, nil
 }
 
 // configChecker returns a writeAtomic check that reads the temp vault.json
@@ -148,6 +183,9 @@ func (a *app) cmdAdd(args []string) error {
 	}
 	defer obj.Wipe()
 	dir := a.vaultDir()
+	if err := requireRealDirs(dir); err != nil {
+		return err
+	}
 	keys, err := a.unlock(dir)
 	if err != nil {
 		return err
@@ -215,6 +253,9 @@ func (a *app) cmdLs(args []string) error {
 	}
 	filter := norm.NFC.String(strings.Trim(*dirFlag, "/"))
 	dir := a.vaultDir()
+	if err := requireRealDirs(dir); err != nil {
+		return err
+	}
 	keys, err := a.unlock(dir)
 	if err != nil {
 		return err
@@ -291,6 +332,9 @@ func (a *app) cmdGet(args []string) error {
 		return errors.New("-o - writes plaintext before the file is authenticated; add --unverified-stream to accept that")
 	}
 	dir := a.vaultDir()
+	if err := requireRealDirs(dir); err != nil {
+		return err
+	}
 	if *out != "" && *out != "-" {
 		if err := checkOutsideVault(*out, dir); err != nil {
 			return err
@@ -354,10 +398,10 @@ var errOutputExists = errors.New("the output file already exists (use --force to
 // checkDefaultName decides whether a stored name may be used as the output
 // file name without an explicit -o (SPEC 5.4).
 func checkDefaultName(name string) error {
-	bad := len(name) > 200 || name == core.ConfigFile ||
+	bad := len(name) > 200 || name == core.ConfigFile || strings.HasPrefix(name, ".") ||
 		strings.HasPrefix(name, " ") || strings.HasSuffix(name, " ")
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f || r == '\\' || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) || r == '\\' || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069) {
 			bad = true
 		}
 	}
@@ -367,10 +411,14 @@ func checkDefaultName(name string) error {
 	return nil
 }
 
-// checkOutsideVault refuses an output path whose directory is the vault
-// directory or inside it, following symlinks (SPEC 5.4). Directories are
-// compared by identity, so case-insensitive file systems are handled.
+// checkOutsideVault refuses an output path that is an existing directory, or
+// whose temp-file directory is the vault directory or inside it, following
+// symlinks (SPEC 5.4). Directories are compared by identity, so
+// case-insensitive file systems are handled.
 func checkOutsideVault(out, vault string) error {
+	if st, err := os.Stat(out); err == nil && st.IsDir() {
+		return errors.New("the output path is an existing directory; give a file name")
+	}
 	vst, err := os.Stat(vault)
 	if err != nil {
 		return err
@@ -379,7 +427,7 @@ func checkOutsideVault(out, vault string) error {
 	if err != nil {
 		return err
 	}
-	outDir, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	outDir, err := filepath.EvalSymlinks(tempDirFor(abs))
 	if err != nil {
 		return err
 	}
@@ -463,6 +511,9 @@ func (a *app) cmdIngest(args []string) error {
 		return err
 	}
 	dir := a.vaultDir()
+	if err := requireRealDirs(dir); err != nil {
+		return err
+	}
 	inboxDir := *inboxFlag
 	if inboxDir == "" {
 		inboxDir = filepath.Join(dir, core.InboxDir)
@@ -581,9 +632,14 @@ func (a *app) cmdVerify(args []string) error {
 		problems++
 		fmt.Fprintf(w, "FAIL  %s\n", msg)
 	}
+	for _, d := range s.symlinkDirs {
+		problem(d)
+	}
 	for _, u := range s.unexpected {
 		problem(u)
 	}
+	// Paths that differ only in normalization form coexist (SPEC 5.2).
+	byNFC := map[string]map[string]bool{}
 	check := func(f vaultFile, verify func(io.Reader, int64) (core.Metadata, error)) {
 		r, size, err := openRegular(f.abs)
 		var meta core.Metadata
@@ -602,8 +658,22 @@ func (a *app) cmdVerify(args []string) error {
 	}
 	for _, f := range s.objects {
 		check(f, func(r io.Reader, size int64) (core.Metadata, error) {
-			return core.VerifyObject(r, size, f.id, keys)
+			meta, err := core.VerifyObject(r, size, f.id, keys)
+			if err == nil {
+				p := logicalPath(meta)
+				k := norm.NFC.String(p)
+				if byNFC[k] == nil {
+					byNFC[k] = map[string]bool{}
+				}
+				byNFC[k][p] = true
+			}
+			return meta, err
 		})
+	}
+	for k, forms := range byNFC {
+		if len(forms) > 1 {
+			fmt.Fprintf(w, "warn  %d files have paths that differ only in Unicode normalization (%s); get them by id\n", len(forms), display(k))
+		}
 	}
 	for _, f := range s.inbox {
 		check(f, func(r io.Reader, size int64) (core.Metadata, error) {
@@ -612,6 +682,9 @@ func (a *app) cmdVerify(args []string) error {
 	}
 	for _, p := range s.partial {
 		fmt.Fprintf(w, "note  %s: incomplete write (ignored)\n", p)
+	}
+	for _, j := range s.junk {
+		fmt.Fprintf(w, "note  %s: OS junk (ignored)\n", j)
 	}
 	fmt.Fprintf(w, "checked %d object(s) and %d inbox file(s): %d problem(s)\n", len(s.objects), len(s.inbox), problems)
 	if err := w.Flush(); err != nil {
@@ -661,6 +734,7 @@ func (a *app) replaceConfig(dir string, data []byte, pass string, keys *core.Vau
 func (a *app) cmdRecover(args []string) error {
 	fs := a.flags("recover", false, true)
 	force := fs.Bool("force", false, "replace an existing vault.json")
+	unverifiedKey := fs.Bool("unverified-key", false, "write vault.json even if nothing in the vault can confirm the key")
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -669,6 +743,9 @@ func (a *app) cmdRecover(args []string) error {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("%s is not a directory", dir)
 	}
+	if err := requireRealDirs(dir); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(filepath.Join(dir, core.ConfigFile)); err == nil && !*force {
 		return errors.New("vault.json exists; use --force to replace it")
 	}
@@ -676,32 +753,41 @@ func (a *app) cmdRecover(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := core.DecodeRecoveryKey(rk); err != nil {
+	vk, err := core.DecodeRecoveryKey(rk)
+	if err != nil {
 		return err
 	}
+	defer clear(vk[:])
 	s, err := scanVault(dir)
 	if err != nil {
 		return err
 	}
-	var samples []core.ObjectSample
-	for _, f := range s.objects {
-		if sample, err := readSample(f); err == nil {
-			samples = append(samples, sample)
-		}
+	samples := recoverySamples(s)
+
+	// SPEC 4.5: check the key before asking for a passphrase.
+	v, err := core.CheckRecoveryKey(rk, samples)
+	switch {
+	case errors.Is(err, core.ErrKeyUnverifiable) && !*unverifiedKey:
+		return fmt.Errorf("%w; nothing written (pass --unverified-key to write vault.json anyway)", err)
+	case errors.Is(err, core.ErrKeyUnverifiable):
+		fmt.Fprintf(a.stderr, "warning: %s; writing anyway because of --unverified-key\n", oneLine(err.Error()))
+	case err != nil:
+		return fmt.Errorf("%w; nothing written", err)
+	case v == core.ChecksumOnly:
+		fmt.Fprintln(a.stderr, "warning: the vault has no objects or inbox files, so only the recovery key's checksum vouches for it")
 	}
-	if len(s.objects) > 0 && len(samples) == 0 {
-		return errors.New("no object could be read to check the recovery key; nothing written")
+	if (v == core.Unverifiable || v == core.ChecksumOnly) && a.interactive() {
+		if err := a.confirmRecoveryKey(&vk); err != nil {
+			return fmt.Errorf("%w; nothing written", err)
+		}
 	}
 	pass, err := a.newPassphrase()
 	if err != nil {
 		return err
 	}
-	data, checked, err := core.RecoverVault(rk, pass, samples)
+	data, v, err := core.RecoverVault(rk, pass, samples, *unverifiedKey)
 	if err != nil {
 		return fmt.Errorf("%w; nothing written", err)
-	}
-	if !checked {
-		fmt.Fprintln(a.stderr, "warning: the vault has no objects, so only the recovery key's checksum vouches for it")
 	}
 	c, _ := core.ParseConfig(data)
 	keys, err := core.Unlock(c, pass)
@@ -712,23 +798,45 @@ func (a *app) cmdRecover(args []string) error {
 	if err := a.replaceConfig(dir, data, pass, keys); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(a.stdout, "vault.json rebuilt from the recovery key.")
+	how := map[core.Verification]string{
+		core.VerifiedByObject: "verified against an object",
+		core.VerifiedByInbox:  "verified against an inbox file",
+		core.Unverifiable:     "NOT verified (--unverified-key)",
+		core.ChecksumOnly:     "checked by its checksum only",
+	}[v]
+	_, err = fmt.Fprintf(a.stdout, "vault.json rebuilt from the recovery key (%s).\n", how)
 	return err
 }
 
-// readSample reads the start of an object for the recovery key check.
-func readSample(f vaultFile) (core.ObjectSample, error) {
-	r, size, err := openRegular(f.abs)
+// recoverySamples reads the start of every object and inbox file. A file
+// that cannot be opened still counts, as an unreadable one (SPEC 4.5).
+func recoverySamples(s *scan) core.RecoverySamples {
+	var out core.RecoverySamples
+	for _, f := range s.objects {
+		p, size := readPrefix(f.abs, 86)
+		out.Objects = append(out.Objects, core.ObjectSample{Prefix: p, Size: size, ID: f.id})
+	}
+	for _, f := range s.inbox {
+		p, size := readPrefix(f.abs, core.InboxSamplePrefixMax)
+		out.Inbox = append(out.Inbox, core.InboxSample{Prefix: p, Size: size, ID: f.id})
+	}
+	return out
+}
+
+// readPrefix returns up to the first n bytes of a regular vault file and its
+// size, or nothing if it cannot be read.
+func readPrefix(p string, n int) ([]byte, int64) {
+	r, size, err := openRegular(p)
 	if err != nil {
-		return core.ObjectSample{}, err
+		return nil, 0
 	}
 	defer r.Close()
-	prefix := make([]byte, 86)
-	n, err := io.ReadFull(r, prefix)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return core.ObjectSample{}, err
+	b := make([]byte, n)
+	k, err := io.ReadFull(r, b)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, 0
 	}
-	return core.ObjectSample{Prefix: prefix[:n], Size: size, ID: f.id}, nil
+	return b[:k], size
 }
 
 func (a *app) cmdServerConfig(args []string) error {
@@ -741,6 +849,14 @@ func (a *app) cmdServerConfig(args []string) error {
 		return err
 	}
 	defer keys.Wipe()
+	// A redirect to a regular file gets mode 0600 before the secret is written.
+	if f, ok := a.stdout.(*os.File); ok {
+		if st, err := f.Stat(); err == nil && st.Mode().IsRegular() {
+			if err := f.Chmod(0o600); err != nil {
+				return fmt.Errorf("could not restrict the output file to mode 0600: %w", err)
+			}
+		}
+	}
 	fmt.Fprintln(a.stderr, "warning: k_auth is a secret. Give it only to the inbox server: anyone holding it can add files that ingest accepts as authentic, and it cannot be rotated in v1. It cannot decrypt anything.")
 	b64 := base64.StdEncoding
 	_, err = fmt.Fprintf(a.stdout, "inbox_pub: %s\nk_auth: %s\n", b64.EncodeToString(keys.InboxPub[:]), b64.EncodeToString(keys.InboxAuth[:]))

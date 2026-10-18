@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -38,8 +39,13 @@ func (t osTerminal) IsTerminal() bool {
 
 func (t osTerminal) ReadPassword(prompt string) (string, error) {
 	f := t.in.(*os.File)
+	fd := int(f.Fd())
+	// If a signal arrives while echo is off, the handler restores it.
+	if state, err := term.GetState(fd); err == nil {
+		defer addCleanupHook(func() { term.Restore(fd, state) })()
+	}
 	fmt.Fprint(t.prompt, prompt)
-	b, err := term.ReadPassword(int(f.Fd()))
+	b, err := term.ReadPassword(fd)
 	fmt.Fprintln(t.prompt)
 	if err != nil {
 		return "", errors.New("could not read from the terminal")
@@ -106,6 +112,24 @@ func (a *app) newPassphrase() (string, error) {
 		}
 	}
 	return p, nil
+}
+
+// confirmRecoveryKey makes an interactive user retype the recovery key; it
+// must decode to vk.
+func (a *app) confirmRecoveryKey(vk *[core.KeySize]byte) error {
+	typed, err := a.readSecret("Retype the recovery key to confirm: ")
+	if err != nil {
+		return err
+	}
+	got, err := core.DecodeRecoveryKey(typed)
+	if err != nil {
+		return err
+	}
+	defer clear(got[:])
+	if subtle.ConstantTimeCompare(got[:], vk[:]) != 1 {
+		return errors.New("that is not the same recovery key")
+	}
+	return nil
 }
 
 // unlock reads vault.json from dir and unlocks it with a passphrase.
