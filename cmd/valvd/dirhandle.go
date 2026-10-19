@@ -23,8 +23,10 @@ import (
 )
 
 var (
-	errExists     = errors.New("already exists")
-	errNotRegular = errors.New("not a regular file")
+	errExists        = errors.New("already exists")
+	errNotRegular    = errors.New("not a regular file")
+	errQuotaExceeded = errors.New("inbox file limit reached")
+	errStorage       = errors.New("storage error")
 )
 
 var partFileRE = regexp.MustCompile(`^\.valv-[0-9a-f]{16}\.part$`)
@@ -217,11 +219,33 @@ func moveNoReplaceAt(d *dirHandle, tmp, name string) error {
 	return unix.Renameat(d.fd(), tmp, d.fd(), name)
 }
 
-// writeInboxAt writes a sealed inbox file to a .valv-<16 hex>.part temp file in d,
-// syncs and verifies it by reopening through d, then moves it to <id>.inb
-// without replacing an existing file.
-func writeInboxAt(d *dirHandle, reg *tempRegistry, fill func(w io.Writer) (core.FileID, int64, error)) (id core.FileID, err error) {
+// writeInboxAt atomically checks the inbox file quota and creates a
+// .valv-<16 hex>.part temp file in d under quotaMu (VALV-REV2-03), writes the
+// sealed inbox stream, syncs and verifies it by reopening through d, then moves
+// it to <id>.inb without replacing an existing file.
+func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInboxFiles int, fill func(w io.Writer) (core.FileID, int64, error)) (id core.FileID, err error) {
+	if quotaMu != nil {
+		quotaMu.Lock()
+	}
+	if maxInboxFiles > 0 {
+		_, activeFiles, lerr := d.listInboxIDs()
+		if lerr != nil {
+			if quotaMu != nil {
+				quotaMu.Unlock()
+			}
+			return core.FileID{}, fmt.Errorf("%w: %w", errStorage, lerr)
+		}
+		if activeFiles >= maxInboxFiles {
+			if quotaMu != nil {
+				quotaMu.Unlock()
+			}
+			return core.FileID{}, errQuotaExceeded
+		}
+	}
 	tmp, f, err := createTempAt(d)
+	if quotaMu != nil {
+		quotaMu.Unlock()
+	}
 	if err != nil {
 		return core.FileID{}, err
 	}

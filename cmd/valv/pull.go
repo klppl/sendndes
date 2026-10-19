@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,9 +22,16 @@ import (
 )
 
 const (
-	maxPullListBytes     = 1 << 20 // 1 MiB
-	maxPullTokenFileSize = 4096
+	maxPullListBytes            = 1 << 20        // 1 MiB
+	maxPullTokenFileSize        = 4096           // 4 KiB
+	defaultMaxPullDownloadBytes = int64(4) << 30 // 4 GiB
+	defaultPullIOTimeout        = 30 * time.Second
 )
+
+type pullOpts struct {
+	maxDownloadBytes int64
+	ioTimeout        time.Duration
+}
 
 var (
 	pullPartRE        = regexp.MustCompile(`^\.valv-[0-9a-f]{16}\.part$`)
@@ -35,8 +43,20 @@ func (a *app) cmdPull(args []string) error {
 	serverFlag := fs.String("server", "", "valvd server base URL (or $VALV_SERVER)")
 	tokenFileFlag := fs.String("token-file", "", "file containing the bearer token")
 	allowInsecure := fs.Bool("allow-insecure-http", false, "allow plain HTTP to a non-loopback, non-Tailscale host")
+	maxDownloadBytes := fs.Int64("max-download-bytes", defaultMaxPullDownloadBytes, "maximum size in bytes per downloaded inbox file")
+	ioTimeout := fs.Duration("io-timeout", defaultPullIOTimeout, "per-read I/O timeout for server requests")
 	if _, err := parse(fs, args, 0, 0); err != nil {
 		return err
+	}
+	if *maxDownloadBytes <= 0 {
+		return errors.New("pull: --max-download-bytes must be positive")
+	}
+	if *ioTimeout <= 0 {
+		return errors.New("pull: --io-timeout must be positive")
+	}
+	opts := pullOpts{
+		maxDownloadBytes: *maxDownloadBytes,
+		ioTimeout:        *ioTimeout,
 	}
 
 	serverURL := *serverFlag
@@ -89,14 +109,14 @@ func (a *app) cmdPull(args []string) error {
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: opts.ioTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	if pullTestTransport != nil {
 		rt = pullTestTransport
 	}
 	client := &http.Client{
-		Timeout:   0, // streaming downloads can be large; headers/idle/redirects are guarded
+		Timeout:   0, // streaming downloads can be large; per-read progress is guarded by pullProgressReader
 		Transport: rt,
 		// Never follow redirects so the Bearer token cannot be leaked to another host.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -104,7 +124,7 @@ func (a *app) cmdPull(args []string) error {
 		},
 	}
 
-	ids, err := fetchInboxIDs(client, baseURL, token)
+	ids, err := fetchInboxIDs(client, baseURL, token, opts)
 	if err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
@@ -127,7 +147,7 @@ func (a *app) cmdPull(args []string) error {
 		// Download to <vault>/inbox/<id>.inb via a .valv-*.part temp file unless
 		// it already exists locally from an earlier interrupted run.
 		if _, lerr := inboxD.lstat(inName); errors.Is(lerr, os.ErrNotExist) {
-			if err := downloadInboxFile(client, baseURL, token, id, inboxD, inName); err != nil {
+			if err := downloadInboxFile(client, baseURL, token, id, inboxD, inName, opts); err != nil {
 				report(fmt.Sprintf("%s: download failed: %v", display(rel), err))
 				continue
 			}
@@ -156,7 +176,7 @@ func (a *app) cmdPull(args []string) error {
 		// CRITICAL GATE (SPEC 6.3, 8): DELETE /inbox/{id} on the server is called
 		// ONLY after ingestOne has succeeded with nil error (meaning either
 		// verified read-back of the new object or verified CheckAlreadyIngested).
-		if err := deleteRemoteInboxFile(client, baseURL, token, id); err != nil {
+		if err := deleteRemoteInboxFile(client, baseURL, token, id, opts); err != nil {
 			fmt.Fprintf(a.stderr, "warning: %s ingested locally, but server delete failed (%v); next pull will absorb it via idempotency\n", id, err)
 		}
 	}
@@ -265,8 +285,10 @@ func readPullTokenFile(p string) (string, error) {
 	return tok, nil
 }
 
-func fetchInboxIDs(client *http.Client, baseURL, token string) ([]string, error) {
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/inbox", nil)
+func fetchInboxIDs(client *http.Client, baseURL, token string, opts pullOpts) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), opts.ioTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/inbox", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -300,25 +322,74 @@ func fetchInboxIDs(client *http.Client, baseURL, token string) ([]string, error)
 	return parsed.IDs, nil
 }
 
-func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileID, inboxD *dirHandle, inName string) error {
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/inbox/"+id.String(), nil)
+// pullProgressReader wraps a download response body with a per-Read watchdog
+// timer so a stalling server cancels the request context and closes the body
+// after opts.ioTimeout of inactivity (VALV-REV2-02).
+type pullProgressReader struct {
+	r       io.ReadCloser
+	timeout time.Duration
+	ctx     context.Context
+	cancel  context.CancelCauseFunc
+}
+
+func (p *pullProgressReader) Read(buf []byte) (int, error) {
+	timer := time.AfterFunc(p.timeout, func() {
+		p.cancel(fmt.Errorf("download read timed out after %v", p.timeout))
+		_ = p.r.Close()
+	})
+	n, err := p.r.Read(buf)
+	timer.Stop()
+	if err != nil {
+		if cause := context.Cause(p.ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+			return n, cause
+		}
+	}
+	return n, err
+}
+
+func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileID, inboxD *dirHandle, inName string, opts pullOpts) error {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/inbox/"+id.String(), nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+
+	hdrTimer := time.AfterFunc(opts.ioTimeout, func() {
+		cancel(fmt.Errorf("download timed out after %v", opts.ioTimeout))
+	})
 	resp, err := client.Do(req)
+	hdrTimer.Stop()
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+			return cause
+		}
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET /inbox/%s: HTTP %d", id, resp.StatusCode)
 	}
+	if resp.ContentLength > opts.maxDownloadBytes {
+		return fmt.Errorf("remote inbox file size (%d bytes) exceeds maximum download size (%d bytes)", resp.ContentLength, opts.maxDownloadBytes)
+	}
 	return writeAt(inboxD, inName, writeOpts{overwrite: false}, func(w io.Writer) error {
+		pr := &pullProgressReader{
+			r:       resp.Body,
+			timeout: opts.ioTimeout,
+			ctx:     ctx,
+			cancel:  cancel,
+		}
+		limited := io.LimitReader(pr, opts.maxDownloadBytes+1)
 		bw := bufio.NewWriterSize(w, core.StoredChunkSize)
-		n, err := io.Copy(bw, resp.Body)
+		n, err := io.Copy(bw, limited)
 		if err != nil {
 			return err
+		}
+		if n > opts.maxDownloadBytes {
+			return fmt.Errorf("remote inbox file exceeds maximum download size (%d bytes)", opts.maxDownloadBytes)
 		}
 		if resp.ContentLength >= 0 && n != resp.ContentLength {
 			return io.ErrUnexpectedEOF
@@ -327,8 +398,10 @@ func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileI
 	})
 }
 
-func deleteRemoteInboxFile(client *http.Client, baseURL, token string, id core.FileID) error {
-	req, err := http.NewRequest(http.MethodDelete, baseURL+"/inbox/"+id.String(), nil)
+func deleteRemoteInboxFile(client *http.Client, baseURL, token string, id core.FileID, opts pullOpts) error {
+	ctx, cancel := context.WithTimeout(context.Background(), opts.ioTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/inbox/"+id.String(), nil)
 	if err != nil {
 		return err
 	}

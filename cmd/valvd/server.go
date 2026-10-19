@@ -72,6 +72,7 @@ type inboxServer struct {
 	opts      serverOpts
 	putSem    chan struct{}
 	reqSem    chan struct{}
+	quotaMu   sync.Mutex
 	authRL    *ipRateLimiter
 	baseCtx   context.Context
 }
@@ -358,17 +359,6 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check inbox file count quota before creating a temp file.
-	_, activeFiles, err := s.dir.listInboxIDs()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "storage error")
-		return
-	}
-	if activeFiles >= s.opts.maxInboxFiles {
-		httpError(w, http.StatusInsufficientStorage, "inbox file limit reached")
-		return
-	}
-
 	rc := http.NewResponseController(w)
 	limitedBody := http.MaxBytesReader(w, r.Body, s.opts.maxUploadBytes)
 	defer limitedBody.Close()
@@ -382,7 +372,7 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 		srvCtx:        s.baseCtx,
 	}
 
-	id, err := writeInboxAt(s.dir, s.reg, func(fileWriter io.Writer) (core.FileID, int64, error) {
+	id, err := writeInboxAt(s.dir, s.reg, &s.quotaMu, s.opts.maxInboxFiles, func(fileWriter io.Writer) (core.FileID, int64, error) {
 		cw := &countingWriter{w: fileWriter}
 		bw := bufio.NewWriterSize(cw, core.StoredChunkSize)
 		sealedID, err := core.SealInbox(bw, s.inboxPub, s.kAuth, meta, bodyReader)
@@ -400,6 +390,10 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		switch {
+		case errors.Is(err, errQuotaExceeded):
+			httpError(w, http.StatusInsufficientStorage, "inbox file limit reached")
+		case errors.Is(err, errStorage):
+			httpError(w, http.StatusInternalServerError, "storage error")
 		case errors.As(err, &maxBytesErr):
 			httpError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size")
 		case errors.Is(err, errStreamTruncated) || errors.Is(err, io.ErrUnexpectedEOF):

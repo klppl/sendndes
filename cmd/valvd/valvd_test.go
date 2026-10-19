@@ -711,3 +711,104 @@ func TestZeroLogging(t *testing.T) {
 		}
 	}
 }
+
+// TestConcurrentUploadQuotaEnforcement verifies VALV-REV2-03: when maxInboxFiles
+// is 2 and 1 .inb file already exists, 4 concurrent uploads launched at the same
+// time must result in at most 1 allowed upload (201 Created) and 3 rejected
+// uploads (507 Insufficient Storage), never overshooting maxInboxFiles.
+func TestConcurrentUploadQuotaEnforcement(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxInboxFiles = 2
+	opts.maxConcurrentPUTs = 4
+	env := startTestServer(t, opts)
+
+	// 1. Seed 1 existing .inb file so only 1 quota slot remains (maxInboxFiles - 1).
+	resp, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{
+		"X-Valv-Name": {"existing.txt"},
+	}, strings.NewReader("existing"), 8)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("seed PUT failed: %d", resp.StatusCode)
+	}
+
+	// 2. Launch 4 concurrent slow uploads simultaneously.
+	const concurrentUploads = 4
+	type pipePair struct {
+		pr *io.PipeReader
+		pw *io.PipeWriter
+	}
+	pipes := make([]pipePair, concurrentUploads)
+	for i := range pipes {
+		pr, pw := io.Pipe()
+		pipes[i] = pipePair{pr: pr, pw: pw}
+	}
+
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		statuses []int
+	)
+	startGate := make(chan struct{})
+	for i := 0; i < concurrentUploads; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-startGate
+			req, err := http.NewRequest(http.MethodPut, env.baseURL+"/inbox", pipes[idx].pr)
+			if err != nil {
+				t.Errorf("NewRequest: %v", err)
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+testBearerToken)
+			req.Header.Set("X-Valv-Name", fmt.Sprintf("concurrent-%d.bin", idx))
+			res, err := env.client.Do(req)
+			if err != nil {
+				t.Errorf("Do(%d): %v", idx, err)
+				return
+			}
+			_, _ = io.Copy(io.Discard, res.Body)
+			_ = res.Body.Close()
+			mu.Lock()
+			statuses = append(statuses, res.StatusCode)
+			mu.Unlock()
+		}(i)
+	}
+
+	// Release all 4 concurrent PUT requests at once.
+	close(startGate)
+
+	// Give all 4 handlers time to reach writeInboxAt while the 1 allowed upload is still open.
+	time.Sleep(60 * time.Millisecond)
+
+	// Finish writing to any open pipe and close all pipes.
+	for _, p := range pipes {
+		_, _ = p.pw.Write([]byte("payload"))
+		_ = p.pw.Close()
+	}
+	wg.Wait()
+
+	var createdCount, quotaRejectedCount int
+	for _, st := range statuses {
+		switch st {
+		case http.StatusCreated:
+			createdCount++
+		case http.StatusInsufficientStorage:
+			quotaRejectedCount++
+		default:
+			t.Fatalf("unexpected status code in concurrent quota test: %d (all: %v)", st, statuses)
+		}
+	}
+	if createdCount != 1 || quotaRejectedCount != 3 {
+		t.Fatalf("expected 1x 201 Created and 3x 507 Insufficient Storage, got created=%d rejected=%d (statuses=%v)",
+			createdCount, quotaRejectedCount, statuses)
+	}
+
+	assertNoPartFiles(t, env.inboxDir)
+	ids, activeFiles, err := env.dirH.listInboxIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || activeFiles != 2 {
+		t.Fatalf("expected exactly 2 inbox files on disk, got ids=%d activeFiles=%d", len(ids), activeFiles)
+	}
+}
+

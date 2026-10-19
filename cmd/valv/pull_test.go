@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,9 +11,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/klppl/valv/core"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 type handlerRoundTripper struct {
 	h http.Handler
@@ -341,3 +349,193 @@ func TestPullTransportAndTokenGuards(t *testing.T) {
 		t.Fatalf("0644 token file accepted: code=%d stderr=%s", code, stderr)
 	}
 }
+
+// TestPullOversizedAndStallingDownloads verifies VALV-REV2-01 (rejecting
+// oversized downloads both with known Content-Length and with chunked
+// ContentLength == -1) and VALV-REV2-02 (aborting downloads whose body stalls
+// past --io-timeout), ensuring no leftover .part or .inb files remain and
+// DELETE is never called.
+func TestPullOversizedAndStallingDownloads(t *testing.T) {
+	pass := "correct-horse-battery"
+	vaultDir, _, tokenFile, _ := setupPullVault(t, pass)
+
+	const (
+		bigKnownID   = "11111111111111111111111111111111"
+		bigChunkedID = "22222222222222222222222222222222"
+		stallID      = "33333333333333333333333333333333"
+	)
+
+	assertInboxEmpty := func(t *testing.T) {
+		t.Helper()
+		entries, err := os.ReadDir(filepath.Join(vaultDir, "inbox"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Fatalf("expected <vault>/inbox/ to have 0 files, found: %v", names)
+		}
+	}
+
+	// 1. VALV-REV2-01 (known Content-Length > --max-download-bytes).
+	t.Run("oversized known Content-Length", func(t *testing.T) {
+		deleteCalls := 0
+		prev := pullTestTransport
+		pullTestTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox":
+				body := `{"ids":["` + bigKnownID + `"]}`
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(body)),
+					Body:          io.NopCloser(strings.NewReader(body)),
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox/"+bigKnownID:
+				payload := bytes.Repeat([]byte("A"), 2048)
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(payload)),
+					Body:          io.NopCloser(bytes.NewReader(payload)),
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodDelete:
+				deleteCalls++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		})
+		defer func() { pullTestTransport = prev }()
+
+		code, stdout, stderr := runInProcess([]string{
+			"pull", "--vault", vaultDir, "--server", "http://127.0.0.1:8485",
+			"--token-file", tokenFile, "--max-download-bytes", "1024", "--passphrase-stdin",
+		}, pass+"\n")
+		if code == 0 || !strings.Contains(stderr, "exceeds maximum download size") {
+			t.Fatalf("expected oversized download error, got code=%d stdout=%s stderr=%s", code, stdout, stderr)
+		}
+		if deleteCalls != 0 {
+			t.Fatalf("DELETE called %d times on oversized download", deleteCalls)
+		}
+		assertInboxEmpty(t)
+	})
+
+	// 2. VALV-REV2-01 (chunked stream with ContentLength == -1 exceeding --max-download-bytes).
+	t.Run("oversized chunked stream (ContentLength -1)", func(t *testing.T) {
+		deleteCalls := 0
+		prev := pullTestTransport
+		pullTestTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox":
+				body := `{"ids":["` + bigChunkedID + `"]}`
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(body)),
+					Body:          io.NopCloser(strings.NewReader(body)),
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox/"+bigChunkedID:
+				payload := bytes.Repeat([]byte("B"), 8192)
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: -1, // chunked / unknown length
+					Body:          io.NopCloser(bytes.NewReader(payload)),
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodDelete:
+				deleteCalls++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		})
+		defer func() { pullTestTransport = prev }()
+
+		code, stdout, stderr := runInProcess([]string{
+			"pull", "--vault", vaultDir, "--server", "http://127.0.0.1:8485",
+			"--token-file", tokenFile, "--max-download-bytes", "1024", "--passphrase-stdin",
+		}, pass+"\n")
+		if code == 0 || !strings.Contains(stderr, "exceeds maximum download size") {
+			t.Fatalf("expected chunked oversized download error, got code=%d stdout=%s stderr=%s", code, stdout, stderr)
+		}
+		if deleteCalls != 0 {
+			t.Fatalf("DELETE called %d times on chunked oversized download", deleteCalls)
+		}
+		assertInboxEmpty(t)
+	})
+
+	// 3. VALV-REV2-02 (hostile server sends 200 OK, writes 64 bytes, then stalls past --io-timeout).
+	t.Run("stalling download body past io-timeout", func(t *testing.T) {
+		deleteCalls := 0
+		pr, pw := io.Pipe()
+		defer pw.Close()
+
+		prev := pullTestTransport
+		pullTestTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch {
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox":
+				body := `{"ids":["` + stallID + `"]}`
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: int64(len(body)),
+					Body:          io.NopCloser(strings.NewReader(body)),
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodGet && req.URL.Path == "/inbox/"+stallID:
+				go func() {
+					_, _ = pw.Write(bytes.Repeat([]byte("C"), 64))
+					// Stall without closing pw; pullProgressReader must time out and close pr.
+				}()
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					ContentLength: 10000,
+					Body:          pr,
+					Header:        make(http.Header),
+				}, nil
+			case req.Method == http.MethodDelete:
+				deleteCalls++
+				return &http.Response{
+					StatusCode: http.StatusNoContent,
+					Body:       io.NopCloser(strings.NewReader("")),
+					Header:     make(http.Header),
+				}, nil
+			default:
+				t.Fatalf("unexpected request: %s %s", req.Method, req.URL.Path)
+				return nil, nil
+			}
+		})
+		defer func() { pullTestTransport = prev }()
+
+		start := time.Now()
+		code, stdout, stderr := runInProcess([]string{
+			"pull", "--vault", vaultDir, "--server", "http://127.0.0.1:8485",
+			"--token-file", tokenFile, "--io-timeout", "120ms", "--passphrase-stdin",
+		}, pass+"\n")
+		elapsed := time.Since(start)
+		if code == 0 || !strings.Contains(stderr, "timed out") {
+			t.Fatalf("expected timeout error on stalling download, got code=%d stdout=%s stderr=%s", code, stdout, stderr)
+		}
+		if elapsed > 3*time.Second {
+			t.Fatalf("stalling download took too long to time out: %v", elapsed)
+		}
+		if deleteCalls != 0 {
+			t.Fatalf("DELETE called %d times on stalling download", deleteCalls)
+		}
+		assertInboxEmpty(t)
+	})
+}
+
