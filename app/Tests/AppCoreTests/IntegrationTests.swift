@@ -1,0 +1,289 @@
+import XCTest
+@testable import AppCore
+
+/// AppCore against a temp vault, the real `valv` helper and a loopback `valvd`.
+@MainActor
+final class IntegrationTests: XCTestCase {
+    var env: Env!
+
+    override func setUpWithError() throws { env = try Env() }
+    override func tearDown() async throws { env?.teardown() }
+
+    func testWrongThenRightPassphrase() async {
+        await env.model.unlock(passphrase: "not-the-passphrase")
+        XCTAssertEqual(env.model.lockState, .locked)
+        XCTAssertEqual(env.model.vaultMessage, "Wrong passphrase.")
+        await env.model.unlock(passphrase: "bad\nline")
+        XCTAssertEqual(env.model.lockState, .locked)
+        await env.unlock()
+        XCTAssertEqual(env.model.lockState, .unlocked)
+        XCTAssertEqual(env.model.entries.count, 0)
+        env.model.lock()
+        XCTAssertEqual(env.model.lockState, .locked)
+        XCTAssertTrue(env.model.entries.isEmpty)
+    }
+
+    func testNotAVault() async throws {
+        let empty = env.tmp + "/empty"
+        try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)
+        try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: nil, vaultPath: empty)
+        await env.unlock()
+        XCTAssertEqual(env.model.lockState, .locked)
+        XCTAssertTrue(env.model.vaultMessage?.contains("valv init") == true, env.model.vaultMessage ?? "nil")
+    }
+
+    func testSendPullListThenExportMatches() async throws {
+        let payload = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        let a = env.writeSource("Räksmörgås – ünï.bin", payload)
+        let b = env.writeSource("small.txt", Data("hello".utf8))
+        let folder = env.tmp + "/src/Folder"
+        try FileManager.default.createDirectory(atPath: folder + "/sub", withIntermediateDirectories: true)
+        try Data("nested".utf8).write(to: URL(fileURLWithPath: folder + "/sub/n.txt"))
+        symlink("/etc/passwd", folder + "/link")
+
+        let q = env.model.sendQueue
+        q.add(urls: [a, b, URL(fileURLWithPath: folder)])
+        await q.waitUntilIdle()
+        XCTAssertEqual(q.items.count, 3, "symlink must be skipped")
+        XCTAssertTrue(q.items.allSatisfy { $0.state == .sent }, "\(q.items.map(\.state))")
+        XCTAssertTrue(q.notes.joined().contains("link"))
+        XCTAssertEqual(env.inboxFiles.count, 3)
+
+        await env.unlock()
+        await env.model.pull()
+        XCTAssertEqual(env.model.pullItems.count, 3)
+        XCTAssertTrue(env.model.pullItems.allSatisfy { $0.kind == .ingested })
+        XCTAssertTrue(env.model.pullSummary?.hasPrefix("3 added") == true, env.model.pullSummary ?? "nil")
+        XCTAssertEqual(env.inboxFiles.count, 0, "server inbox must be empty after a verified pull")
+        XCTAssertEqual(env.tokenDirs, [], "token file directory must be gone")
+        XCTAssertTrue(env.model.listingStale)
+
+        await env.model.rebuildListing()
+        XCTAssertEqual(env.model.entries.count, 3)
+        let big = try XCTUnwrap(env.model.entries.first { $0.name.hasPrefix("Räksm") })
+        XCTAssertEqual(big.size, Int64(payload.count))
+        XCTAssertTrue(env.model.entries.contains { $0.name == "n.txt" && $0.dir == "Folder/sub" })
+
+        let out = env.tmp + "/exported.bin"
+        let r = runTool(env.helper, ["get", "--vault=\(env.vault)", "--passphrase-stdin", "-o=\(out)", "--", big.id], stdin: passphrase + "\n")
+        XCTAssertEqual(r.status, 0, String(decoding: r.err, as: UTF8.self))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: out)), payload)
+
+        // Pulling again with nothing waiting is fine.
+        await env.model.pull()
+        XCTAssertEqual(env.model.pullSummary?.hasPrefix("0 added"), true)
+    }
+
+    func testWrongTokenPausesQueueAndFailsPull() async throws {
+        env.secrets.value = "wrong-token-wrong-token-wrong-token-1234"
+        let f = env.writeSource("x.txt", Data("x".utf8))
+        let q = env.model.sendQueue
+        q.add(urls: [f, env.writeSource("y.txt", Data("y".utf8))])
+        await q.waitUntilIdle()
+        XCTAssertEqual(q.pausedReason, "The server rejected the token.")
+        XCTAssertTrue(q.items.allSatisfy { $0.state == .waiting }, "queue paused, nothing failed")
+        XCTAssertEqual(env.inboxFiles.count, 0)
+
+        env.secrets.value = goodToken
+        q.resume()
+        await q.waitUntilIdle()
+        XCTAssertTrue(q.items.allSatisfy { $0.state == .sent })
+
+        env.secrets.value = "wrong-token-wrong-token-wrong-token-1234"
+        await env.unlock()
+        await env.model.pull()
+        XCTAssertEqual(env.model.pullMessage, "The server rejected the token.")
+        XCTAssertEqual(env.tokenDirs, [])
+        XCTAssertEqual(env.inboxFiles.count, 2, "files stay on the server")
+    }
+
+    func testPullWithWrongPassphraseCleansUp() async throws {
+        // Unlock with the right passphrase, then hand the runner a different one by re-unlocking is not possible;
+        // instead point the model at a second vault whose passphrase differs.
+        let other = env.tmp + "/other"
+        XCTAssertEqual(runTool(env.helper, ["init", other, "--passphrase-stdin", "--allow-weak-passphrase"], stdin: "another-passphrase\n").status, 0)
+        try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: nil, vaultPath: other)
+        await env.model.unlock(passphrase: "another-passphrase")
+        XCTAssertEqual(env.model.lockState, .unlocked)
+        env.model.sendQueue.add(urls: [env.writeSource("p.txt", Data("p".utf8))])
+        await env.model.sendQueue.waitUntilIdle()
+        await env.model.pull() // sealed with the first vault's keys: not authentic here
+        XCTAssertEqual(env.model.pullItems.map(\.kind), [.notAuthentic])
+        XCTAssertTrue(env.model.pullSummary?.contains("not authentic and left on the server") == true, env.model.pullSummary ?? "nil")
+        XCTAssertEqual(env.inboxFiles.count, 1)
+        XCTAssertEqual(env.tokenDirs, [])
+    }
+
+    func testTooLargeFailsOnlyThatFile() async throws {
+        env.stopServer()
+        try env.startServerProcess(maxUploadBytes: 1 << 20)
+        let q = env.model.sendQueue
+        q.add(urls: [env.writeSource("big.bin", Data(count: 2 << 20)), env.writeSource("ok.txt", Data("ok".utf8))])
+        await q.waitUntilIdle()
+        XCTAssertNil(q.pausedReason)
+        guard case .failed(let m) = q.items[0].state else { return XCTFail("\(q.items[0].state)") }
+        XCTAssertTrue(m.hasPrefix("Larger than the server allows"))
+        XCTAssertEqual(q.items[1].state, .sent)
+        q.retry(q.items[0].id)
+        await q.waitUntilIdle()
+        guard case .failed = q.items[0].state else { return XCTFail() }
+    }
+
+    func testServerDownPausesAndResumes() async throws {
+        env.stopServer()
+        let q = env.model.sendQueue
+        q.add(urls: [env.writeSource("a.txt", Data("a".utf8))])
+        await q.waitUntilIdle()
+        XCTAssertEqual(q.pausedReason, "Can't reach the server. Is Tailscale on?")
+        try env.startServerProcess()
+        q.resume()
+        await q.waitUntilIdle()
+        XCTAssertEqual(q.items[0].state, .sent)
+        await env.unlock()
+        env.stopServer()
+        await env.model.pull()
+        XCTAssertEqual(env.model.pullMessage, "Can't reach the server. Is Tailscale on?")
+        XCTAssertEqual(env.tokenDirs, [])
+    }
+
+    func testSecretsNotInArgvOrEnvOrFds() async throws {
+        final class Box: @unchecked Sendable { var snaps: [(String, String)] = [] }
+        let box = Box()
+        env.runner.afterSpawn = { pid in
+            let ps = runTool("/bin/ps", ["-E", "-ww", "-p", String(pid), "-o", "command="])
+            let lsof = runTool("/usr/sbin/lsof", ["-p", String(pid), "-Ffnt"])
+            box.snaps.append((String(decoding: ps.out, as: UTF8.self), String(decoding: lsof.out, as: UTF8.self)))
+        }
+        env.model.sendQueue.add(urls: [env.writeSource("s.txt", Data("s".utf8))])
+        await env.model.sendQueue.waitUntilIdle()
+        await env.unlock()
+        await env.model.pull()
+        XCTAssertEqual(env.model.pullSummary?.hasPrefix("1 added"), true, env.model.pullMessage ?? "")
+        XCTAssertEqual(box.snaps.count, 2)
+        for (ps, lsof) in box.snaps {
+            XCTAssertFalse(ps.contains(passphrase), "passphrase in argv/env")
+            XCTAssertFalse(ps.contains(goodToken), "token in argv/env")
+            XCTAssertTrue(ps.contains("PATH=/usr/bin:/bin"), ps)
+            for k in ["HOME=", "USER=", "TMPDIR=", "SSH_AUTH_SOCK=", "VALV_"] { XCTAssertFalse(ps.contains(k), "\(k) leaked: \(ps)") }
+            // No inherited descriptors: besides stdin/out/err, the helper may hold only what it opened itself
+            // (the vault folder and its subfolders).
+            var fd = "", type = ""
+            for l in lsof.split(separator: "\n") {
+                if l.hasPrefix("f") { fd = String(l.dropFirst()) }
+                else if l.hasPrefix("t") { type = String(l.dropFirst()) }
+                else if l.hasPrefix("n"), Int(fd) != nil, type == "REG" || type == "DIR" {
+                    let name = String(l.dropFirst())
+                    XCTAssertTrue(name.hasPrefix(env.vault), "fd \(fd) (\(type)) is \(name)")
+                }
+            }
+        }
+        XCTAssertTrue(box.snaps[1].0.contains("--token-file="))
+        XCTAssertTrue(box.snaps[1].0.contains("--passphrase-stdin"))
+    }
+
+    func testHelperIntegrityChecks() async throws {
+        // Wrong hash
+        let bad = HelperRunner(helperPath: env.helper, expectedSHA256: String(repeating: "0", count: 64))
+        do { _ = try await bad.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
+        catch { XCTAssertEqual(error as? HelperError, .refused("hash")) }
+        // No hash compiled in
+        let none = HelperRunner(helperPath: env.helper, expectedSHA256: nil)
+        do { _ = try await none.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
+        catch { XCTAssertEqual(error as? HelperError, .refused("no build hash")) }
+        // Symlinked ancestor
+        symlink(env.tmp + "/helper", env.tmp + "/linkdir")
+        let viaLink = HelperRunner(helperPath: env.tmp + "/linkdir/valv", expectedSHA256: sha256Hex(of: env.helper))
+        do { _ = try await viaLink.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
+        catch { guard case HelperError.refused? = error as? HelperError else { return XCTFail("\(error)") } }
+        // Group-writable helper
+        chmod(env.helper, 0o775)
+        do { _ = try await env.runner.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
+        catch { XCTAssertEqual(error as? HelperError, .refused("file")) }
+        chmod(env.helper, 0o755)
+        // Replaced after the hash was taken
+        try Data("#!/bin/sh\necho hi\n".utf8).write(to: URL(fileURLWithPath: env.helper))
+        do { _ = try await env.runner.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
+        catch { XCTAssertEqual(error as? HelperError, .refused("hash")) }
+    }
+
+    func testLockedJobDoesNotRun() async {
+        do { _ = try await env.runner.run(args: ["help"], passphrase: { nil }, onLine: { _ in true }); XCTFail() }
+        catch { XCTAssertEqual(error as? HelperError, .locked) }
+    }
+
+    func testOutputLimits() async throws {
+        // A helper that prints one endless line is cut off; one with a NUL byte is refused.
+        let sh = env.tmp + "/helper/endless"
+        try Data("#!/bin/sh\nhead -c 3000000 /dev/zero | tr '\\0' 'a'\n".utf8).write(to: URL(fileURLWithPath: sh))
+        chmod(sh, 0o755)
+        let r = HelperRunner(helperPath: sh, expectedSHA256: sha256Hex(of: sh))
+        let o = try await r.run(args: [], passphrase: { "x" }, onLine: { _ in true })
+        XCTAssertTrue(o.outputViolation)
+        let nul = env.tmp + "/helper/nul"
+        try Data("#!/bin/sh\nprintf 'ab\\0cd\\n'\n".utf8).write(to: URL(fileURLWithPath: nul))
+        chmod(nul, 0o755)
+        let r2 = HelperRunner(helperPath: nul, expectedSHA256: sha256Hex(of: nul))
+        let o2 = try await r2.run(args: [], passphrase: { "x" }, onLine: { _ in true })
+        XCTAssertTrue(o2.outputViolation)
+    }
+}
+
+/// Hostile servers talking to ServerClient directly.
+final class HostileServerTests: XCTestCase {
+    func upload(_ port: Int) async -> (Result<String, UploadFailure>, URL) {
+        let dir = realTemp()
+        let f = URL(fileURLWithPath: dir + "/f.txt")
+        try! Data("payload".utf8).write(to: f)
+        let s = try! URLPolicy.parse("http://127.0.0.1:\(port)")
+        return (await ServerClient().upload(file: f, name: "f.txt", dir: "", server: s, token: goodToken), f)
+    }
+
+    func testRedirectIsNotFollowed() async {
+        let evil = FakeServer { fd, srv in srv.write(fd, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n") }
+        defer { evil.shutdown() }
+        let redirector = FakeServer { fd, srv in
+            srv.write(fd, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:\(evil.port)/evil\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        }
+        defer { redirector.shutdown() }
+        let (r, _) = await upload(redirector.port)
+        if case .success = r { XCTFail("redirect treated as success") }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(redirector.requests.count, 1)
+        XCTAssertTrue(redirector.requests[0].hasPrefix("PUT /inbox"))
+        XCTAssertEqual(evil.requests.count, 0, "the token must never reach the redirect target")
+    }
+
+    func testEndlessResponseBodyIsCutOff() async {
+        let endless = FakeServer { fd, srv in
+            srv.write(fd, "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\r\n")
+            let chunk = [UInt8](repeating: 0x61, count: 16384)
+            while srv.write(fd, chunk) { if srv.written > 200_000_000 { return } }
+        }
+        defer { endless.shutdown() }
+        let started = Date()
+        let (r, _) = await upload(endless.port)
+        XCTAssertEqual(r, .failure(.unexpectedResponse))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 15)
+        XCTAssertLessThan(endless.written, 50_000_000)
+    }
+
+    func testBadSuccessBodiesAreRejected() async {
+        for body in ["{\"id\":\"../../x\"}", "{\"id\":\"\(String(repeating: "A", count: 32))\"}", "[]", "", "{\"id\":\"abc\"}"] {
+            let s = FakeServer { fd, srv in
+                srv.write(fd, "HTTP/1.1 201 Created\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)")
+            }
+            let (r, _) = await upload(s.port)
+            XCTAssertEqual(r, .failure(.unexpectedResponse), body)
+            s.shutdown()
+        }
+    }
+
+    func testStatusMapping() async {
+        for (code, expected) in [(401, UploadFailure.tokenRejected), (413, .tooLarge), (429, .rateLimited), (507, .inboxFull), (400, .badName), (503, .serverError)] {
+            let s = FakeServer { fd, srv in srv.write(fd, "HTTP/1.1 \(code) X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n") }
+            let (r, _) = await upload(s.port)
+            XCTAssertEqual(r, .failure(expected), "\(code)")
+            s.shutdown()
+        }
+    }
+}

@@ -1,0 +1,132 @@
+import XCTest
+@testable import AppCore
+
+final class URLPolicyTests: XCTestCase {
+    func testAccepted() throws {
+        XCTAssertEqual(try URLPolicy.parse("https://Example.com").canonical, "https://example.com")
+        XCTAssertEqual(try URLPolicy.parse("https://example.com/").canonical, "https://example.com")
+        XCTAssertEqual(try URLPolicy.parse("https://example.com:8443").canonical, "https://example.com:8443")
+        XCTAssertEqual(try URLPolicy.parse("http://127.0.0.1:8485").canonical, "http://127.0.0.1:8485")
+        XCTAssertEqual(try URLPolicy.parse("http://127.9.9.9").canonical, "http://127.9.9.9")
+        XCTAssertEqual(try URLPolicy.parse("http://100.101.102.103:8485").canonical, "http://100.101.102.103:8485")
+        XCTAssertEqual(try URLPolicy.parse("http://100.64.0.1").canonical, "http://100.64.0.1")
+        XCTAssertEqual(try URLPolicy.parse("http://100.127.255.255").canonical, "http://100.127.255.255")
+        XCTAssertEqual(try URLPolicy.parse("http://[::1]:8000").canonical, "http://[::1]:8000")
+    }
+
+    func testRefused() {
+        let bad = [
+            "", " ", "http://example.com", "http://localhost:8485", "http://192.168.1.1", "http://100.63.255.255",
+            "http://100.128.0.1", "http://10.0.0.1", "http://127.0.0.1.evil.com", "http://127.1", "http://0x7f.0.0.1",
+            "http://[fd7a:115c:a1e0::1]", "ftp://example.com", "file:///etc/passwd", "https://", "https://user@example.com",
+            "https://user:pw@example.com", "https://example.com/path", "https://example.com?x=1", "https://example.com#f",
+            "https://example.com:0", "https://example.com:70000", "https://exa mple.com", "https://exämple.com",
+            "https://example.com%2f", "https://example.com\\evil", "https://ex..ample.com", "https://-.", "https:example.com",
+            "https://example.com\n", "HTTP://127.0.0.1:1@evil.com", "http://127.0.0.1:8485/x",
+        ]
+        for b in bad { XCTAssertThrowsError(try URLPolicy.parse(b), b) }
+    }
+
+    func testPlainHTTPMessage() {
+        do { _ = try URLPolicy.parse("http://example.com"); XCTFail() } catch { XCTAssertEqual(error as? URLPolicyError, .plainHTTPNotAllowed) }
+    }
+}
+
+final class DisplayNameTests: XCTestCase {
+    func testStrips() {
+        XCTAssertEqual(DisplayName.sanitize("a\nb\r\tc"), "abc")
+        XCTAssertEqual(DisplayName.sanitize("evil\u{202E}txt.exe"), "eviltxt.exe")
+        XCTAssertEqual(DisplayName.sanitize("a\u{200B}b\u{FEFF}c\u{2066}d\u{061C}e\u{200E}f"), "abcdef")
+        XCTAssertEqual(DisplayName.sanitize("x\u{FFFC}y\u{E000}z\u{2028}w\u{2029}"), "xyzw")
+        XCTAssertEqual(DisplayName.sanitize(""), "(unnamed)")
+        XCTAssertEqual(DisplayName.sanitize(" \u{200B}\n "), "(unnamed)")
+        XCTAssertEqual(DisplayName.sanitize("Räksmörgås 日本語 😀"), "Räksmörgås 日本語 😀")
+    }
+
+    func testCombiningMarksAndLength() {
+        let zalgo = "a" + String(repeating: "\u{0301}", count: 50)
+        XCTAssertEqual(DisplayName.sanitize(zalgo).unicodeScalars.count, 5)
+        XCTAssertEqual(DisplayName.sanitize(String(repeating: "x", count: 10_000)).count, 256)
+    }
+}
+
+final class TokenFileTests: XCTestCase {
+    func testCreateRemoveSweep() throws {
+        let base = realTemp()
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let tf = try TokenFile.create(token: "secret-token-value", base: base)
+        var st = stat()
+        XCTAssertEqual(stat(tf.filePath, &st), 0)
+        XCTAssertEqual(st.st_mode & 0o777, 0o600)
+        XCTAssertEqual(stat(tf.dirPath, &st), 0)
+        XCTAssertEqual(st.st_mode & 0o777, 0o700)
+        XCTAssertTrue(tf.dirPath.contains("sendndes-\(getpid())-"))
+        XCTAssertEqual(try String(contentsOfFile: tf.filePath), "secret-token-value\n")
+        tf.remove(); tf.remove()
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: base), [])
+
+        // A live instance's directory survives a sweep; a dead one's does not.
+        let live = try TokenFile.create(token: "x", base: base)
+        let dead = base + "/sendndes-999999-" + String(repeating: "a", count: 32)
+        mkdir(dead, 0o700)
+        FileManager.default.createFile(atPath: dead + "/tok", contents: Data("x".utf8), attributes: [.posixPermissions: 0o600])
+        TokenFile.sweep(base: base)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.dirPath))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dead))
+        live.remove()
+    }
+}
+
+final class HelperOutputTests: XCTestCase {
+    func line(_ s: String) -> Data { Data(s.utf8) }
+    let id = String(repeating: "ab", count: 16)
+
+    func testListing() {
+        let a = ListingAccumulator()
+        _ = a.feed(line(#"{"type":"file","id":"\#(id)","size":3,"mtime":1000000000,"name":"a‮b\nc","dir":"d"}"#))
+        _ = a.feed(line(#"{"type":"warning","code":"unreadable","id":"\#(id)"}"#))
+        _ = a.feed(line(#"{"type":"end","files":1,"problems":1}"#))
+        XCTAssertTrue(a.result.complete)
+        XCTAssertEqual(a.result.entries.first?.name, "abc")
+        XCTAssertEqual(a.result.problems, 1)
+    }
+
+    func testListingRejectsGarbage() {
+        let a = ListingAccumulator()
+        for bad in [#"{"type":"file","id":"../../etc","size":1,"mtime":1,"name":"x","dir":""}"#,
+                    #"{"type":"file","id":"\#(id.uppercased())","size":1,"mtime":1,"name":"x","dir":""}"#,
+                    #"{"type":"file","id":"\#(id)","size":-1,"mtime":1,"name":"x","dir":""}"#,
+                    #"{"type":"file","id":"\#(id)","size":1.5,"mtime":1,"name":"x","dir":""}"#,
+                    #"{"type":"nonsense"}"#, "not json", #"{"type":"file"}"#, ""] {
+            _ = a.feed(line(bad))
+        }
+        XCTAssertEqual(a.result.entries.count, 0)
+        XCTAssertEqual(a.result.invalidRecords, 8)
+        XCTAssertFalse(a.result.complete)
+    }
+
+    func testMissingEndIsIncomplete() {
+        let a = ListingAccumulator()
+        _ = a.feed(line(#"{"type":"file","id":"\#(id)","size":1,"mtime":1,"name":"x","dir":""}"#))
+        XCTAssertFalse(a.result.complete)
+        XCTAssertFalse(a.result.endSeen)
+    }
+
+    func testPull() {
+        let counter = Counter()
+        let a = PullAccumulator(onStarted: { counter.n += 1 })
+        for l in [#"{"type":"started"}"#, #"{"type":"started"}"#,
+                  #"{"type":"ingested","id":"\#(id)"}"#, #"{"type":"not-authentic","id":"\#(id)"}"#,
+                  #"{"type":"error","code":"invalid-id","item":true}"#,
+                  #"{"type":"end","ingested":1,"already":0,"failed":2,"delete_failed":0}"#] { _ = a.feed(line(l)) }
+        XCTAssertEqual(counter.n, 1)
+        XCTAssertEqual(a.result.items.map(\.kind), [.ingested, .notAuthentic, .error])
+        XCTAssertTrue(a.result.complete)
+        let b = PullAccumulator(onStarted: {})
+        _ = b.feed(line(#"{"type":"started"}"#)); _ = b.feed(line(#"{"type":"error","code":"unauthorized"}"#))
+        XCTAssertEqual(b.result.errorCode, "unauthorized")
+        XCTAssertFalse(b.result.complete)
+    }
+}
+
+final class Counter: @unchecked Sendable { var n = 0 }
