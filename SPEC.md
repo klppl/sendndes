@@ -65,7 +65,7 @@ vault/
 
 - `file_id`: 16 random bytes, written as 32 lowercase hex chars. File names reveal nothing about content.
 - Readers derive the expected file_id from the path and reject any object or inbox file whose path does not match it:
-  - the path must end with the three components `objects/<xx>/<32 lowercase hex>.obj` for an object, or the two components `inbox/<32 lowercase hex>.inb` for an inbox file (checking all components, including `objects` and `inbox`); uppercase hex is rejected;
+  - the path must be `objects/<xx>/<32 lowercase hex>.obj` for an object, or `inbox/<32 lowercase hex>.inb` for an inbox file (checking all components, including `objects` and `inbox`); uppercase hex is rejected;
   - an object's directory `<xx>` under `objects/` must equal the first two hex chars of its file_id;
   - the file_id in the header must equal the one in the name.
 
@@ -436,7 +436,7 @@ A log of what was decided after the first draft and where each rule now lives. T
 | S-Q1, S-Q2 | `vault.json` Base64 and decoded-length errors in `salt`, `wrapped_vk`, `inbox_pub`, and invalid UTF-8 passphrases, are `malformed` (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, `p`) | 3, 4.2 |
 | S-Q3 | Recovery with unreadable objects and no authenticating inbox file is case 3 ("cannot be verified: 0 of 0 readable objects"); case 4 requires no object and no inbox files at all | 4.5 |
 | S-Q4 | Ingest idempotency check runs only after the inbox file's `meta_blob` and chunks authenticate; unauthenticated inbox files are kept even if a matching object exists | 6.3 |
-| S-Q5 | Object paths must end with `objects/<xx>/<file_id>.obj` (3 components) and inbox paths with `inbox/<file_id>.inb` (2 components) | 4.1 |
+| S-Q5 | Object path is `objects/<xx>/<file_id>.obj` (3 components) and inbox path is `inbox/<file_id>.inb` (2 components) | 4.1 |
 | S-Q6 | Accept/reject is normative for all inputs; error class is normative only for single-fault inputs | 10 |
 
 ## 14. Changelog from the original draft
@@ -507,7 +507,7 @@ Freeze:
 
 Post-freeze clarifications (step 3 cross-implementation questions Q1–Q6, documentation only):
 - Section 3: invalid UTF-8 passphrase error class (`malformed`).
-- Section 4.1: object and inbox trailing path components (`objects/<xx>/<file_id>.obj` and `inbox/<file_id>.inb`).
+- Section 4.1: object and inbox path components (`objects/<xx>/<file_id>.obj` and `inbox/<file_id>.inb`).
 - Section 4.2: `vault.json` Base64 and decoded-length errors in `salt`, `wrapped_vk`, and `inbox_pub` are `malformed` (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, and `p`).
 - Section 4.5: unreadable objects with no authenticating inbox file fall under case 3 ("0 of 0 readable objects"); case 4 requires no object files and no inbox files at all.
 - Section 6.3: ingest idempotency applies only after the inbox file's `meta_blob` and chunks authenticate.
