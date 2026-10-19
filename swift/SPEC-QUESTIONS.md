@@ -56,10 +56,10 @@ SPEC 4.1 checks the file name and that "an object's directory under
 
 **Ruling: the check covers all components.** An object path is
 `objects/<xx>/<file_id>.obj` and an inbox path is `inbox/<file_id>.inb`.
-`FileID(objectPath:)` checks the last three path components (`objects`, `<xx>`
-equal to the first two hex characters, and `<32 lowercase hex>.obj`), and
-`FileID(inboxPath:)` checks the last two path components (`inbox` and
-`<32 lowercase hex>.inb`).
+`FileID(objectPath:)` checks that the path has exactly three components
+(`objects`, `<xx>` equal to the first two hex characters, and
+`<32 lowercase hex>.obj`), and `FileID(inboxPath:)` checks that the path has
+exactly two components (`inbox` and `<32 lowercase hex>.inb`).
 
 ## Q6. Order of checks when a file has several faults — resolved by owner
 

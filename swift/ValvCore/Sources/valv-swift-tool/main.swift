@@ -6,6 +6,7 @@
 //   valv-swift-tool decrypt-object <vault.json> <object-file> <out>
 //   valv-swift-tool encrypt-object <vault.json> <in> <out-object> --name N --dir D
 //   valv-swift-tool seal-inbox     <vault.json> <in> <out-inbox>  --name N --dir D
+//   valv-swift-tool ingest-inbox   <vault.json> <inbox-file> <out-object>
 //   valv-swift-tool init           <vault-dir>
 //   valv-swift-tool unlock         <vault.json>
 //   valv-swift-tool show-meta      <vault.json> <object-file>
@@ -18,7 +19,9 @@
 //
 // encrypt-object and seal-inbox print the new file_id (32 hex) on stdout; the
 // caller moves the file to objects/<xx>/<id>.obj or inbox/<id>.inb.
-// The object file's path must end in objects/<xx>/<id>.obj (the expected file_id).
+// For decrypt-object, show-meta and ingest-inbox, the vault root prefix
+// (dirname(<vault.json>)/) is stripped if present so the path handed to
+// FileID is objects/<xx>/<id>.obj or inbox/<id>.inb.
 // init writes vault.json and empty objects/ and inbox/, and prints nothing.
 // show-meta prints the stored name and dir as UTF-8 hex.
 // show-keys prints inbox_pub, k_auth and the recovery key; it exists only in
@@ -35,6 +38,7 @@ let usage = """
     usage: valv-swift-tool decrypt-object <vault.json> <object-file> <out>
            valv-swift-tool encrypt-object <vault.json> <in> <out-object> --name N --dir D
            valv-swift-tool seal-inbox     <vault.json> <in> <out-inbox>  --name N --dir D
+           valv-swift-tool ingest-inbox   <vault.json> <inbox-file> <out-object>
            valv-swift-tool init           <vault-dir>
            valv-swift-tool unlock         <vault.json>
            valv-swift-tool show-meta      <vault.json> <object-file>
@@ -135,6 +139,18 @@ func args(_ argv: [String], _ n: Int) -> [String] {
     return Array(argv[1...n])
 }
 
+/// Strips `dirname(<vault.json>)/` from `path` if `path` starts with it,
+/// leaving the vault-relative path (`objects/<xx>/<id>.obj` or `inbox/<id>.inb`).
+func vaultRelative(_ path: String, vaultJSON: String) -> String {
+    if let slash = vaultJSON.lastIndex(of: "/") {
+        let prefix = String(vaultJSON[...slash])
+        if path.hasPrefix(prefix) {
+            return String(path.dropFirst(prefix.count))
+        }
+    }
+    return path
+}
+
 let argv = Array(CommandLine.arguments.dropFirst())
 guard let cmd = argv.first else { fail(usage, 2) }
 
@@ -146,8 +162,22 @@ case "decrypt-object":
     let vault = openVault(a[0], vkStdin: vkStdin)
     let out = create(a[2])
     do {
-        let expected = try FileID(objectPath: a[1])
+        let expected = try FileID(objectPath: vaultRelative(a[1], vaultJSON: a[0]))
         try vault.decryptObject(FileInput(openRead(a[1])), expected: expected, to: FileOutput(out))
+        try out.close()
+    } catch {
+        try? FileManager.default.removeItem(atPath: a[2])
+        fail("\(error)")
+    }
+
+case "ingest-inbox":
+    let a = args(argv, 3)
+    guard argv.count == 4 else { fail(usage, 2) }
+    let vault = unlock(a[0])
+    let out = create(a[2])
+    do {
+        let expected = try FileID(inboxPath: vaultRelative(a[1], vaultJSON: a[0]))
+        try vault.ingest(inbox: FileInput(openRead(a[1])), expected: expected, to: FileOutput(out))
         try out.close()
     } catch {
         try? FileManager.default.removeItem(atPath: a[2])
@@ -211,7 +241,8 @@ case "show-meta":
     guard argv.count == 3 else { fail(usage, 2) }
     let vault = unlock(a[0])
     do {
-        let r = try vault.openObject(FileInput(openRead(a[1])), expected: FileID(objectPath: a[1]))
+        let r = try vault.openObject(FileInput(openRead(a[1])),
+                                     expected: FileID(objectPath: vaultRelative(a[1], vaultJSON: a[0])))
         try r.decryptAll(to: DiscardOutput())
         print("name_hex: \(hex(r.metadata.nameUTF8))")
         print("dir_hex: \(hex(r.metadata.dirUTF8))")

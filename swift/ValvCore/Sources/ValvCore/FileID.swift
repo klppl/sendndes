@@ -17,32 +17,32 @@ public struct FileID: Hashable, Sendable, CustomStringConvertible {
     /// `inbox/<32 hex>.inb`, relative to the vault.
     public var inboxPath: String { "inbox/\(hex).inb" }
 
-    /// The expected file_id of an object at `path` (any path ending in
-    /// `objects/<dir>/<name>`). The name must be exactly `<32 lowercase hex>.obj`,
-    /// `<dir>` must equal its first two hex characters, and its parent
-    /// directory must be `objects`.
+    /// The expected file_id of an object at `path` (which must be
+    /// `objects/<dir>/<name>`). The first component must be `objects`,
+    /// `<dir>` must equal the first two hex characters, and `<name>` must be
+    /// exactly `<32 lowercase hex>.obj`.
     public init(objectPath path: String) throws {
         let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
-        guard parts.count >= 3, parts[parts.count - 3].elementsEqual(Array("objects".utf8)) else {
-            throw ValvError.path("object path must be under objects/<xx>/<file_id>.obj")
+        guard parts.count == 3, parts[0].elementsEqual(Array("objects".utf8)) else {
+            throw ValvError.path("object path must be objects/<xx>/<file_id>.obj")
         }
-        let id = try FileID.parseName(parts[parts.count - 1], ext: ".obj")
-        let dir = [UInt8](parts[parts.count - 2])
+        let id = try FileID.parseName(parts[2], ext: ".obj")
+        let dir = [UInt8](parts[1])
         guard dir == Array(id.hex.utf8.prefix(2)) else {
             throw ValvError.path("object is not in the directory named by its first two hex characters")
         }
         self = id
     }
 
-    /// The expected file_id of an inbox file at `path` (any path ending in
-    /// `inbox/<name>`); its parent directory must be `inbox` and its name must
+    /// The expected file_id of an inbox file at `path` (which must be
+    /// `inbox/<name>`); the first component must be `inbox` and `<name>` must
     /// be exactly `<32 lowercase hex>.inb`.
     public init(inboxPath path: String) throws {
         let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
-        guard parts.count >= 2, parts[parts.count - 2].elementsEqual(Array("inbox".utf8)) else {
-            throw ValvError.path("inbox path must be under inbox/<file_id>.inb")
+        guard parts.count == 2, parts[0].elementsEqual(Array("inbox".utf8)) else {
+            throw ValvError.path("inbox path must be inbox/<file_id>.inb")
         }
-        self = try FileID.parseName(parts[parts.count - 1], ext: ".inb")
+        self = try FileID.parseName(parts[1], ext: ".inb")
     }
 
     private static func parseName(_ name: ArraySlice<UInt8>, ext: String) throws -> FileID {
