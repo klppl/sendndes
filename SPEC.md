@@ -1,11 +1,11 @@
 # Valv: Format and Architecture Spec, v1 (DRAFT)
 
 Personal, single-user, open-source encrypted vault. Own format, not compatible with anything else.
-Status: experimental. The format may change freely until real data depends on it. Always keep a plaintext backup until the tool has proven itself.
+Status: v1 FORMAT FROZEN at tag format-v1-frozen. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
 
 You (the AI implementing this) are building a tool for exactly one user. Prefer simple and correct over flexible. Anything not specified here is a question for the human, not a decision for you.
 
-Each rule is stated once, in the section listed for it in section 13. Section 14 lists what changed from the original draft.
+Each rule is stated once, in the section listed for it in section 13. Section 14 lists what changed from the original draft. Section 15 says what may still change.
 
 ## 1. Goals and non-goals
 
@@ -337,7 +337,7 @@ Deployment (v1, "mode B", chosen first):
 5. Parse defensively: bounds-check meta_len (section 5.1), offsets, and chunk counts before allocating.
 6. File names on storage never derive from plaintext names. file_id is always random.
 7. Do not edit files in place. Write temp, then rename or replace.
-8. When the spec is ambiguous, stop and ask. Do not guess.
+8. When the spec is ambiguous, stop and ask. Do not guess. Section 15 says who decides.
 9. Fixed keys, nonces and ids exist only in test code behind the `valv_testvectors` build tag. Release builds contain no way to inject a random source or fixed values, and a test checks this.
 
 ## 11. Build order
@@ -431,6 +431,7 @@ A log of what was decided after the first draft and where each rule now lives. T
 | R4-2 | One vault handle per command, opened before any prompt | 8 |
 | R4-3 | SIGKILL and power loss during `init`; interrupted-init hint | 4.3 |
 | R4-W | Advice after an unverified recovery | 4.5 |
+| Freeze | v1 format frozen; what may change and how | 15 |
 
 ## 14. Changelog from the original draft
 
@@ -494,3 +495,13 @@ Sixth revision (round 4 re-verification):
 - Section 5.4: the outside-the-vault check is repeated before the final rename; the remaining race is accepted.
 - Section 8: one vault handle per command, opened before any prompt, with no-follow; `--inbox`, output and `init` directories likewise.
 - Section 13: rows R4-1 to R4-W.
+
+Freeze:
+- The v1 format is frozen at commit 68bb5d7 (tag format-v1-frozen). Documentation only: the status line now says the format is frozen, section 15 (freeze rules) is added, rule 10.8 points to it, and section 13 has a row for it. No behaviour, vector or code changed.
+
+## 15. Freeze rules
+
+- **Format changes.** A format change is any change that alters the bytes of a committed vector, changes which inputs a reader accepts or rejects, or changes a derivation, label, AAD, field, or layout. Every format change requires a new format version byte (0x02) and a new spec section. v1 readers must keep working. A v1 file is never silently reinterpreted.
+- **Clarifications.** A clarification that changes no behaviour (wording, examples, an added vector that both implementations already agree on) is allowed. It must be listed in the changelog (section 14) and checked against every implementation.
+- **Tool fixes.** Bugs in CLI plumbing (path handling, signals, messages, commands) are normal fixes. They must not touch `testvectors/`.
+- **Ambiguities and flaws.** If an implementation (for example the Swift port) finds an ambiguity or flaw in the spec, nobody silently picks an interpretation. It is written down and decided by the project owner.
