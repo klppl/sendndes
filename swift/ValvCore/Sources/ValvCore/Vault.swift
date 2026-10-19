@@ -73,6 +73,10 @@ public final class Vault: Sendable {
 
     // MARK: Passphrase unlock (SPEC 4.3)
 
+    /// Unlocks a vault with a passphrase string. Because Swift `String` values
+    /// are immutable and cannot be wiped in place, callers that want to wipe
+    /// passphrase bytes in memory after unlock should prefer
+    /// `unlock(vaultJSON:passphraseUTF8:)` and wipe their own buffer.
     public static func unlock<D: DataProtocol>(vaultJSON: D, passphrase: String) throws -> Vault {
         let config = try VaultConfig.parse(vaultJSON)  // before the KDF runs
         var pw = Passphrase.normalizedUTF8(passphrase)

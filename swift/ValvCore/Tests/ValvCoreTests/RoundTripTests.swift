@@ -51,6 +51,7 @@ import Testing
     }
 
     @Test func freshRandomnessEveryWrite() throws {
+        #expect(Random.bytes(0, for: .vk).isEmpty)
         let a = DataOutput(), b = DataOutput()
         let m = try meta(1)
         let ia = try testVault.writeObject(plaintext: DataInput(Data([1])), metadata: m, to: a)

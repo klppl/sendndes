@@ -17,9 +17,11 @@ enum Random {
             return source.next(purpose, count: count)
         }
         #endif
+        guard count > 0 else { return [] }
         var out = [UInt8](repeating: 0, count: count)
-        let rc = out.withUnsafeMutableBytes { p in
-            SecRandomCopyBytes(kSecRandomDefault, count, p.baseAddress!)
+        let rc = out.withUnsafeMutableBytes { p -> Int32 in
+            guard let base = p.baseAddress else { return errSecParam }
+            return SecRandomCopyBytes(kSecRandomDefault, count, base)
         }
         // There is no safe way to continue without randomness.
         precondition(rc == errSecSuccess, "SecRandomCopyBytes failed")
