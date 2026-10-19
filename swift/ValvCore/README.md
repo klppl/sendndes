@@ -72,7 +72,15 @@ outside-the-vault checks). The passphrase comes from stdin only, one line.
 valv-swift-tool decrypt-object <vault.json> <object-file> <out>
 valv-swift-tool encrypt-object <vault.json> <in> <out-object> --name N --dir D
 valv-swift-tool seal-inbox     <vault.json> <in> <out-inbox>  --name N --dir D
+valv-swift-tool init           <vault-dir>
+valv-swift-tool unlock         <vault.json>
+valv-swift-tool show-meta      <vault.json> <object-file>
+valv-swift-tool show-keys      <vault.json>   # only with --traits VALV_TESTVECTORS
 ```
+
+`show-keys` prints `inbox_pub`, `k_auth` and the recovery key. It is compiled
+only with the test trait, and the release check verifies that a normal build
+of the tool rejects it.
 
 `encrypt-object` and `seal-inbox` print the new file_id; the caller moves the
 file to `objects/<xx>/<id>.obj` or `inbox/<id>.inb`. `seal-inbox` exists for
@@ -83,8 +91,12 @@ temp vault with `valv init --passphrase-stdin`, and checks with files of 0, 1,
 65536 and 200000 bytes: (a) `valv add` output decrypts in Swift to identical
 bytes; (b) Swift objects pass `valv verify` and come back identical from
 `valv get`; (c) Swift-sealed inbox files ingest with `valv ingest` and come
-back identical from `valv get` and from Swift. The passphrase is random, kept
-in a 0600 temp file and passed on stdin only.
+back identical from `valv get` and from Swift; (d) one vault.json unlocks in
+both and `inbox_pub`, `k_auth` and the recovery key agree; (e) vaults created
+by either side are accepted by the other; (f) names with å, é and Hangul
+round-trip and NFD input is stored as NFC. The passphrase is random, kept in a
+0600 temp file and passed on stdin only; keys are compared with `cmp` and never
+printed. Results: `../interop/RESULTS.md`.
 
 ## Test-only randomness
 
