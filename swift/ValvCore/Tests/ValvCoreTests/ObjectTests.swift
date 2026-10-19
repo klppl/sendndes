@@ -110,12 +110,16 @@ import Testing
         #expect((try? FileID(objectPath: "/abs/vault/objects/7c/\(id).obj"))?.hex == id)
         for bad in ["objects/7d/\(id).obj", "objects/7c/\(id).inb", "objects/7c/\(id)x.obj",
                     "objects/7c/7C600a1cfb7fd7f124bf7bfc7df095f6.obj", "\(id).obj", "objects/7c/\(id.dropLast()).obj",
-                    "objects/7c/\(id).obj.part"] {
+                    "objects/7c/\(id).obj.part", "7c/\(id).obj", "wrong/7c/\(id).obj", "/abs/vault/wrong/7c/\(id).obj",
+                    "OBJECTS/7c/\(id).obj"] {
             #expect(errorClass { _ = try FileID(objectPath: bad) } == "path", "\(bad)")
         }
         #expect((try? FileID(inboxPath: "inbox/\(id).inb"))?.hex == id)
-        #expect(errorClass { _ = try FileID(inboxPath: "inbox/\(id.uppercased()).inb") } == "path")
-        #expect(errorClass { _ = try FileID(inboxPath: "inbox/\(id).obj") } == "path")
+        #expect((try? FileID(inboxPath: "/abs/vault/inbox/\(id).inb"))?.hex == id)
+        for badInb in ["inbox/\(id.uppercased()).inb", "inbox/\(id).obj", "\(id).inb",
+                       "wrong/\(id).inb", "/abs/vault/wrong/\(id).inb", "INBOX/\(id).inb"] {
+            #expect(errorClass { _ = try FileID(inboxPath: badInb) } == "path", "\(badInb)")
+        }
     }
 
     @Test func structuralCheck() throws {

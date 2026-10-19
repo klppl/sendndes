@@ -37,33 +37,42 @@ structural check) and there are no inbox files, is that case 3 or case 4?
 readable objects"), which refuses without `--unverified-key`. Only an empty
 `objects/` and an empty `inbox/` give case 4.
 
-## Q4. SPEC 6.3 idempotency: must the inbox file's own `meta_blob` authenticate? — resolved by owner
+## Q4. SPEC 6.3 idempotency: must the inbox file's own `meta_blob` and chunks authenticate? — resolved by owner
 
 The rule requires the *existing object's* `meta_blob` to decrypt and pass 5.2,
-equal FKs, and identical authenticated chunks. It says nothing about the inbox
-file's `meta_blob`.
+equal FKs, and identical authenticated chunks. Does the inbox file itself also
+have to authenticate before the already-ingested decision is made?
 
-**Ruling: the literal reading.** The inbox file's `meta_blob` is not checked.
-Its header, path and structure are checked and its FK is derived from it.
+**Ruling: authenticate the inbox file first (earlier ruling withdrawn).** The
+already-ingested decision is made only after the inbox file itself is
+authenticated (its `meta_blob` and chunks); if authenticating the inbox file
+fails, report the error and keep the inbox file even if a matching object
+exists. Then the existing idempotency rule applies.
 
-## Q5. Object path check: is the `objects/` component itself part of it? — resolved by owner
+## Q5. Object and inbox path check: are the `objects/` and `inbox/` components part of it? — resolved by owner
 
 SPEC 4.1 checks the file name and that "an object's directory under
 `objects/`" equals the first two hex characters.
 
-**Ruling: prefix directory plus file name.** `FileID(objectPath:)` checks the
-last two path components: the name must be exactly `<32 lowercase hex>.obj`
-and its directory must equal the first two hex characters. That the prefix
-directory sits under the vault's `objects/` is the caller's job. For inbox
-files only the name (`<32 lowercase hex>.inb`) is checked.
+**Ruling: the check covers all components.** An object path is
+`objects/<xx>/<file_id>.obj` and an inbox path is `inbox/<file_id>.inb`.
+`FileID(objectPath:)` checks the last three path components (`objects`, `<xx>`
+equal to the first two hex characters, and `<32 lowercase hex>.obj`), and
+`FileID(inboxPath:)` checks the last two path components (`inbox` and
+`<32 lowercase hex>.inb`).
 
 ## Q6. Order of checks when a file has several faults — resolved by owner
 
-**Ruling: keep the Swift order.** Exactly:
+**Ruling: multi-fault error precedence is not normative.** For every input,
+accept/reject is normative and must be identical in all implementations; the
+error class is normative only for single-fault inputs; the error precedence for
+multi-fault inputs is not normative.
 
-1. Path, before the file is opened: the name is exactly 32 lowercase hex
-   characters plus `.obj` (or `.inb`), and for an object its directory equals
-   the first two hex characters → `path`.
+For reference, the order used in `ValvCore` is:
+
+1. Path, before the file is opened: `objects/<xx>/<32 lowercase hex>.obj` (where
+   `<xx>` equals the first two hex characters) or
+   `inbox/<32 lowercase hex>.inb` → `path`.
 2. Magic is `VALV` → else `malformed`.
 3. Version is 0x01 → else `unsupported`.
 4. Kind is 0x01 for an object reader, 0x02 for an inbox reader → else

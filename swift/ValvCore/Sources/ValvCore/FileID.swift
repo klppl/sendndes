@@ -18,11 +18,14 @@ public struct FileID: Hashable, Sendable, CustomStringConvertible {
     public var inboxPath: String { "inbox/\(hex).inb" }
 
     /// The expected file_id of an object at `path` (any path ending in
-    /// `<dir>/<name>`). The name must be exactly `<32 lowercase hex>.obj`
-    /// and `<dir>` must equal its first two hex characters.
+    /// `objects/<dir>/<name>`). The name must be exactly `<32 lowercase hex>.obj`,
+    /// `<dir>` must equal its first two hex characters, and its parent
+    /// directory must be `objects`.
     public init(objectPath path: String) throws {
         let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
-        guard parts.count >= 2 else { throw ValvError.path("object path needs a prefix directory") }
+        guard parts.count >= 3, parts[parts.count - 3].elementsEqual(Array("objects".utf8)) else {
+            throw ValvError.path("object path must be under objects/<xx>/<file_id>.obj")
+        }
         let id = try FileID.parseName(parts[parts.count - 1], ext: ".obj")
         let dir = [UInt8](parts[parts.count - 2])
         guard dir == Array(id.hex.utf8.prefix(2)) else {
@@ -31,10 +34,14 @@ public struct FileID: Hashable, Sendable, CustomStringConvertible {
         self = id
     }
 
-    /// The expected file_id of an inbox file at `path`; its name must be
-    /// exactly `<32 lowercase hex>.inb`.
+    /// The expected file_id of an inbox file at `path` (any path ending in
+    /// `inbox/<name>`); its parent directory must be `inbox` and its name must
+    /// be exactly `<32 lowercase hex>.inb`.
     public init(inboxPath path: String) throws {
         let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
+        guard parts.count >= 2, parts[parts.count - 2].elementsEqual(Array("inbox".utf8)) else {
+            throw ValvError.path("inbox path must be under inbox/<file_id>.inb")
+        }
         self = try FileID.parseName(parts[parts.count - 1], ext: ".inb")
     }
 

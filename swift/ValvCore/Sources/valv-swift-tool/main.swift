@@ -18,7 +18,7 @@
 //
 // encrypt-object and seal-inbox print the new file_id (32 hex) on stdout; the
 // caller moves the file to objects/<xx>/<id>.obj or inbox/<id>.inb.
-// The object file's path must end in <xx>/<id>.obj (the expected file_id).
+// The object file's path must end in objects/<xx>/<id>.obj (the expected file_id).
 // init writes vault.json and empty objects/ and inbox/, and prints nothing.
 // show-meta prints the stored name and dir as UTF-8 hex.
 // show-keys prints inbox_pub, k_auth and the recovery key; it exists only in

@@ -132,4 +132,24 @@ import Testing
         #expect(try testVault.compareIngested(inbox: DataInput(inboxFile), existingObject: DataInput(fresh.data),
                                               expected: expected) == .conflict)
     }
+
+    @Test func alreadyIngestedRequiresAuthenticInbox() throws {
+        // Tampered meta_blob in the inbox file must fail with auth (keeping .inb),
+        // even when a valid matching object already exists.
+        var badMeta = [UInt8](inboxFile)
+        badMeta[58] ^= 1
+        #expect(errorClass {
+            _ = try testVault.compareIngested(inbox: DataInput(badMeta), existingObject: DataInput(ingestedFile),
+                                              expected: expected)
+        } == "auth")
+
+        // Tampered chunk in the inbox file must fail with auth (keeping .inb),
+        // even when a valid matching object already exists.
+        var badChunk = [UInt8](inboxFile)
+        badChunk[badChunk.count - 1] ^= 1
+        #expect(errorClass {
+            _ = try testVault.compareIngested(inbox: DataInput(badChunk), existingObject: DataInput(ingestedFile),
+                                              expected: expected)
+        } == "auth")
+    }
 }

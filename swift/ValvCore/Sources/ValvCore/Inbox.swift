@@ -134,33 +134,46 @@ extension Vault {
     }
 
     /// SPEC 6.3 idempotency: is the inbox file already ingested as
-    /// `existingObject`? Requires (1) the object's unwrapped FK to equal the
-    /// inbox FK (constant time), (2) the object's meta_blob to decrypt under
-    /// it and pass SPEC 5.2, and (3) byte-identical chunks, authenticated
-    /// during the comparison. The two meta_blobs may differ (renames).
-    /// Errors in the inbox file itself are thrown; anything wrong with the
-    /// object is a conflict.
+    /// `existingObject`? First authenticates the inbox file itself (header,
+    /// `meta_blob` and every chunk); any error in the inbox file is thrown so
+    /// the caller keeps the inbox file. Then requires (1) the object's
+    /// unwrapped FK to equal the inbox FK (constant time), (2) the object's
+    /// `meta_blob` to decrypt under it and pass SPEC 5.2, and (3)
+    /// byte-identical chunks, authenticated during the comparison. The two
+    /// `meta_blob`s may differ (renames). Anything wrong with the object is a
+    /// conflict.
     public func compareIngested(inbox: ValvInput, existingObject: ValvInput, expected: FileID) throws -> IngestComparison {
-        let (ih, ikeys) = try openInboxHeader(inbox, expected: expected)
+        let reader = try openInbox(inbox, expected: expected)
+        let ih = reader.header
+        let ikeys = reader.keys
+        var ostream: ChunkStream?
         do {
             let oh = try FileHeader.read(existingObject, kind: .object, expected: expected)
             let ofk = try unwrapFK(oh)
-            guard constantTimeEqual(keyBytes(ofk), keyBytes(ikeys.fk)) else { return .conflict }
-            let okeys = FileKeys(fk: ofk)
-            _ = try oh.openMetadata(okeys.meta)
-            guard ih.layout.ctTotal == oh.layout.ctTotal else { return .conflict }
-            let istream = ChunkStream(input: inbox, layout: ih.layout, key: nil, fileID: ih.fileID)
-            let ostream = ChunkStream(input: existingObject, layout: oh.layout, key: okeys.content, fileID: oh.fileID)
-            while let ostored = try ostream.next()?.stored {
-                guard let istored = try istream.nextStored(), constantTimeEqual(istored, ostored) else {
-                    return .conflict
+            if constantTimeEqual(keyBytes(ofk), keyBytes(ikeys.fk)) {
+                let okeys = FileKeys(fk: ofk)
+                _ = try oh.openMetadata(okeys.meta)
+                if ih.layout.ctTotal == oh.layout.ctTotal {
+                    ostream = ChunkStream(input: existingObject, layout: oh.layout, key: okeys.content, fileID: oh.fileID)
                 }
             }
-            return .alreadyIngested
         } catch let e as ValvError {
             if case .io = e { throw e }
-            return .conflict
         }
+        var matches = ostream != nil
+        while let ichunk = try reader.nextChunkWithStored() {
+            if matches, let os = ostream {
+                do {
+                    if let ostored = try os.next()?.stored, constantTimeEqual(ichunk.stored, ostored) {
+                        continue
+                    }
+                } catch let e as ValvError {
+                    if case .io = e { throw e }
+                }
+                matches = false
+            }
+        }
+        return matches ? .alreadyIngested : .conflict
     }
 
     /// SPEC 4.5: an inbox file authenticates if its meta_blob and first chunk do.
