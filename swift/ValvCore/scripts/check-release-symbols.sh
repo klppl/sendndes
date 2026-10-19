@@ -43,6 +43,11 @@ if [ "$rc" -ne 2 ]; then
     echo "FAIL: release tool accepts show-keys (exit $rc, expected usage error 2)" >&2
     exit 1
 fi
+rc=0; "$plain_tool" decrypt-object /nonexistent/vault.json /x/00/x.obj /x/out --vk-stdin </dev/null >/dev/null 2>&1 || rc=$?
+if [ "$rc" -ne 2 ]; then
+    echo "FAIL: release tool accepts --vk-stdin (exit $rc, expected usage error 2)" >&2
+    exit 1
+fi
 
 swift build -c release --build-path "$trait" --traits VALV_TESTVECTORS >/dev/null
 trait_tool="$(swift build -c release --build-path "$trait" --traits VALV_TESTVECTORS --show-bin-path)/valv-swift-tool"

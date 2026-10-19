@@ -56,7 +56,11 @@ re-encrypt vectors from fixed values are compiled out.
 I/O goes through `ValvInput`/`ValvOutput` (`FileInput`, `FileOutput`,
 `DataInput`, `DataOutput`, `DiscardOutput`). Readers request at most one stored
 chunk (65552 bytes) per read; writers keep at most two plaintext chunks (the
-one-chunk lookahead).
+one-chunk lookahead). `FileInput` and `FileOutput` drain an autorelease pool
+per call, because `FileHandle` returns autoreleased buffers; without that,
+memory grew with file size (see `../interop/RESULTS.md`, Memory). Peak
+footprint is about 3 MiB for any file size via `Vault(vk:)`, and about 66 MiB
+with a passphrase unlock (Argon2id).
 
 No public function takes a key, nonce, salt, or random source, with two
 deliberate exceptions: `Vault(vk:)` (required by SPEC 9) and the recovery-key
@@ -78,9 +82,11 @@ valv-swift-tool show-meta      <vault.json> <object-file>
 valv-swift-tool show-keys      <vault.json>   # only with --traits VALV_TESTVECTORS
 ```
 
-`show-keys` prints `inbox_pub`, `k_auth` and the recovery key. It is compiled
-only with the test trait, and the release check verifies that a normal build
-of the tool rejects it.
+`show-keys` prints `inbox_pub`, `k_auth`, the recovery key and VK. Also only
+in test builds, `decrypt-object` and `encrypt-object` accept `--vk-stdin` (VK
+as hex on stdin, opened with `Vault(vk:)`, no Argon2) for memory measurement.
+Both are compiled only with the test trait, and the release check verifies
+that a normal build of the tool rejects them.
 
 `encrypt-object` and `seal-inbox` print the new file_id; the caller moves the
 file to `objects/<xx>/<id>.obj` or `inbox/<id>.inb`. `seal-inbox` exists for

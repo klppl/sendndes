@@ -11,6 +11,11 @@
 //   valv-swift-tool show-meta      <vault.json> <object-file>
 //   valv-swift-tool show-keys      <vault.json>     (only with --traits VALV_TESTVECTORS)
 //
+// Only with --traits VALV_TESTVECTORS: decrypt-object and encrypt-object take
+// --vk-stdin, which reads VK as 64 hex characters from stdin instead of a
+// passphrase and opens the vault with Vault(vk:) (no Argon2), the way a File
+// Provider extension would. Used to measure streaming memory.
+//
 // encrypt-object and seal-inbox print the new file_id (32 hex) on stdout; the
 // caller moves the file to objects/<xx>/<id>.obj or inbox/<id>.inb.
 // The object file's path must end in <xx>/<id>.obj (the expected file_id).
@@ -54,6 +59,34 @@ func unlock(_ vaultJSONPath: String) -> Vault {
     } catch {
         fail("\(error)")
     }
+}
+
+/// Opens the vault from a passphrase, or (test builds, --vk-stdin) from raw VK.
+func openVault(_ vaultJSONPath: String, vkStdin: Bool) -> Vault {
+    #if VALV_TESTVECTORS
+    if vkStdin {
+        guard let json = FileManager.default.contents(atPath: vaultJSONPath) else { fail("cannot read \(vaultJSONPath)") }
+        var hexChars = readPassphrase()
+        defer { wipe(&hexChars) }
+        guard hexChars.count == 64 else { fail("--vk-stdin needs 64 hex characters") }
+        var vk = [UInt8]()
+        defer { wipe(&vk) }
+        var i = 0
+        while i < 64 {
+            guard let b = UInt8(String(decoding: hexChars[i..<(i + 2)], as: UTF8.self), radix: 16) else { fail("bad VK hex") }
+            vk.append(b)
+            i += 2
+        }
+        do {
+            return try Vault(vk: vk, vaultJSON: json)
+        } catch {
+            fail("\(error)")
+        }
+    }
+    #else
+    if vkStdin { fail("--vk-stdin is not available in this build", 2) }
+    #endif
+    return unlock(vaultJSONPath)
 }
 
 func openRead(_ path: String) -> FileHandle {
@@ -108,8 +141,9 @@ guard let cmd = argv.first else { fail(usage, 2) }
 switch cmd {
 case "decrypt-object":
     let a = args(argv, 3)
-    guard argv.count == 4 else { fail(usage, 2) }
-    let vault = unlock(a[0])
+    let vkStdin = argv.count == 5 && argv[4] == "--vk-stdin"
+    guard argv.count == 4 || vkStdin else { fail(usage, 2) }
+    let vault = openVault(a[0], vkStdin: vkStdin)
     let out = create(a[2])
     do {
         let expected = try FileID(objectPath: a[1])
@@ -122,8 +156,11 @@ case "decrypt-object":
 
 case "encrypt-object", "seal-inbox":
     let a = args(argv, 3)
-    let meta = metadata(Array(argv.dropFirst(4)), input: a[1])
-    let vault = unlock(a[0])
+    var extra = Array(argv.dropFirst(4))
+    let vkStdin = extra.contains("--vk-stdin")
+    extra.removeAll { $0 == "--vk-stdin" }
+    let meta = metadata(extra, input: a[1])
+    let vault = openVault(a[0], vkStdin: vkStdin)
     let out = create(a[2])
     do {
         let input = FileInput(openRead(a[1]))

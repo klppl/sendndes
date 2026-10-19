@@ -82,3 +82,71 @@ None.
 - `show-keys <vault.json>`: test-only (trait `VALV_TESTVECTORS`). Prints
   `inbox_pub`, `k_auth` in the same lines as `valv server-config`, and
   `recovery_key`.
+
+## iOS builds (2026-10-19, Xcode 27.1, build 27A9275, iOS SDK 27.1)
+
+Run in `swift/ValvCore`:
+
+| Command | Result |
+|---|---|
+| `xcodebuild -scheme ValvCore -destination 'generic/platform=iOS' clean build` | BUILD SUCCEEDED, 0 warnings |
+| `xcodebuild -scheme ValvCore -destination 'generic/platform=iOS Simulator' clean build` | BUILD SUCCEEDED, 0 warnings |
+| `xcodebuild -scheme ValvCore-Package -destination 'generic/platform=iOS Simulator' build-for-testing` | TEST BUILD SUCCEEDED |
+| `xcodebuild -scheme ValvCore-Package -destination 'platform=iOS Simulator,name=iPhone 17' test` | not run: no iOS Simulator runtime is installed (`xcrun simctl list runtimes` is empty), so there is no device |
+
+No warning mentions concurrency, Sendable or a deprecated API. (The only log
+lines containing "concurrency" are the module name `_SwiftConcurrencyShims` in
+build steps.) The package builds in Swift 6 language mode with strict
+concurrency checking.
+
+To run the unit tests on a simulator, install a runtime first
+(`xcodebuild -downloadPlatform iOS`, several GB), then use the `test` command
+above. Note that xcodebuild does not enable the `VALV_TESTVECTORS` trait, so a
+simulator run would execute the 50 tests that do not need it.
+
+## Memory (`swift/interop/measure-memory.sh`, release build, macOS arm64)
+
+Peak memory footprint from `/usr/bin/time -l` (RSS is about 4.5 MiB higher in
+every row). "passphrase" opens the vault with Argon2id first, as the main app
+would; "vk" uses `--vk-stdin` (test build only), which calls `Vault(vk:)` with
+no Argon2, as a File Provider extension would.
+
+| Step | 50 MB | 500 MB |
+|---|---|---|
+| unlock alone (passphrase, Argon2id) | 65.6 MiB | — |
+| encrypt (passphrase) | 65.7 MiB | 65.7 MiB |
+| decrypt (passphrase) | 65.7 MiB | 65.6 MiB |
+| encrypt (vk, no Argon2) | 2.7 MiB | 3.2 MiB |
+| decrypt (vk, no Argon2) | 2.6 MiB | 3.0 MiB |
+
+Peak memory does not grow with file size; the script fails if a 500 MB run
+uses more than 4 MiB above the 50 MB run. Using `Vault(vk:)` saves the
+extension about 63 MiB, all of it Argon2id's 64 MiB work area.
+
+### Divergence found and fixed: memory grew with file size
+
+The first measurement, before the fix:
+
+| Step | 50 MB | 500 MB |
+|---|---|---|
+| encrypt (vk) | 50.7 MiB | 482.3 MiB |
+| decrypt (vk) | 62.7 MiB | 604.3 MiB |
+
+Cause: `FileHandle.read(upToCount:)` returns autoreleased buffers. ValvCore's
+`FileInput.read` called it once per chunk inside one long loop with no
+autorelease pool, so every chunk stayed alive until the process ended. A File
+Provider extension would hit the same thing, since a GCD work item drains its
+pool only when the whole operation finishes. A standalone loop over a 300 MB
+file showed it (peak RSS):
+
+| Loop body | no pool | `autoreleasepool` per iteration |
+|---|---|---|
+| `read(upToCount: 65536)` only | 293.5 MiB | 6.3 MiB |
+| read + `write(contentsOf:)` | 293.5 MiB | 6.3 MiB |
+| read + ChaChaPoly.seal + write | 294.1 MiB | 7.0 MiB |
+
+Fix (library only, no format change): `FileInput.read` and `FileOutput.write`
+in `Sources/ValvCore/IO.swift` now wrap each call in `autoreleasepool`. The
+chunking logic was already bounded (at most two plaintext chunks when writing,
+one stored chunk per read). After the fix the unit tests (54), `run.sh` (all
+checks) and both iOS builds pass again.

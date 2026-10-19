@@ -54,10 +54,16 @@ public final class FileInput: ValvInput {
     }
 
     public func read(upTo count: Int) throws -> Data {
-        do {
-            return try handle.read(upToCount: count) ?? Data()
-        } catch {
-            throw ValvError.io("read failed")
+        // FileHandle returns autoreleased buffers. Without a pool per read,
+        // every chunk stays alive until the caller's pool drains, which for a
+        // CLI or one long GCD work item is the end of the whole file: memory
+        // then grows with file size. The pool keeps it at one chunk.
+        try autoreleasepool {
+            do {
+                return try handle.read(upToCount: count) ?? Data()
+            } catch {
+                throw ValvError.io("read failed")
+            }
         }
     }
 
@@ -78,10 +84,13 @@ public final class FileOutput: ValvOutput {
     }
 
     public func write(_ data: Data) throws {
-        do {
-            try handle.write(contentsOf: data)
-        } catch {
-            throw ValvError.io("write failed")
+        // See FileInput.read: drain per call so writes cannot accumulate either.
+        try autoreleasepool {
+            do {
+                try handle.write(contentsOf: data)
+            } catch {
+                throw ValvError.io("write failed")
+            }
         }
     }
 }
