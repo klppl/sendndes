@@ -7,6 +7,7 @@
 //	valv ls [--dir <path>]
 //	valv get <id-or-path> [-o <out>] [--force] [--unverified-stream]
 //	valv ingest [--inbox <dir>]
+//	valv pull --server <url> --token-file <file>
 //	valv verify
 //	valv passwd
 //	valv recover <vault-dir> [--force]
@@ -34,6 +35,7 @@ commands:
   ls [--dir <path>]                      list files
   get <id-or-path> [-o <out>] [--force]  decrypt a file
   ingest [--inbox <dir>]                 move sealed inbox files into the vault
+  pull --server <url> --token-file <f>   pull and ingest sealed files from a valvd server
   verify                                 authenticate every file in the vault
   passwd                                 change the passphrase
   recover <vault-dir> [--force] [--unverified-key]
@@ -87,6 +89,7 @@ func (a *app) run(args []string) int {
 		"ls":            a.cmdLs,
 		"get":           a.cmdGet,
 		"ingest":        a.cmdIngest,
+		"pull":          a.cmdPull,
 		"verify":        a.cmdVerify,
 		"passwd":        a.cmdPasswd,
 		"recover":       a.cmdRecover,

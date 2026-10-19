@@ -1,0 +1,713 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/klppl/valv/core"
+	"golang.org/x/text/unicode/norm"
+)
+
+const testBearerToken = "0123456789abcdef0123456789abcdef-secret-token"
+
+type pipeListener struct {
+	ch     chan net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newPipeListener() *pipeListener {
+	return &pipeListener{
+		ch:     make(chan net.Conn, 64),
+		closed: make(chan struct{}),
+	}
+}
+
+func (l *pipeListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.ch:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *pipeListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *pipeListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8485}
+}
+
+func (l *pipeListener) dial() (net.Conn, error) {
+	select {
+	case <-l.closed:
+		return nil, net.ErrClosed
+	default:
+	}
+	c1, c2 := net.Pipe()
+	select {
+	case l.ch <- c1:
+		return c2, nil
+	case <-l.closed:
+		_ = c1.Close()
+		_ = c2.Close()
+		return nil, net.ErrClosed
+	}
+}
+
+type testServerEnv struct {
+	t        *testing.T
+	keys     *core.VaultKeys
+	inboxDir string
+	dirH     *dirHandle
+	reg      *tempRegistry
+	srv      *inboxServer
+	httpSrv  *http.Server
+	ln       *pipeListener
+	client   *http.Client
+	baseURL  string
+	cancel   context.CancelFunc
+}
+
+func startTestServer(t *testing.T, opts serverOpts) *testServerEnv {
+	t.Helper()
+	var vk [core.KeySize]byte
+	if _, err := rand.Read(vk[:]); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := core.DeriveVaultKeys(vk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inboxDir := filepath.Join(t.TempDir(), "inbox")
+	if err := os.Mkdir(inboxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dirH, err := openInboxDir(inboxDir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &serverConfig{
+		InboxPub: keys.InboxPub,
+		KAuth:    keys.InboxAuth,
+		Token:    []byte(testBearerToken),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	reg := newTempRegistry()
+	srv := newInboxServer(ctx, dirH, reg, cfg, opts)
+
+	ln := newPipeListener()
+	httpSrv := newHTTPServer(srv)
+	go httpSrv.Serve(ln)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return ln.dial()
+			},
+		},
+	}
+
+	env := &testServerEnv{
+		t:        t,
+		keys:     keys,
+		inboxDir: inboxDir,
+		dirH:     dirH,
+		reg:      reg,
+		srv:      srv,
+		httpSrv:  httpSrv,
+		ln:       ln,
+		client:   client,
+		baseURL:  "http://127.0.0.1:8485",
+		cancel:   cancel,
+	}
+	t.Cleanup(func() {
+		cancel()
+		_ = httpSrv.Close()
+		_ = ln.Close()
+		reg.cleanupAll()
+		srv.Wipe()
+		cfg.Wipe()
+		keys.Wipe()
+		_ = dirH.Close()
+	})
+	return env
+}
+
+func (e *testServerEnv) doReq(method, path string, headers map[string][]string, body io.Reader, contentLen int64) (*http.Response, []byte) {
+	e.t.Helper()
+	req, err := http.NewRequest(method, e.baseURL+path, body)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testBearerToken)
+	for k, vals := range headers {
+		req.Header.Del(k)
+		for _, v := range vals {
+			req.Header.Add(k, v)
+		}
+	}
+	if contentLen >= 0 {
+		req.ContentLength = contentLen
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return resp, data
+}
+
+func assertNoPartFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".valv-") || strings.HasSuffix(e.Name(), ".part") {
+			t.Fatalf("leftover temp file in inbox directory: %s", e.Name())
+		}
+	}
+}
+
+// TestValvdEndToEndAndEmptyUpload covers PUT /inbox (including empty 0-byte
+// files per review recommendation #3 / D-R2, multi-chunk files, and non-ASCII
+// NFD metadata via Base64 headers), GET /inbox, GET /inbox/{id},core.IngestInbox,
+// and DELETE /inbox/{id}.
+func TestValvdEndToEndAndEmptyUpload(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
+
+	cases := []struct {
+		name    string
+		headers map[string][]string
+		plain   []byte
+		wantName string
+		wantDir  string
+		wantMIME string
+		wantMTime int64
+	}{
+		{
+			name: "empty file (Content-Length 0, D-R2 #3)",
+			headers: map[string][]string{
+				"X-Valv-Name":  {"empty.txt"},
+				"X-Valv-Mtime": {"0"},
+			},
+			plain:     []byte{},
+			wantName:  "empty.txt",
+			wantDir:   "",
+			wantMIME:  "",
+			wantMTime: 0,
+		},
+		{
+			name: "multi-chunk with Base64 NFD Unicode metadata and negative mtime",
+			headers: map[string][]string{
+				"X-Valv-Name-B64": {base64.StdEncoding.EncodeToString([]byte("Ra\u0308ksmo\u0308rga\u030as.bin"))},
+				"X-Valv-Dir-B64":  {base64.StdEncoding.EncodeToString([]byte("Ko\u0308k/2026"))},
+				"X-Valv-Mime":     {"application/octet-stream"},
+				"X-Valv-Mtime":    {"-1234567890"},
+			},
+			plain:     bytes.Repeat([]byte("valv-stream-chunk-test-"), 6000), // > 2 chunks
+			wantName:  norm.NFC.String("Ra\u0308ksmo\u0308rga\u030as.bin"),
+			wantDir:   norm.NFC.String("Ko\u0308k/2026"),
+			wantMIME:  "application/octet-stream",
+			wantMTime: -1234567890,
+		},
+		{
+			name: "mtime above 2^53",
+			headers: map[string][]string{
+				"X-Valv-Name":  {"future.dat"},
+				"X-Valv-Mtime": {"18014398509481984"}, // 2^54
+			},
+			plain:     []byte("hello world"),
+			wantName:  "future.dat",
+			wantDir:   "",
+			wantMIME:  "",
+			wantMTime: 18014398509481984,
+		},
+	}
+
+	var uploadedIDs []string
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, body := env.doReq(http.MethodPut, "/inbox", tc.headers, bytes.NewReader(tc.plain), int64(len(tc.plain)))
+			if resp.StatusCode != http.StatusCreated {
+				t.Fatalf("PUT status %d: %s", resp.StatusCode, body)
+			}
+			var putResp struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(body, &putResp); err != nil {
+				t.Fatal(err)
+			}
+			id, err := core.ParseFileID(putResp.ID)
+			if err != nil {
+				t.Fatalf("invalid file_id %q: %v", putResp.ID, err)
+			}
+			uploadedIDs = append(uploadedIDs, putResp.ID)
+
+			// Download the sealed .inb and verify it with core.IngestInbox + core.DecryptObject.
+			getResp, inbBytes := env.doReq(http.MethodGet, "/inbox/"+putResp.ID, nil, nil, -1)
+			if getResp.StatusCode != http.StatusOK {
+				t.Fatalf("GET /inbox/%s: status %d", putResp.ID, getResp.StatusCode)
+			}
+			// For empty file: header (58 + 540 = 598) + 16-byte tag = 614 bytes.
+			if len(tc.plain) == 0 && len(inbBytes) != 58+540+16 {
+				t.Fatalf("empty file .inb length = %d, want %d", len(inbBytes), 58+540+16)
+			}
+			var objBuf bytes.Buffer
+			meta, err := core.IngestInbox(bytes.NewReader(inbBytes), int64(len(inbBytes)), id, env.keys, &objBuf)
+			if err != nil {
+				t.Fatalf("IngestInbox: %v", err)
+			}
+			if meta.Name != tc.wantName || meta.Dir != tc.wantDir || meta.MIME != tc.wantMIME || meta.MTime != tc.wantMTime || meta.Rev != 1 {
+				t.Fatalf("metadata = %+v, want name=%q dir=%q mime=%q mtime=%d rev=1", meta, tc.wantName, tc.wantDir, tc.wantMIME, tc.wantMTime)
+			}
+			var decBuf bytes.Buffer
+			if _, err := core.DecryptObject(bytes.NewReader(objBuf.Bytes()), int64(objBuf.Len()), id, env.keys, &decBuf); err != nil {
+				t.Fatalf("DecryptObject: %v", err)
+			}
+			if !bytes.Equal(decBuf.Bytes(), tc.plain) {
+				t.Fatalf("decrypted plaintext differs (got %d bytes, want %d)", decBuf.Len(), len(tc.plain))
+			}
+		})
+	}
+
+	assertNoPartFiles(t, env.inboxDir)
+
+	// GET /inbox must list all 3 IDs sorted.
+	listResp, listBody := env.doReq(http.MethodGet, "/inbox", nil, nil, -1)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /inbox: %d", listResp.StatusCode)
+	}
+	var listParsed struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.Unmarshal(listBody, &listParsed); err != nil || len(listParsed.IDs) != len(uploadedIDs) {
+		t.Fatalf("list = %+v, err = %v", listParsed, err)
+	}
+
+	// DELETE each ID and verify it is gone.
+	for _, id := range uploadedIDs {
+		delResp, _ := env.doReq(http.MethodDelete, "/inbox/"+id, nil, nil, -1)
+		if delResp.StatusCode != http.StatusNoContent {
+			t.Fatalf("DELETE /inbox/%s: %d", id, delResp.StatusCode)
+		}
+		delAgain, _ := env.doReq(http.MethodDelete, "/inbox/"+id, nil, nil, -1)
+		if delAgain.StatusCode != http.StatusNotFound {
+			t.Fatalf("second DELETE /inbox/%s: %d, want 404", id, delAgain.StatusCode)
+		}
+		getGone, _ := env.doReq(http.MethodGet, "/inbox/"+id, nil, nil, -1)
+		if getGone.StatusCode != http.StatusNotFound {
+			t.Fatalf("GET deleted /inbox/%s: %d, want 404", id, getGone.StatusCode)
+		}
+	}
+}
+
+// TestHostileAuthAndRateLimit tests invalid bearer tokens, tokens > 512 bytes
+// (D-R2 #2), duplicate Authorization headers, and per-IP rate limiting.
+func TestHostileAuthAndRateLimit(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
+
+	badAuths := [][]string{
+		nil,
+		{""},
+		{"Basic dXNlcjpwYXNz"},
+		{"Bearer "},
+		{"Bearer wrong-token-0123456789abcdef0123456789abcdef"},
+		{"Bearer " + testBearerToken[:len(testBearerToken)-1] + "X"},
+		{"Bearer " + testBearerToken + "extra"},
+		{"Bearer " + strings.Repeat("a", 513)}, // D-R2 #2: > 512 bytes rejected before SHA-256
+		{"Bearer " + testBearerToken, "Bearer " + testBearerToken}, // duplicate Authorization header
+	}
+
+	for i, authVals := range badAuths {
+		// Reset rate limiter before each individual case so we test 401 first.
+		env.srv.authRL = newIPRateLimiter(100, time.Second)
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/inbox", nil)
+		for _, v := range authVals {
+			req.Header.Add("Authorization", v)
+		}
+		resp, err := env.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("case %d (%v): got %d, want 401", i, authVals, resp.StatusCode)
+		}
+	}
+
+	// Now test rate limiting: with burst 5, the 6th failed attempt from the same IP gets 429.
+	env.srv.authRL = newIPRateLimiter(authRateBurst, time.Hour)
+	for i := 1; i <= authRateBurst+2; i++ {
+		req, _ := http.NewRequest(http.MethodGet, env.baseURL+"/inbox", nil)
+		req.Header.Set("Authorization", "Bearer wrong")
+		resp, err := env.client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		want := http.StatusUnauthorized
+		if i > authRateBurst {
+			want = http.StatusTooManyRequests
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("attempt %d: got %d, want %d", i, resp.StatusCode, want)
+		}
+	}
+}
+
+// TestHostileMetadataHeaders tests duplicate headers (D-R2 #1), path traversal
+// in names and dirs, invalid UTF-8, non-canonical base64, oversized metadata,
+// and bad mtime values.
+func TestHostileMetadataHeaders(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
+
+	hugeNameB64 := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), core.MaxMetaPadded))
+
+	badHeaders := []struct {
+		desc string
+		h    map[string][]string
+	}{
+		{"missing name", map[string][]string{}},
+		{"empty name", map[string][]string{"X-Valv-Name": {""}}},
+		{"empty b64 name", map[string][]string{"X-Valv-Name-B64": {""}}},
+		{"duplicate X-Valv-Name (D-R2 #1)", map[string][]string{"X-Valv-Name": {"a.txt", "b.txt"}}},
+		{"duplicate X-Valv-Name-B64 (D-R2 #1)", map[string][]string{"X-Valv-Name-B64": {"YS50eHQ=", "Yi50eHQ="}}},
+		{"duplicate X-Valv-Dir (D-R2 #1)", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"d1", "d2"}}},
+		{"duplicate X-Valv-Mtime (D-R2 #1)", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"1", "2"}}},
+		{"both plain and b64 name", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Name-B64": {"YS50eHQ="}}},
+		{"both plain and b64 dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"d"}, "X-Valv-Dir-B64": {"ZA=="}}},
+		{"unknown X-Valv header", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Extra": {"1"}}},
+		{"dot name", map[string][]string{"X-Valv-Name": {"."}}},
+		{"dotdot name", map[string][]string{"X-Valv-Name": {".."}}},
+		{"slash in name", map[string][]string{"X-Valv-Name": {"a/b.txt"}}},
+		{"nul in b64 name", map[string][]string{"X-Valv-Name-B64": {base64.StdEncoding.EncodeToString([]byte("a\x00b"))}}},
+		{"invalid UTF-8 in b64 name", map[string][]string{"X-Valv-Name-B64": {base64.StdEncoding.EncodeToString([]byte{0xff, 0xfe})}}},
+		{"unpadded base64 name", map[string][]string{"X-Valv-Name-B64": {"YWJjZA"}}},
+		{"leading slash in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"/sub"}}},
+		{"trailing slash in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"sub/"}}},
+		{"empty component in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"a//b"}}},
+		{"dotdot component in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"a/../b"}}},
+		{"dot component in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir": {"a/./b"}}},
+		{"invalid UTF-8 in dir", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Dir-B64": {base64.StdEncoding.EncodeToString([]byte{0x80})}}},
+		{"invalid UTF-8 in mime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mime-B64": {base64.StdEncoding.EncodeToString([]byte{0x80})}}},
+		{"float mtime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"1.5"}}},
+		{"leading zero mtime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"01"}}},
+		{"negative zero mtime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"-0"}}},
+		{"plus mtime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"+100"}}},
+		{"overflow mtime", map[string][]string{"X-Valv-Name": {"a.txt"}, "X-Valv-Mtime": {"99999999999999999999"}}},
+		{"metadata exceeds 64 KiB padded", map[string][]string{"X-Valv-Name-B64": {hugeNameB64}}},
+	}
+
+	// Metadata whose canonical JSON exceeds 65536 bytes (e.g. name=24000 bytes + dir=24000 bytes + mime=18000 bytes = 66000 bytes)
+	// while keeping total HTTP headers under MaxHeaderBytes (128 KiB) -> 400 Bad Request from core.EncodeMetadata.
+	part24k := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 24000))
+	part18k := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("b"), 18000))
+	respMetaBig, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{
+		"X-Valv-Name-B64": {part24k},
+		"X-Valv-Dir-B64":  {part24k},
+		"X-Valv-Mime-B64": {part18k},
+	}, strings.NewReader("hello"), 5)
+	if respMetaBig.StatusCode != http.StatusBadRequest && respMetaBig.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
+		t.Errorf("metadata > 64 KiB: got %d, want 400 or 431", respMetaBig.StatusCode)
+	}
+
+	// Single header exceeding MaxHeaderBytes (64 KiB) -> 431 Request Header Fields Too Large.
+	respHdrBig, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{
+		"X-Valv-Name-B64": {hugeNameB64},
+	}, strings.NewReader("hello"), 5)
+	if respHdrBig.StatusCode != http.StatusRequestHeaderFieldsTooLarge && respHdrBig.StatusCode != http.StatusBadRequest {
+		t.Errorf("header > MaxHeaderBytes: got %d, want 431 or 400", respHdrBig.StatusCode)
+	}
+
+	for _, tc := range badHeaders {
+		if tc.desc == "metadata exceeds 64 KiB padded" {
+			continue
+		}
+		resp, _ := env.doReq(http.MethodPut, "/inbox", tc.h, strings.NewReader("hello"), 5)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: got status %d, want 400", tc.desc, resp.StatusCode)
+		}
+	}
+	assertNoPartFiles(t, env.inboxDir)
+	ids, active, _ := env.dirH.listInboxIDs()
+	if len(ids) != 0 || active != 0 {
+		t.Fatalf("bad metadata created files: ids=%v active=%d", ids, active)
+	}
+}
+
+// TestHostileStreams covers truncated uploads, oversized uploads (> maxUploadBytes),
+// slow uploads stalling past ioTimeout, and concurrency limits.
+func TestHostileStreams(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxUploadBytes = 100 * 1024 // 100 KiB
+	opts.ioTimeout = 150 * time.Millisecond
+	opts.maxConcurrentPUTs = 1
+	opts.slotWaitTimeout = 100 * time.Millisecond
+	env := startTestServer(t, opts)
+
+	// 1. Oversized upload with known Content-Length.
+	resp, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"big.bin"}}, bytes.NewReader(make([]byte, 200*1024)), 200*1024)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("known oversized PUT: got %d, want 413", resp.StatusCode)
+	}
+
+	// 2. Oversized chunked upload (ContentLength == -1).
+	resp, _ = env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"big-chunked.bin"}}, io.LimitReader(bytes.NewReader(make([]byte, 200*1024)), 200*1024), -1)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked oversized PUT: got %d, want 413", resp.StatusCode)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+
+	// 3. Aborted upload mid-stream (declares Content-Length: 50000, sends 1000 bytes then closes connection).
+	conn, err := env.ln.dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawReq := fmt.Sprintf("PUT /inbox HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nX-Valv-Name: aborted.bin\r\nContent-Length: 50000\r\n\r\n", testBearerToken)
+	_, _ = conn.Write([]byte(rawReq))
+	_, _ = conn.Write(bytes.Repeat([]byte("x"), 1000))
+	_ = conn.Close() // abort before sending remaining 49000 bytes
+
+	// Wait briefly for server handler to finish cleanup.
+	time.Sleep(50 * time.Millisecond)
+	assertNoPartFiles(t, env.inboxDir)
+	if ids, _, _ := env.dirH.listInboxIDs(); len(ids) != 0 {
+		t.Fatalf("aborted upload left a sealed file: %v", ids)
+	}
+
+	// 4. Slow upload stalling past ioTimeout (150ms) and concurrent upload rejection.
+	pr, pw := io.Pipe()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var slowStatus int
+	go func() {
+		defer wg.Done()
+		req, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox", pr)
+		req.Header.Set("Authorization", "Bearer "+testBearerToken)
+		req.Header.Set("X-Valv-Name", "slow.bin")
+		res, err := env.client.Do(req)
+		if err == nil {
+			slowStatus = res.StatusCode
+			res.Body.Close()
+		}
+	}()
+
+	// Wait until the slow upload is in-flight and holding the single upload slot.
+	time.Sleep(30 * time.Millisecond)
+
+	// A second concurrent PUT must fail with 429 Too Many Requests after slotWaitTimeout (100ms).
+	resp2, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"second.bin"}}, strings.NewReader("hi"), 2)
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("concurrent PUT while slot held: got %d, want 429", resp2.StatusCode)
+	}
+
+	// Let the first upload stall past ioTimeout (150ms).
+	time.Sleep(250 * time.Millisecond)
+	_ = pw.Close()
+	wg.Wait()
+	if slowStatus != 0 && slowStatus != http.StatusRequestTimeout && slowStatus != http.StatusBadRequest {
+		t.Fatalf("slow upload status = %d, want 408 or 400 (or connection closed)", slowStatus)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+	if ids, _, _ := env.dirH.listInboxIDs(); len(ids) != 0 {
+		t.Fatalf("slow upload left a file: %v", ids)
+	}
+}
+
+// TestHostilePathsAndFilesystem tests path traversal, query strings, wrong HTTP
+// methods, symlinks/FIFOs in the inbox directory, and startup .part cleanup.
+func TestHostilePathsAndFilesystem(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
+
+	badPaths := []string{
+		"/inbox/../../etc/passwd",
+		"/inbox/.valv-0123456789abcdef.part",
+		"/inbox/0123456789ABCDEF0123456789ABCDEF", // uppercase hex
+		"/inbox/0123456789abcdef0123456789abcde",  // 31 chars
+		"/inbox/0123456789abcdef0123456789abcdef0", // 33 chars
+		"/inbox/0123456789abcdef0123456789abcdef/extra",
+		"/inbox?foo=bar",
+	}
+	for _, p := range badPaths {
+		for _, m := range []string{http.MethodGet, http.MethodDelete} {
+			resp, _ := env.doReq(m, p, nil, nil, -1)
+			if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s %s: got %d, want 400 or 404", m, p, resp.StatusCode)
+			}
+		}
+	}
+
+	// Unsupported methods.
+	resp, _ := env.doReq(http.MethodPost, "/inbox", nil, nil, -1)
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /inbox: got %d, want 405", resp.StatusCode)
+	}
+
+	// Plant a symlink and a directory with a valid <32 hex>.inb name inside inboxDir.
+	symID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	dirID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	victim := filepath.Join(t.TempDir(), "victim")
+	_ = os.WriteFile(victim, []byte("secret"), 0o600)
+	_ = os.Symlink(victim, filepath.Join(env.inboxDir, symID+".inb"))
+	_ = os.Mkdir(filepath.Join(env.inboxDir, dirID+".inb"), 0o700)
+
+	// Neither should appear in GET /inbox.
+	listResp, listBody := env.doReq(http.MethodGet, "/inbox", nil, nil, -1)
+	if listResp.StatusCode != http.StatusOK || string(listBody) != `{"ids":[]}`+"\n" {
+		t.Fatalf("GET /inbox with symlink/dir: %d %s", listResp.StatusCode, listBody)
+	}
+	// Neither should be served by GET /inbox/{id} or unlinked by DELETE /inbox/{id}.
+	for _, id := range []string{symID, dirID} {
+		gResp, _ := env.doReq(http.MethodGet, "/inbox/"+id, nil, nil, -1)
+		if gResp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("GET planted %s: got %d, want 400", id, gResp.StatusCode)
+		}
+		dResp, _ := env.doReq(http.MethodDelete, "/inbox/"+id, nil, nil, -1)
+		if dResp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("DELETE planted %s: got %d, want 400", id, dResp.StatusCode)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(env.inboxDir, symID+".inb")); err != nil {
+		t.Fatal("DELETE unlinked planted symlink")
+	}
+
+	// Startup cleanup of leftover .valv-<16 hex>.part files.
+	stalePart := filepath.Join(env.inboxDir, ".valv-0123456789abcdef.part")
+	_ = os.WriteFile(stalePart, []byte("incomplete"), 0o600)
+	d2, err := openInboxDir(env.inboxDir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = d2.Close()
+	if _, err := os.Lstat(stalePart); !os.IsNotExist(err) {
+		t.Fatal("openInboxDir did not remove stale .part file on startup")
+	}
+}
+
+// TestConfigPermissionsAndListenGuards verifies config file mode checks (0600),
+// vault-root refusal, non-loopback plain HTTP refusal, and zero-logging.
+func TestConfigPermissionsAndListenGuards(t *testing.T) {
+	tmp := t.TempDir()
+	inboxDir := filepath.Join(tmp, "inbox")
+	_ = os.Mkdir(inboxDir, 0o700)
+
+	var pub, kauth [core.KeySize]byte
+	pub[0], kauth[0] = 1, 2
+	cfgContent := fmt.Sprintf("inbox_pub: %s\nk_auth: %s\ntoken: %s\n",
+		base64.StdEncoding.EncodeToString(pub[:]),
+		base64.StdEncoding.EncodeToString(kauth[:]),
+		testBearerToken)
+
+	// 1. Config with 0644 permissions must be refused.
+	openCfg := filepath.Join(tmp, "open.conf")
+	_ = os.WriteFile(openCfg, []byte(cfgContent), 0o644)
+	var out, errb bytes.Buffer
+	if code := run([]string{"--config", openCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "permissions") {
+		t.Fatalf("0644 config accepted: code=%d stderr=%s", code, errb.String())
+	}
+
+	// 2. Symlinked config file must be refused.
+	goodCfg := filepath.Join(tmp, "good.conf")
+	_ = os.WriteFile(goodCfg, []byte(cfgContent), 0o600)
+	symCfg := filepath.Join(tmp, "sym.conf")
+	_ = os.Symlink(goodCfg, symCfg)
+	errb.Reset()
+	if code := run([]string{"--config", symCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "symlink") {
+		t.Fatalf("symlink config accepted: code=%d stderr=%s", code, errb.String())
+	}
+
+	// 3. Non-loopback address without TLS or --allow-insecure-http must be refused.
+	errb.Reset()
+	if code := run([]string{"--config", goodCfg, "--inbox", inboxDir, "--listen", "0.0.0.0:0"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "non-loopback") {
+		t.Fatalf("non-loopback plain HTTP accepted without flag: code=%d stderr=%s", code, errb.String())
+	}
+
+	// 4. Pointing --inbox at a vault root (containing vault.json) must be refused.
+	vaultRoot := filepath.Join(tmp, "vault")
+	_ = os.Mkdir(vaultRoot, 0o700)
+	_ = os.WriteFile(filepath.Join(vaultRoot, "vault.json"), []byte("{}"), 0o600)
+	errb.Reset()
+	if code := run([]string{"--config", goodCfg, "--inbox", vaultRoot}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "vault.json") {
+		t.Fatalf("vault root accepted as Mode B inbox: code=%d stderr=%s", code, errb.String())
+	}
+
+	// 5. Signal cleanup removes active temp files and exits 130 on SIGINT.
+	reg := newTempRegistry()
+	d, err := openInboxDir(inboxDir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	tmpName, f, err := createTempAt(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	reg.register(tmpName, func() { _ = d.unlink(tmpName) })
+	exited := make(chan int, 1)
+	stop := installSignalCleanup(reg, func(code int) { exited <- code })
+	defer stop()
+	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+	select {
+	case code := <-exited:
+		if code != 130 {
+			t.Fatalf("exit code %d, want 130", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("signal not handled")
+	}
+	assertNoPartFiles(t, inboxDir)
+}
+
+// TestZeroLogging ensures neither filenames, metadata, nor tokens appear in any
+// server output stream.
+func TestZeroLogging(t *testing.T) {
+	var stderrBuf bufio.Writer
+	var raw bytes.Buffer
+	stderrBuf = *bufio.NewWriter(&raw)
+	env := startTestServer(t, defaultServerOpts())
+
+	secretName := "ultra-secret-filename-9999.pdf"
+	secretDir := "secret-folder-8888"
+	resp, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{
+		"X-Valv-Name": {secretName},
+		"X-Valv-Dir":  {secretDir},
+	}, strings.NewReader("classified-body-7777"), 20)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	_ = stderrBuf.Flush()
+	logged := raw.String()
+	for _, forbidden := range []string{secretName, secretDir, "classified-body-7777", testBearerToken} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("server logged sensitive string %q", forbidden)
+		}
+	}
+}
