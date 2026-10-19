@@ -39,7 +39,7 @@ Non-goals
 
 - **VK**: 32 random bytes, the vault master key. Generated once at `init`.
 - **KEK** = Argon2id(passphrase, salt, t=3, m=65536 KiB, p=1) -> 32 bytes. Its only job is to wrap VK (section 4.2).
-- **Passphrase encoding.** Reject a passphrase that is not valid UTF-8, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest.
+- **Passphrase encoding.** Reject a passphrase that is not valid UTF-8 as malformed, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest.
 - **Passphrase length.** Tools refuse to set a passphrase (`init`, `passwd`, `recover`) shorter than 12 Unicode code points, counted after NFC, unless the user passes an explicit override (`--allow-weak-passphrase`, meant for tests). Unlocking accepts any passphrase.
 - **HKDF salt.** Every HKDF derivation from VK or FK uses an empty salt. Per RFC 5869 an empty salt is the same as 32 zero bytes; both implementations must match the test vectors on this. The only HKDF call with a non-empty salt is the inbox FK derivation (section 6.2). Every derivation outputs L=32 bytes.
 - **Subkeys from VK**: `HKDF-SHA256(ikm=VK, salt=empty, info=LABEL, L=32)`
@@ -65,8 +65,8 @@ vault/
 
 - `file_id`: 16 random bytes, written as 32 lowercase hex chars. File names reveal nothing about content.
 - Readers derive the expected file_id from the path and reject any object or inbox file whose path does not match it:
-  - the name must be exactly `<32 lowercase hex>.obj` (or `.inb`); uppercase hex is rejected;
-  - an object's directory under `objects/` must equal the first two hex chars of its file_id;
+  - the path must end with the three components `objects/<xx>/<32 lowercase hex>.obj` for an object, or the two components `inbox/<32 lowercase hex>.inb` for an inbox file (checking all components, including `objects` and `inbox`); uppercase hex is rejected;
+  - an object's directory `<xx>` under `objects/` must equal the first two hex chars of its file_id;
   - the file_id in the header must equal the one in the name.
 
   Every function that opens an object or inbox file takes the expected file_id as a parameter, so this check cannot be skipped.
@@ -90,7 +90,7 @@ Writers produce exactly these bytes: LF line endings, two-space indent, the `kdf
 - `v` must be 1.
 - `kdf` must be exactly `alg` = `"argon2id"`, `t` = 3, `m_kib` = 65536, `p` = 1, and `salt` must decode to exactly 16 bytes. Anything else is rejected before the KDF runs. Changing the parameters requires a new format version.
 - `wrapped_vk` decodes to exactly 60 bytes, `inbox_pub` to exactly 32.
-- Base64 is RFC 4648 standard alphabet with padding, canonical (unused trailing bits zero).
+- Base64 is RFC 4648 standard alphabet with padding, canonical (unused trailing bits zero). Any Base64 or decoded-length error in `salt`, `wrapped_vk`, or `inbox_pub` is rejected as malformed (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, and `p`).
 - Readers refuse a vault.json larger than 4096 bytes before parsing it.
 - Readers parse the file, check the rules above, re-serialize the parsed values in the writer format, and reject the file unless the result is byte-identical. Unknown keys are therefore rejected.
 
@@ -145,8 +145,8 @@ Objects need only VK, so the recovery key must work even when vault.json is miss
 2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. A correct key must never be refusable by files the host can plant, so no failed check counts against the key on its own. The cases, in order:
    1. At least one readable object unwraps: verified. If other readable objects do not unwrap, say how many ("N of M objects do not unwrap with this key; run verify after recovery").
    2. No object unwraps, but an inbox file authenticates: verified.
-   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told: run `valv ls`; if every file fails with an authentication error, the key was probably wrong, so run recovery again with the right key and `--force`; if only some files fail, those objects may be damaged, so run `valv verify`.
-   4. Nothing to check against (no objects, no inbox files): only the checksum vouches for the key; warn the user.
+   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files; including when `objects/` contains files but none is readable, in which case M = 0): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told: run `valv ls`; if every file fails with an authentication error, the key was probably wrong, so run recovery again with the right key and `--force`; if only some files fail, those objects may be damaged, so run `valv verify`.
+   4. Nothing to check against (there are no object files and no inbox files at all): only the checksum vouches for the key; warn the user.
 
    In cases 3 (with the override) and 4, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
 3. Take a new passphrase and write a new vault.json: fresh random salt, fresh random wrap nonce, `inbox_pub` derived from VK, replaced as in section 4.4.
@@ -280,7 +280,7 @@ Magic, version, `meta_len`, metadata and chunks follow sections 5.1 to 5.3, with
 
 On any ingest failure, discard our own temp file, keep the inbox file, and report the error. Nothing in `inbox/` is ever deleted except after a fully verified successful ingest, or by the idempotency rule below.
 
-Idempotency: if `objects/.../<file_id>.obj` already exists, treat the inbox file as already ingested only if (1) the existing object's unwrapped FK equals the FK derived from the inbox file (constant-time compare), (2) the existing object's `meta_blob` decrypts under that FK and passes section 5.2, AND (3) its chunk bytes are byte-identical to the inbox file's, which are authenticated during the comparison. `meta_blob` may differ from the inbox file's (renames). If so, delete the inbox file. Otherwise report a conflict and delete nothing.
+Idempotency: if `objects/.../<file_id>.obj` already exists, the already-ingested check applies only after the inbox file itself has been authenticated (its `meta_blob` in step 2 and its chunks during the comparison below); if authenticating the inbox file fails, ingest reports that error and keeps the inbox file even when a matching object already exists. Treat the inbox file as already ingested only if (1) the existing object's unwrapped FK equals the FK derived from the inbox file (constant-time compare), (2) the existing object's `meta_blob` decrypts under that FK and passes section 5.2, AND (3) its chunk bytes are byte-identical to the inbox file's, which are authenticated during the comparison. `meta_blob` may differ from the inbox file's (renames). If so, delete the inbox file. Otherwise report a conflict and delete nothing.
 
 ## 7. Threat model
 
@@ -339,6 +339,7 @@ Deployment (v1, "mode B", chosen first):
 7. Do not edit files in place. Write temp, then rename or replace.
 8. When the spec is ambiguous, stop and ask. Do not guess. Section 15 says who decides.
 9. Fixed keys, nonces and ids exist only in test code behind the `valv_testvectors` build tag. Release builds contain no way to inject a random source or fixed values, and a test checks this.
+10. For every input, accept/reject is normative and must be identical across all implementations; the error class is normative only for single-fault inputs, whereas error precedence when an input has multiple faults is not normative.
 
 ## 11. Build order
 
@@ -432,6 +433,11 @@ A log of what was decided after the first draft and where each rule now lives. T
 | R4-3 | SIGKILL and power loss during `init`; interrupted-init hint | 4.3 |
 | R4-W | Advice after an unverified recovery | 4.5 |
 | Freeze | v1 format frozen; what may change and how | 15 |
+| S-Q1, S-Q2 | `vault.json` Base64 and decoded-length errors in `salt`, `wrapped_vk`, `inbox_pub`, and invalid UTF-8 passphrases, are `malformed` (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, `p`) | 3, 4.2 |
+| S-Q3 | Recovery with unreadable objects and no authenticating inbox file is case 3 ("cannot be verified: 0 of 0 readable objects"); case 4 requires no object and no inbox files at all | 4.5 |
+| S-Q4 | Ingest idempotency check runs only after the inbox file's `meta_blob` and chunks authenticate; unauthenticated inbox files are kept even if a matching object exists | 6.3 |
+| S-Q5 | Object paths must end with `objects/<xx>/<file_id>.obj` (3 components) and inbox paths with `inbox/<file_id>.inb` (2 components) | 4.1 |
+| S-Q6 | Accept/reject is normative for all inputs; error class is normative only for single-fault inputs | 10 |
 
 ## 14. Changelog from the original draft
 
@@ -498,6 +504,15 @@ Sixth revision (round 4 re-verification):
 
 Freeze:
 - The v1 format is frozen at commit 68bb5d7 (tag format-v1-frozen). Documentation only: the status line now says the format is frozen, section 15 (freeze rules) is added, rule 10.8 points to it, and section 13 has a row for it. No behaviour, vector or code changed.
+
+Post-freeze clarifications (step 3 cross-implementation questions Q1–Q6, documentation only):
+- Section 3: invalid UTF-8 passphrase error class (`malformed`).
+- Section 4.1: object and inbox trailing path components (`objects/<xx>/<file_id>.obj` and `inbox/<file_id>.inb`).
+- Section 4.2: `vault.json` Base64 and decoded-length errors in `salt`, `wrapped_vk`, and `inbox_pub` are `malformed` (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, and `p`).
+- Section 4.5: unreadable objects with no authenticating inbox file fall under case 3 ("0 of 0 readable objects"); case 4 requires no object files and no inbox files at all.
+- Section 6.3: ingest idempotency applies only after the inbox file's `meta_blob` and chunks authenticate.
+- Section 10: rule 10 on normative accept/reject versus single-fault error classes.
+- Section 13: rows S-Q1 to S-Q6.
 
 ## 15. Freeze rules
 
