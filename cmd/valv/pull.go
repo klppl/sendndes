@@ -45,14 +45,26 @@ func (a *app) cmdPull(args []string) error {
 	allowInsecure := fs.Bool("allow-insecure-http", false, "allow plain HTTP to a non-loopback, non-Tailscale host")
 	maxDownloadBytes := fs.Int64("max-download-bytes", defaultMaxPullDownloadBytes, "maximum size in bytes per downloaded inbox file")
 	ioTimeout := fs.Duration("io-timeout", defaultPullIOTimeout, "per-read I/O timeout for server requests")
-	if _, err := parse(fs, args, 0, 0); err != nil {
+	jsonFlag := fs.Bool("json", false, "one JSON object per line (for the Mac app)")
+	js := jsonLines{a.stdout}
+	// fail prints the final "error" record in --json mode (fixed code, no text).
+	fail := func(code string, err error) error {
+		if *jsonFlag {
+			if code == "" {
+				code = jsonErrCode(err)
+			}
+			js.rec("error", "code", code)
+		}
 		return err
 	}
+	if _, err := parse(fs, args, 0, 0); err != nil {
+		return fail("", err)
+	}
 	if *maxDownloadBytes <= 0 {
-		return errors.New("pull: --max-download-bytes must be positive")
+		return fail("", errors.New("pull: --max-download-bytes must be positive"))
 	}
 	if *ioTimeout <= 0 {
-		return errors.New("pull: --io-timeout must be positive")
+		return fail("", errors.New("pull: --io-timeout must be positive"))
 	}
 	opts := pullOpts{
 		maxDownloadBytes: *maxDownloadBytes,
@@ -64,18 +76,22 @@ func (a *app) cmdPull(args []string) error {
 		serverURL = os.Getenv("VALV_SERVER")
 	}
 	if serverURL == "" {
-		return errors.New("pull: --server (or $VALV_SERVER) is required")
+		return fail("server-url", errors.New("pull: --server (or $VALV_SERVER) is required"))
 	}
 	baseURL, err := validatePullServerURL(serverURL, *allowInsecure)
 	if err != nil {
-		return fmt.Errorf("pull: %w", err)
+		return fail("server-url", fmt.Errorf("pull: %w", err))
 	}
 	if *tokenFileFlag == "" {
-		return errors.New("pull: --token-file is required")
+		return fail("token-file", errors.New("pull: --token-file is required"))
 	}
 	token, err := readPullTokenFile(*tokenFileFlag)
 	if err != nil {
-		return fmt.Errorf("pull: %w", err)
+		return fail("token-file", fmt.Errorf("pull: %w", err))
+	}
+	if *jsonFlag {
+		// The token file has been read and closed; no network request yet.
+		js.rec("started")
 	}
 	defer func() {
 		// Strings are immutable in Go, but we keep token scoped to cmdPull.
@@ -85,13 +101,13 @@ func (a *app) cmdPull(args []string) error {
 	// Open the vault directory once before any passphrase prompt (SPEC 8).
 	v, err := a.openVault(a.vaultDir())
 	if err != nil {
-		return err
+		return fail("", err)
 	}
 	defer v.Close()
 
 	inboxD, err := v.openSub(core.InboxDir)
 	if err != nil {
-		return err
+		return fail("vault-unreadable", err)
 	}
 	defer inboxD.Close()
 
@@ -101,7 +117,7 @@ func (a *app) cmdPull(args []string) error {
 
 	keys, err := a.unlock(v)
 	if err != nil {
-		return err
+		return fail("", err)
 	}
 	defer keys.Wipe()
 
@@ -126,19 +142,33 @@ func (a *app) cmdPull(args []string) error {
 
 	ids, err := fetchInboxIDs(client, baseURL, token, opts)
 	if err != nil {
-		return fmt.Errorf("pull: %w", err)
+		return fail("", fmt.Errorf("pull: %w", err))
 	}
 
-	var ingested, already, failed int
-	report := func(msg string) {
+	var ingested, already, failed, deleteFailed int
+	// report counts a failed file; typ/id/code feed the --json record (id ""
+	// when the server's id was not valid).
+	report := func(msg, typ, id, code string) {
 		failed++
 		fmt.Fprintf(a.stderr, "error: %s\n", msg)
+		if !*jsonFlag {
+			return
+		}
+		if typ == "error" {
+			if id == "" {
+				js.rec("error", "code", code, "item", true)
+			} else {
+				js.rec("error", "id", id, "code", code)
+			}
+		} else {
+			js.rec(typ, "id", id)
+		}
 	}
 
 	for _, idStr := range ids {
 		id, err := core.ParseFileID(idStr)
 		if err != nil {
-			report(fmt.Sprintf("server returned invalid file_id %s: %v", display(idStr), err))
+			report(fmt.Sprintf("server returned invalid file_id %s: %v", display(idStr), err), "error", "", "invalid-id")
 			continue
 		}
 		inName := core.InboxName(id)
@@ -148,11 +178,11 @@ func (a *app) cmdPull(args []string) error {
 		// it already exists locally from an earlier interrupted run.
 		if _, lerr := inboxD.lstat(inName); errors.Is(lerr, os.ErrNotExist) {
 			if err := downloadInboxFile(client, baseURL, token, id, inboxD, inName, opts); err != nil {
-				report(fmt.Sprintf("%s: download failed: %v", display(rel), err))
+				report(fmt.Sprintf("%s: download failed: %v", display(rel), err), "error", id.String(), "download")
 				continue
 			}
 		} else if lerr != nil {
-			report(fmt.Sprintf("%s: %v", display(rel), lerr))
+			report(fmt.Sprintf("%s: %v", display(rel), lerr), "error", id.String(), "local")
 			continue
 		}
 
@@ -162,26 +192,40 @@ func (a *app) cmdPull(args []string) error {
 		result, err := ingestOne(v, inboxD, f, keys)
 		switch {
 		case errors.Is(err, core.ErrAuth):
-			report(fmt.Sprintf("%s: not authentic (made without this vault's K_auth, or damaged): %v (inbox file kept, not deleted from server)", display(rel), err))
+			report(fmt.Sprintf("%s: not authentic (made without this vault's K_auth, or damaged): %v (inbox file kept, not deleted from server)", display(rel), err), "not-authentic", id.String(), "")
+			continue
+		case errors.Is(err, core.ErrConflict):
+			report(fmtProblem(rel, err)+" (inbox file kept, not deleted from server)", "conflict", id.String(), "")
 			continue
 		case err != nil:
-			report(fmtProblem(rel, err) + " (inbox file kept, not deleted from server)")
+			report(fmtProblem(rel, err)+" (inbox file kept, not deleted from server)", "error", id.String(), "ingest")
 			continue
 		case result == "already":
 			already++
+			if *jsonFlag {
+				js.rec("already-ingested", "id", id.String())
+			}
 		default:
 			ingested++
+			if *jsonFlag {
+				js.rec("ingested", "id", id.String())
+			}
 		}
 
 		// CRITICAL GATE (SPEC 6.3, 8): DELETE /inbox/{id} on the server is called
 		// ONLY after ingestOne has succeeded with nil error (meaning either
 		// verified read-back of the new object or verified CheckAlreadyIngested).
 		if err := deleteRemoteInboxFile(client, baseURL, token, id, opts); err != nil {
+			deleteFailed++
 			fmt.Fprintf(a.stderr, "warning: %s ingested locally, but server delete failed (%v); next pull will absorb it via idempotency\n", id, err)
 		}
 	}
 
-	fmt.Fprintf(a.stdout, "ingested %d, already ingested %d, failed %d\n", ingested, already, failed)
+	if *jsonFlag {
+		js.rec("end", "ingested", ingested, "already", already, "failed", failed, "delete_failed", deleteFailed)
+	} else {
+		fmt.Fprintf(a.stdout, "ingested %d, already ingested %d, failed %d\n", ingested, already, failed)
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d inbox file(s) could not be pulled", failed)
 	}
@@ -299,7 +343,7 @@ func fetchInboxIDs(client *http.Client, baseURL, token string, opts pullOpts) ([
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /inbox: HTTP %d", resp.StatusCode)
+		return nil, &httpStatusError{resp.StatusCode, fmt.Sprintf("GET /inbox: HTTP %d", resp.StatusCode)}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPullListBytes+1))
 	if err != nil {

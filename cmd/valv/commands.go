@@ -344,23 +344,31 @@ func logicalPath(m core.Metadata) string {
 func (a *app) cmdLs(args []string) error {
 	fs := a.flags("ls", true, false)
 	dirFlag := fs.String("dir", "", "only list this folder and its subfolders")
-	if _, err := parse(fs, args, 0, 0); err != nil {
+	jsonFlag := fs.Bool("json", false, "one JSON object per line (for the Mac app)")
+	js := jsonLines{a.stdout}
+	fail := func(err error) error {
+		if *jsonFlag {
+			js.rec("error", "code", jsonErrCode(err))
+		}
 		return err
+	}
+	if _, err := parse(fs, args, 0, 0); err != nil {
+		return fail(err)
 	}
 	filter := norm.NFC.String(strings.Trim(*dirFlag, "/"))
 	v, err := a.openVault(a.vaultDir())
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	defer v.Close()
 	keys, err := a.unlock(v)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	defer keys.Wipe()
 	s, err := scanVault(v)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	type row struct {
 		path string
@@ -370,12 +378,18 @@ func (a *app) cmdLs(args []string) error {
 	problems := len(s.unexpected)
 	for _, u := range s.unexpected {
 		fmt.Fprintf(a.stderr, "warning: %s\n", u)
+		if *jsonFlag {
+			js.rec("warning", "code", "unexpected")
+		}
 	}
 	for _, f := range s.objects {
 		info, err := readObjectInfo(v, f, keys)
 		if err != nil {
 			problems++
 			fmt.Fprintf(a.stderr, "warning: %s\n", fmtProblem(f.rel, err))
+			if *jsonFlag {
+				js.rec("warning", "code", "unreadable", "id", f.id.String())
+			}
 			continue
 		}
 		d := norm.NFC.String(info.Meta.Dir)
@@ -392,11 +406,21 @@ func (a *app) cmdLs(args []string) error {
 	})
 	w := bufio.NewWriter(a.stdout)
 	for _, r := range rows {
+		if *jsonFlag {
+			continue
+		}
 		mt := time.Unix(0, r.info.Meta.MTime).Format("2006-01-02 15:04:05")
 		fmt.Fprintf(w, "%s  %12d  %s  %s\n", r.info.ID, r.info.PlaintextSize, mt, display(r.path))
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+	if *jsonFlag {
+		for _, r := range rows {
+			js.rec("file", "id", r.info.ID.String(), "size", r.info.PlaintextSize,
+				"mtime", r.info.Meta.MTime, "name", r.info.Meta.Name, "dir", r.info.Meta.Dir)
+		}
+		js.rec("end", "files", len(rows), "problems", problems)
 	}
 	if problems > 0 {
 		return fmt.Errorf("%d problem(s) while listing; run valv verify", problems)

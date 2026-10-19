@@ -137,7 +137,7 @@ func (a *app) unlock(v *dirHandle) (*core.VaultKeys, error) {
 	data, err := v.readConfig()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no %s in %s (not a vault?)", core.ConfigFile, display(v.path))
+			return nil, &notVaultError{fmt.Sprintf("no %s in %s (not a vault?)", core.ConfigFile, display(v.path))}
 		}
 		return nil, fmt.Errorf("%s: %w", core.ConfigFile, err)
 	}
