@@ -201,3 +201,31 @@ func openOtherKeys(t *testing.T, dir string) *core.VaultKeys {
 	t.Cleanup(k.Wipe)
 	return k
 }
+
+func TestInitJSON(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "newvault")
+	code, out, _ := runInProcess([]string{"init", dir, "--json", "--passphrase-stdin"}, "a-long-enough-passphrase\n")
+	recs := parseJSONLines(t, out)
+	if code != 0 || len(recs) != 2 || recs[0]["type"] != "recovery-key" || recs[1]["type"] != "end" {
+		t.Fatalf("code=%d %q", code, out)
+	}
+	if _, err := core.DecodeRecoveryKey(recs[0]["key"].(string)); err != nil {
+		t.Fatal(err)
+	}
+	// Same folder again: not empty, error record, no key printed.
+	code, out, _ = runInProcess([]string{"init", dir, "--json", "--passphrase-stdin"}, "a-long-enough-passphrase\n")
+	recs = parseJSONLines(t, out)
+	if code == 0 || len(recs) != 1 || recs[0]["code"] != "not-empty" {
+		t.Fatalf("code=%d %q", code, out)
+	}
+	// Too short a passphrase: error, no key, no vault.
+	d2 := filepath.Join(t.TempDir(), "v2")
+	code, out, _ = runInProcess([]string{"init", d2, "--json", "--passphrase-stdin"}, "short\n")
+	recs = parseJSONLines(t, out)
+	if code == 0 || len(recs) != 1 || recs[0]["type"] != "error" {
+		t.Fatalf("code=%d %q", code, out)
+	}
+	if _, err := os.Stat(d2); err == nil {
+		t.Fatal("vault dir created")
+	}
+}

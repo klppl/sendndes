@@ -23,6 +23,41 @@ final class IntegrationTests: XCTestCase {
         XCTAssertTrue(env.model.entries.isEmpty)
     }
 
+    func testCreateVaultFromTheApp() async throws {
+        let m = env.model
+        let folder = env.tmp + "/created"
+        let pw = "a-brand-new-passphrase"
+        await m.createVault(at: folder, passphrase: pw, repeated: "different")
+        XCTAssertEqual(m.createMessage, "The two passphrases are different.")
+        await m.createVault(at: folder, passphrase: "short", repeated: "short")
+        XCTAssertEqual(m.createMessage, "Use at least 12 characters.")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder))
+        XCTAssertNil(m.recoveryKey)
+
+        await m.createVault(at: folder, passphrase: pw, repeated: pw)
+        XCTAssertNil(m.createMessage)
+        let key = try XCTUnwrap(m.recoveryKey)
+        XCTAssertNotNil(key.range(of: "^[A-Z2-7]{4}(-[A-Z2-7]{4})+(-[A-Z2-7]{1,4})?$", options: .regularExpression), key)
+        XCTAssertEqual(m.lockState, .unlocked, "the new vault is unlocked right away")
+        XCTAssertEqual(m.vaultPath, folder)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder + "/vault.json"))
+        XCTAssertEqual(env.tokenDirs, [])
+        // The recovery key opens it: `valv recover` into a copy of the vault without vault.json.
+        let copy = env.tmp + "/copy"
+        try FileManager.default.copyItem(atPath: folder, toPath: copy)
+        try FileManager.default.removeItem(atPath: copy + "/vault.json")
+        let r = runTool(env.helper, ["recover", copy, "--unverified-key", "--passphrase-stdin"], stdin: key + "\nnew-passphrase-123\n")
+        XCTAssertEqual(r.status, 0, String(decoding: r.err, as: UTF8.self))
+        m.acknowledgeRecoveryKey()
+        XCTAssertNil(m.recoveryKey)
+
+        // A folder that already holds a vault is refused, without a key.
+        m.lock()
+        await m.createVault(at: env.vault, passphrase: pw, repeated: pw)
+        XCTAssertEqual(m.createMessage, "That folder isn't empty. Choose or create an empty folder.")
+        XCTAssertNil(m.recoveryKey)
+    }
+
     func testNotAVault() async throws {
         let empty = env.tmp + "/empty"
         try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)

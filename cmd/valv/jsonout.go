@@ -41,10 +41,18 @@ func writeJSON(b *bytes.Buffer, v any) {
 
 // notVaultError keeps the existing message and lets callers tell "no
 // vault.json" from other failures.
-type notVaultError struct{ msg string }
+type notVaultError struct {
+	msg string
+	is  error // what Unwrap reports; errNotAVault when nil
+}
 
 func (e *notVaultError) Error() string { return e.msg }
-func (e *notVaultError) Unwrap() error { return errNotAVault }
+func (e *notVaultError) Unwrap() error {
+	if e.is != nil {
+		return e.is
+	}
+	return errNotAVault
+}
 
 var errNotAVault = errors.New("not a vault")
 

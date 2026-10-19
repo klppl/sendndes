@@ -33,6 +33,11 @@ public final class AppModel {
     public private(set) var pullSummary: String?
     public private(set) var pullMessage: String?
 
+    // Vault creation
+    public private(set) var creating = false
+    public private(set) var recoveryKey: String?   // shown once, until the user confirms it is stored
+    public var createMessage: String?
+
     public let sendQueue: SendQueue
 
     private let defaults: UserDefaults
@@ -106,6 +111,54 @@ public final class AppModel {
             defaults.set(newVault, forKey: Self.vaultKey)
             lockState = newVault.isEmpty ? .noFolder : .locked
         }
+    }
+
+    // MARK: Create a vault
+
+    public static let minPassphraseCharacters = 12
+
+    /// Runs `valv init` in an empty (or new) folder, then unlocks the new vault. The recovery key is kept in
+    /// `recoveryKey` until `acknowledgeRecoveryKey()`; the vault already exists at that point.
+    public func createVault(at folder: String, passphrase: String, repeated: String) async {
+        guard lockState == .noFolder || lockState == .locked, !creating, recoveryKey == nil else { return }
+        createMessage = nil
+        guard !folder.isEmpty else { createMessage = "Choose a folder for the vault."; return }
+        guard passphrase == repeated else { createMessage = "The two passphrases are different."; return }
+        guard !passphrase.contains("\n"), !passphrase.contains("\r") else {
+            createMessage = "The passphrase can't contain line breaks."; return
+        }
+        guard passphrase.precomposedStringWithCanonicalMapping.unicodeScalars.count >= Self.minPassphraseCharacters else {
+            createMessage = "Use at least \(Self.minPassphraseCharacters) characters."; return
+        }
+        creating = true
+        defer { creating = false }
+        let acc = InitAccumulator()
+        do {
+            let o = try await runner.run(args: ["init", "--json", "--passphrase-stdin", "--", folder],
+                                         passphrase: { passphrase }, onLine: { acc.feed($0) })
+            guard !o.outputViolation, acc.endSeen, acc.errorCode == nil, let key = acc.recoveryKey else {
+                createMessage = acc.errorCode == "not-empty"
+                    ? "That folder isn't empty. Choose or create an empty folder."
+                    : "The vault could not be created."
+                return
+            }
+            recoveryKey = key
+        } catch {
+            createMessage = Self.message(for: error)
+            return
+        }
+        setVaultPath(folder)
+        await unlock(passphrase: passphrase)
+    }
+
+    /// The user has stored the recovery key; this app does not keep it.
+    public func acknowledgeRecoveryKey() { recoveryKey = nil }
+
+    public func setVaultPath(_ path: String) {
+        lock()
+        vaultPath = path
+        defaults.set(path, forKey: Self.vaultKey)
+        lockState = path.isEmpty ? .noFolder : .locked
     }
 
     // MARK: Lock / unlock

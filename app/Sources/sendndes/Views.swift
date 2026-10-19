@@ -19,6 +19,7 @@ struct ContentView: View {
     @Bindable var model: AppModel
     @State private var section: Section? = .vault
     @State private var showSettings = false
+    @State private var showCreate = false
 
     var body: some View {
         NavigationSplitView {
@@ -28,7 +29,7 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 140, ideal: 160)
         } detail: {
             switch section ?? .vault {
-            case .vault: VaultView(model: model, openSettings: { showSettings = true })
+            case .vault: VaultView(model: model, openSettings: { showSettings = true }, openCreate: { showCreate = true })
             case .send: SendView(model: model, queue: model.sendQueue, openSettings: { showSettings = true })
             case .pull: PullView(model: model, openSettings: { showSettings = true })
             }
@@ -43,6 +44,10 @@ struct ContentView: View {
                 Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
             }
         }
+        .sheet(isPresented: Binding(get: { model.recoveryKey != nil }, set: { _ in })) {
+            RecoveryKeyView(model: model).interactiveDismissDisabled()
+        }
+        .sheet(isPresented: $showCreate) { CreateVaultView(model: model, close: { showCreate = false }) }
         .sheet(isPresented: $showSettings) { SettingsView(model: model, close: { showSettings = false }) }
         .onAppear { if model.serverURLText.isEmpty && model.vaultPath.isEmpty { showSettings = true } }
     }
@@ -102,19 +107,105 @@ struct SettingsView: View {
     }
 }
 
+// MARK: Create vault
+
+struct CreateVaultView: View {
+    @Bindable var model: AppModel
+    let close: () -> Void
+    @State private var folder = ""
+    @State private var pass = ""
+    @State private var again = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Create a vault").font(.title2.bold())
+            LabeledContent("Folder") {
+                HStack {
+                    Text(verbatim: folder.isEmpty ? "None chosen" : folder)
+                        .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
+                    Button("Choose…", action: choose)
+                }
+            }
+            Text("Pick an empty folder, or make a new one in the dialog. If it is inside Google Drive or Dropbox, the sealed files will sync there.")
+                .font(.caption).foregroundStyle(.secondary)
+            SecureField("Passphrase (at least \(AppModel.minPassphraseCharacters) characters)", text: $pass)
+            SecureField("Repeat passphrase", text: $again)
+            Text("Nobody can reset the passphrase. You will get a recovery key once; it is the only way back in if you forget the passphrase.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let m = model.createMessage { Text(verbatim: m).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.createMessage = nil; close() }.keyboardShortcut(.cancelAction)
+                Button(model.creating ? "Creating…" : "Create vault") { create() }
+                    .keyboardShortcut(.defaultAction).disabled(model.creating)
+            }
+        }
+        .padding(20).frame(width: 540)
+        .onAppear { model.createMessage = nil }
+        .onChange(of: model.recoveryKey) { _, new in if new != nil { pass = ""; again = ""; close() } }
+    }
+
+    private func choose() {
+        let p = NSOpenPanel()
+        p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
+        p.canCreateDirectories = true
+        p.prompt = "Use this folder"
+        if p.runModal() == .OK, let u = p.url { folder = u.path }
+    }
+
+    private func create() {
+        let (a, b, f) = (pass, again, folder)
+        Task { await model.createVault(at: f, passphrase: a, repeated: b) }
+    }
+}
+
+/// Shown once after creation. It cannot be dismissed until the key has been typed back correctly.
+struct RecoveryKeyView: View {
+    let model: AppModel
+    @State private var typed = ""
+
+    private func normalized(_ s: String) -> String {
+        s.uppercased().filter { !$0.isWhitespace && $0 != "-" }
+    }
+
+    var body: some View {
+        let key = model.recoveryKey ?? ""
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Your recovery key").font(.title2.bold())
+            Text("The vault is created. Write this key down or store it in a password manager now. It is shown only once, this app does not keep it, and without it a forgotten passphrase cannot be undone.")
+            Text(verbatim: key)
+                .font(.system(.title3, design: .monospaced)).textSelection(.enabled)
+                .padding(10).frame(maxWidth: .infinity).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+            TextField("Type the key again to confirm", text: $typed)
+                .font(.system(.body, design: .monospaced)).autocorrectionDisabled()
+            HStack {
+                if !typed.isEmpty && normalized(typed) != normalized(key) {
+                    Text("That doesn't match yet.").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("I have stored it") { model.acknowledgeRecoveryKey() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(normalized(typed) != normalized(key))
+            }
+        }
+        .padding(20).frame(width: 560)
+    }
+}
+
 // MARK: Vault
 
 struct VaultView: View {
     @Bindable var model: AppModel
     let openSettings: () -> Void
+    let openCreate: () -> Void
     @State private var passphrase = ""
 
     var body: some View {
         switch model.lockState {
         case .noFolder:
             Placeholder(title: "No vault folder chosen",
-                        text: "Choose the folder of an existing vault in Settings. To create one, run `valv init` in Terminal.",
-                        button: "Open Settings", action: openSettings)
+                        text: "Create a new vault, or choose the folder of an existing one in Settings.",
+                        button: "Create a vault…", action: openCreate)
         case .locked, .unlocking:
             VStack(spacing: 12) {
                 Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
@@ -127,6 +218,7 @@ struct VaultView: View {
                     .disabled(model.lockState == .unlocking || passphrase.isEmpty)
                     .keyboardShortcut(.defaultAction)
                 if let m = model.vaultMessage { Text(verbatim: m).foregroundStyle(.red).multilineTextAlignment(.center) }
+                Button("Create a new vault instead…", action: openCreate).buttonStyle(.link)
                 Text("Listing opens every file in the vault. In Google Drive “stream” mode or Dropbox online-only folders this can download files and take a while.")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: 420).multilineTextAlignment(.center)
             }

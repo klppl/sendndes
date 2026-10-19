@@ -23,6 +23,7 @@ struct RawRecord: Decodable {
     var failed: Int?
     var delete_failed: Int?
     var item: Bool?
+    var key: String?
 }
 
 func decodeRaw(_ line: Data) -> RawRecord? {
@@ -149,6 +150,31 @@ public final class PullAccumulator {
     private func add(_ item: PullItem) -> Bool {
         if result.items.count >= PullAccumulator.maxItems { return false }
         result.items.append(item)
+        return true
+    }
+}
+
+/// Collects `valv init --json` output: the recovery key is only trusted once `end` has been seen.
+public final class InitAccumulator {
+    public private(set) var recoveryKey: String?
+    public private(set) var endSeen = false
+    public private(set) var errorCode: String?
+    private let lock = NSLock()
+    public init() {}
+
+    static func plausibleKey(_ k: String) -> Bool {
+        k.utf8.count >= 20 && k.utf8.count <= 100 && k.utf8.allSatisfy { ($0 >= 0x41 && $0 <= 0x5a) || ($0 >= 0x32 && $0 <= 0x37) || $0 == 0x2d }
+    }
+
+    public func feed(_ line: Data) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let r = decodeRaw(line) else { return true }
+        switch r.type {
+        case "recovery-key": if let k = r.key, Self.plausibleKey(k) { recoveryKey = k }
+        case "end": endSeen = true
+        case "error": errorCode = r.code ?? "other"
+        default: break
+        }
         return true
     }
 }

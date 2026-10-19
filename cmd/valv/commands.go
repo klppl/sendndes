@@ -22,11 +22,25 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-func (a *app) cmdInit(args []string) error {
+func (a *app) cmdInit(args []string) (retErr error) {
 	fs := a.flags("init", false, true)
+	jsonFlag := fs.Bool("json", false, "machine-readable output for the Mac app")
+	js := jsonLines{a.stdout}
+	// With --json the recovery key is printed as a record and the run ends
+	// with one "end" or "error" record (D-A4b).
+	defer func() {
+		if *jsonFlag {
+			if retErr != nil {
+				js.rec("error", "code", initErrCode(retErr))
+			}
+		}
+	}()
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
+	}
+	if *jsonFlag && !a.passStdin {
+		return errors.New("init: --json needs --passphrase-stdin")
 	}
 	dir := pos[0]
 	// Open the target (or its nearest existing parent) before any prompt;
@@ -56,7 +70,9 @@ func (a *app) cmdInit(args []string) error {
 	defer keys.Wipe()
 
 	// Show the recovery key before anything is written (SPEC 4.3).
-	if _, err := fmt.Fprintf(a.stdout, "Recovery key (shown once; store it offline):\n\n  %s\n\n", recoveryKey); err != nil {
+	if *jsonFlag {
+		js.rec("recovery-key", "key", recoveryKey)
+	} else if _, err := fmt.Fprintf(a.stdout, "Recovery key (shown once; store it offline):\n\n  %s\n\n", recoveryKey); err != nil {
 		return fmt.Errorf("could not write the recovery key (%v); vault not created", err)
 	}
 	if a.interactive() {
@@ -130,10 +146,23 @@ func (a *app) cmdInit(args []string) error {
 		return fmt.Errorf("writing %s: %w; vault not created", core.ConfigFile, err)
 	}
 	unhook() // vault.json is committed: keep the directories from now on
+	if *jsonFlag {
+		js.rec("end")
+		return nil
+	}
 	if _, err := fmt.Fprintf(a.stdout, "Created vault in %s. Unlock self-check passed.\n", dir); err != nil {
 		return err
 	}
 	return nil
+}
+
+var errNotEmpty = errors.New("not empty")
+
+func initErrCode(err error) string {
+	if errors.Is(err, errNotEmpty) {
+		return "not-empty"
+	}
+	return "other"
 }
 
 // initTestHook, if set (only by tests), runs inside init once the vault.json
@@ -194,9 +223,9 @@ func notEmptyError(d *dirHandle, entries []os.DirEntry, dir string) error {
 		}
 	}
 	if interrupted {
-		return fmt.Errorf("%s is not empty; this looks like an interrupted init; remove the directory and run init again", dir)
+		return &notVaultError{msg: fmt.Sprintf("%s is not empty; this looks like an interrupted init; remove the directory and run init again", dir), is: errNotEmpty}
 	}
-	return fmt.Errorf("%s is not empty", dir)
+	return &notVaultError{msg: fmt.Sprintf("%s is not empty", dir), is: errNotEmpty}
 }
 
 // openVault opens the vault directory once, before any prompt, and checks
