@@ -6,15 +6,15 @@ Run of `swift/interop/run.sh` on 2026-10-19.
 
 | | |
 |---|---|
-| Go code | built from `cmd/valv` at repository commit `94b41688ddc513da749b928102e75e48b37c298c` (main). `core/`, `cmd/`, `go.mod` and `go.sum` last changed in `68bb5d7624bf1e3d1a8a0c97a839e12490bbfb51` (tag `format-v1-frozen`). |
+| Go code | built from `cmd/valv` at repository commit `082b5d9d1986a3aba73628ff5d758df7a8fd7497` (main). `core/`, `cmd/`, `go.mod` and `go.sum` last changed in `68bb5d7624bf1e3d1a8a0c97a839e12490bbfb51` (tag `format-v1-frozen`). |
 | Go | go1.26.3 darwin/arm64 |
 | Swift | Apple Swift 6.4 (swiftlang-6.4.0.34.1), Xcode 27.1 (27A9275) |
 | OS | macOS 26.6.2, arm64 |
 | Argon2id | libsodium 1.0.22 via swift-sodium `Clibsodium`, revision `cfd195c76882aa9b997560ca7cb95d72fbf5db00` |
 
-The Swift unit tests (54) also passed under Swift 6.3.3 with the Command Line
-Tools before Xcode was installed. `xcodebuild -scheme ValvCore -destination
-'generic/platform=iOS' build` succeeds under Xcode 27.1.
+The Swift unit tests (55 with `VALV_TESTVECTORS`, 51 without) also pass.
+`xcodebuild -scheme ValvCore -destination 'generic/platform=iOS' build`
+succeeds under Xcode 27.1.
 
 ## Checks
 
@@ -102,26 +102,26 @@ concurrency checking.
 To run the unit tests on a simulator, install a runtime first
 (`xcodebuild -downloadPlatform iOS`, several GB), then use the `test` command
 above. Note that xcodebuild does not enable the `VALV_TESTVECTORS` trait, so a
-simulator run would execute the 50 tests that do not need it.
+simulator run would execute the 51 tests that do not need it.
 
 ## Memory (`swift/interop/measure-memory.sh`, release build, macOS arm64)
 
-Peak memory footprint from `/usr/bin/time -l` (RSS is about 4.5 MiB higher in
-every row). "passphrase" opens the vault with Argon2id first, as the main app
-would; "vk" uses `--vk-stdin` (test build only), which calls `Vault(vk:)` with
-no Argon2, as a File Provider extension would.
+Peak memory footprint and maximum resident set size from `/usr/bin/time -l`.
+"passphrase" opens the vault with Argon2id first, as the main app would; "vk"
+uses `--vk-stdin` (test build only), which calls `Vault(vk:)` with no Argon2,
+as a File Provider extension would.
 
-| Step | 50 MB | 500 MB |
+| Step | 50 MB (footprint / RSS) | 500 MB (footprint / RSS) |
 |---|---|---|
-| unlock alone (passphrase, Argon2id) | 65.6 MiB | — |
-| encrypt (passphrase) | 65.7 MiB | 65.7 MiB |
-| decrypt (passphrase) | 65.7 MiB | 65.6 MiB |
-| encrypt (vk, no Argon2) | 2.7 MiB | 3.2 MiB |
-| decrypt (vk, no Argon2) | 2.6 MiB | 3.0 MiB |
+| unlock alone (passphrase, Argon2id) | 65.7 MiB / 70.1 MiB | — |
+| encrypt (passphrase) | 65.7 MiB / 70.2 MiB | 65.7 MiB / 70.2 MiB |
+| decrypt (passphrase) | 65.7 MiB / 70.1 MiB | 65.7 MiB / 70.1 MiB |
+| encrypt (vk, no Argon2) | 3.7 MiB / 9.5 MiB | 3.6 MiB / 9.4 MiB |
+| decrypt (vk, no Argon2) | 3.5 MiB / 9.1 MiB | 3.5 MiB / 9.2 MiB |
 
 Peak memory does not grow with file size; the script fails if a 500 MB run
 uses more than 4 MiB above the 50 MB run. Using `Vault(vk:)` saves the
-extension about 63 MiB, all of it Argon2id's 64 MiB work area.
+extension about 62 MiB, all of it Argon2id's 64 MiB work area.
 
 ### Divergence found and fixed: memory grew with file size
 
@@ -148,5 +148,5 @@ file showed it (peak RSS):
 Fix (library only, no format change): `FileInput.read` and `FileOutput.write`
 in `Sources/ValvCore/IO.swift` now wrap each call in `autoreleasepool`. The
 chunking logic was already bounded (at most two plaintext chunks when writing,
-one stored chunk per read). After the fix the unit tests (54), `run.sh` (all
+one stored chunk per read). After the fix the unit tests (55), `run.sh` (all
 checks) and both iOS builds pass again.
