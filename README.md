@@ -64,12 +64,6 @@ volumes:
 docker compose pull && docker compose up -d
 ```
 
-If you already created the `valvd-data` volume with an older image and see `permission denied` on `/data`, fix it once:
-
-```bash
-docker run --rm -v valvd-data:/data busybox chown -R 65532:65532 /data
-```
-
 The sync port (8485) is plain HTTP: keep it on Tailscale/VPN or behind an HTTPS proxy. The GUI is local-only by default; use an SSH tunnel or Tailscale to reach it remotely. More options (systemd, Cloudflare Tunnel, limits): [coordination/valvd-deploy.md](coordination/valvd-deploy.md).
 
 ## Tests

@@ -25,6 +25,10 @@ func runManaged(dataDir, adminListen string, allowPublic, behindProxy bool, sync
 		fmt.Fprintf(stderr, "valvd: refusing to serve the web GUI on public address %s (the GUI is for the owner only; use 127.0.0.1, a LAN or Tailscale address, or --admin-allow-public)\n", host)
 		return 1
 	}
+	if err := dropPrivileges(dataDir); err != nil {
+		fmt.Fprintf(stderr, "valvd: %v\n", err)
+		return 1
+	}
 	m, err := newManager(dataDir, syncListen, os.Getenv("VALVD_SYNC_LISTEN") != "", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "valvd: %v\n", err)

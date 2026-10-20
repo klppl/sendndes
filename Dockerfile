@@ -9,12 +9,12 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /valvd ./cmd/valvd && mkdir -p /out/data
 
-FROM gcr.io/distroless/static-debian12:nonroot
+# Starts as root only to fix /data ownership, then valvd switches to 65532
+# (VALVD_RUN_AS) before serving anything.
+FROM gcr.io/distroless/static-debian12
 COPY --from=build /valvd /valvd
-# Copying the contents of /out (not /data itself) makes data/ a copied item, so
-# --chown applies to the directory too. A fresh volume then starts writable.
 COPY --from=build --chown=65532:65532 /out/ /
-ENV VALVD_DATA=/data VALVD_ADMIN_LISTEN=0.0.0.0:8080 VALVD_SYNC_LISTEN=0.0.0.0:8485
+ENV VALVD_RUN_AS=65532:65532 VALVD_DATA=/data VALVD_ADMIN_LISTEN=0.0.0.0:8080 VALVD_SYNC_LISTEN=0.0.0.0:8485
 VOLUME /data
 EXPOSE 8080 8485
 ENTRYPOINT ["/valvd"]
