@@ -140,7 +140,7 @@ struct Note: View {
 // MARK: Empty / centered states
 
 struct EmptyState: View {
-    var mood: Eggy.Mood
+    var mood: Aster.Mood
     let title: String
     let text: String
     var button: String?
@@ -150,7 +150,7 @@ struct EmptyState: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Eggy(mood: mood, size: 116, interactive: true)
+            Aster(mood: mood, size: 116, interactive: true)
             Text(title).display(24).foregroundStyle(Theme.ink).multilineTextAlignment(.center)
             Text(text).label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                 .multilineTextAlignment(.center).frame(maxWidth: 400)
@@ -169,7 +169,7 @@ struct EmptyState: View {
 
 /// Screen heading: mascot, title, one line of subtitle.
 struct PaneHeader<Trailing: View>: View {
-    let mood: Eggy.Mood
+    let mood: Aster.Mood
     let title: String
     let subtitle: String
     var sparkle = 0
@@ -177,7 +177,7 @@ struct PaneHeader<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Eggy(mood: mood, size: 66, interactive: true)
+            Aster(mood: mood, size: 56, interactive: true)
                 .overlay { SparkleBurst(trigger: sparkle) }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).display(28).foregroundStyle(Theme.ink)
@@ -226,7 +226,7 @@ struct DropHint: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Theme.pink, style: StrokeStyle(lineWidth: 4, dash: [10, 8]))
             VStack(spacing: 8) {
-                Eggy(mood: .wow, size: 96)
+                Aster(mood: .wow, size: 96)
                 Text(title).display(22).foregroundStyle(Theme.ink)
             }
         }
