@@ -42,6 +42,28 @@ docker compose logs valvd            # shows the one-time setup code
 ./valv pull --server http://<tailscale-ip>:8485 --token-file token.txt
 ```
 
+### Run the prebuilt image
+
+Run the **Docker image** workflow from the repo's Actions tab (it publishes `ghcr.io/klppl/valv`). If the package is private, make it public or `docker login ghcr.io` on the server. Then on the server, save as `docker-compose.yml`:
+
+```yaml
+services:
+  valvd:
+    image: ghcr.io/klppl/valv:latest
+    restart: unless-stopped
+    volumes:
+      - valvd-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"   # admin GUI, this machine only
+      - "8485:8485"             # sync port: put on Tailscale or behind HTTPS
+volumes:
+  valvd-data:
+```
+
+```bash
+docker compose pull && docker compose up -d
+```
+
 The sync port (8485) is plain HTTP: keep it on Tailscale/VPN or behind an HTTPS proxy. The GUI is local-only by default; use an SSH tunnel or Tailscale to reach it remotely. More options (systemd, Cloudflare Tunnel, limits): [coordination/valvd-deploy.md](coordination/valvd-deploy.md).
 
 ## Tests
