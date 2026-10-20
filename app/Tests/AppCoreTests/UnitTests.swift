@@ -250,3 +250,26 @@ final class URLPolicyDifferentialTests: XCTestCase {
         }
     }
 }
+
+final class ServerKeysTests: XCTestCase {
+    // inbox_pub = bytes 0x00..0x1f; its SHA-256 starts 630DCD29.
+    private let pub = Data((0..<32).map { UInt8($0) }).base64EncodedString()
+    private let auth = Data(repeating: 0xAB, count: 32).base64EncodedString()
+
+    func testClipboardTextMatchesCLIFormat() throws {
+        let k = try XCTUnwrap(ServerKeys(lines: ["inbox_pub: \(pub)", "k_auth: \(auth)"]))
+        XCTAssertEqual(k.clipboardText, "inbox_pub: \(pub)\nk_auth: \(auth)\n")
+    }
+
+    func testFingerprint() throws {
+        let k = try XCTUnwrap(ServerKeys(lines: ["inbox_pub: \(pub)", "k_auth: \(auth)"]))
+        XCTAssertEqual(k.fingerprint, "630D-CD29")
+    }
+
+    func testRejectsMalformed() {
+        XCTAssertNil(ServerKeys(lines: ["inbox_pub: \(pub)"]))
+        XCTAssertNil(ServerKeys(lines: ["k_auth: \(auth)", "inbox_pub: \(pub)"]))
+        XCTAssertNil(ServerKeys(lines: ["inbox_pub: AAAA", "k_auth: \(auth)"]))
+        XCTAssertNil(ServerKeys(lines: ["inbox_pub: \(pub)", "k_auth: \(auth)x"]))
+    }
+}

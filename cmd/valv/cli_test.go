@@ -712,3 +712,12 @@ func TestReviewS2NonNFCAccepted(t *testing.T) {
 	// By path, typed in NFC.
 	ok(t, valv(t, pass, args("get", "Kök/Räksmörgås.txt", "-o", filepath.Join(tmp, "out2"))...))
 }
+
+// recovery-key prints the same key that init showed.
+func TestRecoveryKeyCommandMatchesInit(t *testing.T) {
+	v := newVault(t)
+	r := ok(t, v.run("recovery-key"))
+	if got := strings.TrimSpace(r.stdout); got != v.recoveryKey {
+		t.Fatalf("recovery-key %q differs from init's %q", got, v.recoveryKey)
+	}
+}

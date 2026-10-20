@@ -47,6 +47,7 @@ commands:
   passwd                                 change the passphrase
   recover <vault-dir> [--force] [--unverified-key]
                                          rebuild vault.json from the recovery key
+  recovery-key                           print the recovery key (needs the passphrase)
   server-config                          print the inbox server's inbox_pub and K_auth
 
 get writes to a temp file and moves it into place only after the whole file
@@ -100,6 +101,7 @@ func (a *app) run(args []string) int {
 		"verify":        a.cmdVerify,
 		"passwd":        a.cmdPasswd,
 		"recover":       a.cmdRecover,
+		"recovery-key":  a.cmdRecoveryKey,
 		"server-config": a.cmdServerConfig,
 	}
 	name := args[0]

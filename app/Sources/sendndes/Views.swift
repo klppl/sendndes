@@ -220,6 +220,7 @@ struct SettingsView: View {
     @State private var token = ""
     @State private var vault = ""
     @State private var error: String?
+    @State private var keysNote: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -242,6 +243,31 @@ struct SettingsView: View {
             if model.tokenNeedsReentry {
                 Banner(kind: .error, text: "The token was saved for a different server address and is not sent to this one. Enter the token again.")
             }
+            FieldLabel(title: "Inbox server keys") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("Copy server keys") { copyServerKeys() }
+                        .buttonStyle(.chunky).disabled(model.lockState != .unlocked)
+                    Note(text: "Pastes into the valvd admin page (step 1). Warning: k_auth is a secret. Give it only to your own inbox server; anyone holding it can add files that look authentic, and it cannot be rotated. It cannot decrypt anything. The clipboard is cleared after 60 seconds. Unlock the vault first.")
+                    if let keysNote { Text(keysNote).font(.callout) }
+                }
+            }
+            if model.touchIDAvailable {
+                FieldLabel(title: "Touch ID") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.touchIDEnabled {
+                            Button("Turn off Touch ID unlock") { model.disableTouchID() }.buttonStyle(.chunky)
+                        } else {
+                            Button("Turn on Touch ID unlock") { model.enableTouchID() }
+                                .buttonStyle(.chunky).disabled(model.lockState != .unlocked)
+                        }
+                        Note(text: "Saves the passphrase in your login keychain and releases it after Touch ID (or your Mac password). That is weaker than typing it: anything running as you with the keychain open could read it. The passphrase and recovery key still work. Unlock the vault first to turn it on.")
+                        if let m = model.touchIDMessage { Text(m).font(.callout) }
+                    }
+                }
+            }
+            FieldLabel(title: "Recovery key") {
+                RecoveryReveal(model: model)
+            }
             if let error { Banner(kind: .error, text: error) }
             HStack(spacing: 10) {
                 Spacer()
@@ -252,6 +278,22 @@ struct SettingsView: View {
         .padding(24).frame(width: 560)
         .background(Theme.paper)
         .onAppear { url = model.serverURLText; vault = model.vaultPath }
+    }
+
+    private func copyServerKeys() {
+        keysNote = nil
+        Task {
+            guard let keys = await model.serverKeys() else { keysNote = "Could not read the keys. Is the vault unlocked?"; return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(keys.clipboardText, forType: .string)
+            pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+            let count = pb.changeCount
+            keysNote = "Copied. Key check value: \(keys.fingerprint) (the admin page shows the same)."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
+                if NSPasteboard.general.changeCount == count { NSPasteboard.general.clearContents() }
+            }
+        }
     }
 
     private func chooseVault() {
@@ -267,6 +309,60 @@ struct SettingsView: View {
             token = ""
             close()
         } catch let e as AppModel.SettingsError { error = e.message } catch { self.error = "Could not save." }
+    }
+}
+
+/// Shows the recovery key again after the passphrase (or Touch ID) is given. Hides itself after 30 seconds,
+/// when the sheet closes, and when the vault locks.
+struct RecoveryReveal: View {
+    @Bindable var model: AppModel
+    @State private var pass = ""
+    @State private var key: String?
+    @State private var working = false
+    @State private var hideTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let key {
+                Text(verbatim: key).font(.system(.body, design: .monospaced).bold()).textSelection(.enabled)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.sun.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Button("Hide") { hide() }.buttonStyle(.chunkySmall)
+            } else {
+                HStack(spacing: 8) {
+                    SecureField("Passphrase", text: $pass)
+                        .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden().onSubmit { reveal(typed: true) }
+                    Button("Show") { reveal(typed: true) }.buttonStyle(.chunky).disabled(pass.isEmpty || working)
+                    if model.touchIDEnabled {
+                        Button { reveal(typed: false) } label: { Image(systemName: "touchid") }
+                            .buttonStyle(.chunky).disabled(working).help("Show with Touch ID")
+                    }
+                }
+                .disabled(model.lockState != .unlocked)
+            }
+            Note(text: "Type the passphrase again to see the recovery key. Anyone who sees it can open the vault without the passphrase, so show it only when you are writing it down. Unlock the vault first.")
+            if let m = model.recoveryMessage { Text(m).font(.callout) }
+        }
+        .onChange(of: model.lockState) { _, new in if new != .unlocked { hide() } }
+        .onDisappear { hide() }
+    }
+
+    private func hide() { hideTask?.cancel(); key = nil; pass = "" }
+
+    private func reveal(typed: Bool) {
+        let p = typed ? pass : nil
+        pass = ""
+        working = true
+        Task {
+            let k = await model.revealRecoveryKey(passphrase: p)
+            working = false
+            guard let k else { return }
+            key = k
+            hideTask = Task {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if !Task.isCancelled { hide() }
+            }
+        }
     }
 }
 
@@ -355,6 +451,15 @@ struct RecoveryKeyView: View {
         .animation(.snappy(duration: 0.2), value: matches)
     }
 
+    /// Four groups per line so the key wraps predictably instead of mid-group.
+    private func keyLines(_ key: String) -> String {
+        let groups = key.split(separator: "-").map(String.init)
+        guard groups.count > 4 else { return key }
+        return stride(from: 0, to: groups.count, by: 4)
+            .map { groups[$0..<min($0 + 4, groups.count)].joined(separator: "-") }
+            .joined(separator: "\n")
+    }
+
     private func ticket(_ key: String) -> some View {
         VStack(spacing: 0) {
             HStack {
@@ -365,11 +470,13 @@ struct RecoveryKeyView: View {
             .label(.caption, weight: .bold).foregroundStyle(Theme.ink.opacity(0.75))
             .padding(.horizontal, 16).padding(.vertical, 10)
             Line().stroke(Theme.ink.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [6, 6])).frame(height: 2)
-            Text(verbatim: key)
+            Text(verbatim: keyLines(key))
                 .font(.system(size: 21, weight: .bold, design: .monospaced)).foregroundStyle(Theme.ink)
                 .textSelection(.enabled).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 16).padding(.vertical, 18).frame(maxWidth: .infinity)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .background(Theme.sun.opacity(0.3), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .sticker(radius: 16, shadow: 4)
         .padding(.trailing, 4).padding(.bottom, 4)
@@ -471,6 +578,12 @@ struct VaultView: View {
                         .buttonStyle(.chunkyPrimary)
                         .disabled(unlocking || passphrase.isEmpty)
                         .keyboardShortcut(.defaultAction)
+                    if model.touchIDEnabled {
+                        Button { Task { await model.unlockWithTouchID() } } label: {
+                            Label("Unlock with Touch ID", systemImage: "touchid").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.chunky).disabled(unlocking)
+                    }
                 }
                 .frame(width: 300)
                 if let m = model.vaultMessage { Banner(kind: .error, text: m).frame(maxWidth: 400) }
@@ -482,6 +595,7 @@ struct VaultView: View {
             .padding(24)
             .frame(maxWidth: .infinity, minHeight: 440)
         }
+        .onAppear { if model.touchIDEnabled && model.vaultMessage == nil { Task { await model.unlockWithTouchID() } } }
         .onChange(of: model.vaultMessage) { _, new in
             if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
         }

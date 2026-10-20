@@ -1088,3 +1088,24 @@ func (a *app) cmdServerConfig(args []string) error {
 	_, err = fmt.Fprintf(a.stdout, "inbox_pub: %s\nk_auth: %s\n", b64.EncodeToString(keys.InboxPub[:]), b64.EncodeToString(keys.InboxAuth[:]))
 	return err
 }
+
+// cmdRecoveryKey prints the recovery key of an unlocked vault. The key is VK in
+// another encoding (SPEC 3), so nothing extra is stored to show it again.
+func (a *app) cmdRecoveryKey(args []string) error {
+	fs := a.flags("recovery-key", true, false)
+	if _, err := parse(fs, args, 0, 0); err != nil {
+		return err
+	}
+	v, err := a.openVault(a.vaultDir())
+	if err != nil {
+		return err
+	}
+	defer v.Close()
+	keys, err := a.unlock(v)
+	if err != nil {
+		return err
+	}
+	defer keys.Wipe()
+	_, err = fmt.Fprintln(a.stdout, core.EncodeRecoveryKey(keys.VK))
+	return err
+}

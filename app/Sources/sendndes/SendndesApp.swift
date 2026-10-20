@@ -16,7 +16,8 @@ final class AppState {
         TokenFile.sweep()
         let path = Self.helperPath()
         model = AppModel(secrets: KeychainSecretStore(),
-                         runner: HelperRunner(helperPath: path, expectedSHA256: helperSHA256))
+                         runner: HelperRunner(helperPath: path, expectedSHA256: helperSHA256),
+                         biometric: KeychainBiometricStore())
         let m = model
         systemLock = SystemLockObserver(onLock: { m.lockForSystemEvent() })
         activity = ActivityMonitor(model: m)

@@ -11,6 +11,15 @@ final class MemorySecrets: SecretStoring {
     func deleteToken() { value = nil; server = nil }
 }
 
+final class MemoryBiometric: BiometricUnlocking {
+    var isAvailable = true
+    var saved: [String: String] = [:]
+    func hasPassphrase(vault: String) -> Bool { saved[vault] != nil }
+    func save(passphrase: String, vault: String) throws { saved[vault] = passphrase }
+    func load(vault: String, reason: String) async -> String? { saved[vault] }
+    func remove(vault: String) { saved[vault] = nil }
+}
+
 struct ToolResult { var status: Int32; var out: Data; var err: Data }
 
 /// Runs a tool directly (test setup and checks only; the app itself uses HelperRunner).
@@ -91,6 +100,7 @@ final class Env {
     let port = freePort()
     var server: Process?
     let secrets = MemorySecrets()
+    let biometric = MemoryBiometric()
     let runner: HelperRunner
     let model: AppModel
     let defaultsName = "sendndes-test-" + UUID().uuidString
@@ -120,7 +130,7 @@ final class Env {
         suite.set(vault, forKey: AppModel.vaultKey)
         secrets.value = goodToken
         secrets.server = "http://127.0.0.1:\(port)"
-        model = AppModel(defaults: suite, secrets: secrets, runner: runner, tempBase: tokenBase)
+        model = AppModel(defaults: suite, secrets: secrets, runner: runner, biometric: biometric, tempBase: tokenBase)
         if startServer { try startServerProcess(maxUploadBytes: maxUploadBytes, extraArgs: serverArgs) }
     }
 

@@ -40,6 +40,7 @@ public final class AppModel {
     public private(set) var creating = false
     public private(set) var recoveryKey: String?   // shown once, until the user confirms it is stored
     public var createMessage: String?
+    public var recoveryMessage: String?
 
     // Add to vault (encrypted locally by `valv add`; the server is not involved)
     public private(set) var addItems: [SendItem] = []
@@ -51,6 +52,11 @@ public final class AppModel {
     public private(set) var exportMessage: String?
     public private(set) var exportFolder: String?
     public var openMessage: String?
+
+    // Touch ID
+    public private(set) var touchIDAvailable = false
+    public private(set) var touchIDEnabled = false     // a passphrase is saved for the current vault
+    public var touchIDMessage: String?
 
     public let sendQueue: SendQueue
 
@@ -69,6 +75,7 @@ public final class AppModel {
     private let defaults: UserDefaults
     private let secrets: SecretStoring
     private let runner: HelperRunner
+    private let biometric: BiometricUnlocking?
     private let tempBase: String?
     private let box = PassphraseBox()
     private var generation = 0
@@ -77,8 +84,9 @@ public final class AppModel {
     public static let urlKey = "serverURL"
     public static let vaultKey = "vaultPath"
 
-    public init(defaults: UserDefaults = .standard, secrets: SecretStoring, runner: HelperRunner, tempBase: String? = nil) {
+    public init(defaults: UserDefaults = .standard, secrets: SecretStoring, runner: HelperRunner, biometric: BiometricUnlocking? = nil, tempBase: String? = nil) {
         self.defaults = defaults
+        self.biometric = biometric
         self.secrets = secrets
         self.runner = runner
         self.tempBase = tempBase
@@ -96,6 +104,7 @@ public final class AppModel {
         sendQueue.credentials = { [weak self] in self?.credentials() }
         sendQueue.credentialsProblem = { [weak self] in self?.credentialsProblem() ?? "Set the server address and token in Settings first." }
         refreshTokenState()
+        refreshTouchID()
     }
 
     private func refreshTokenState() {
@@ -157,6 +166,7 @@ public final class AppModel {
             vaultPath = newVault
             defaults.set(newVault, forKey: Self.vaultKey)
             lockState = newVault.isEmpty ? .noFolder : .locked
+            refreshTouchID()
         }
     }
 
@@ -206,6 +216,78 @@ public final class AppModel {
         vaultPath = path
         defaults.set(path, forKey: Self.vaultKey)
         lockState = path.isEmpty ? .noFolder : .locked
+        refreshTouchID()
+    }
+
+    // MARK: Touch ID
+
+    private func refreshTouchID() {
+        touchIDAvailable = biometric?.isAvailable ?? false
+        touchIDEnabled = touchIDAvailable && !vaultPath.isEmpty && (biometric?.hasPassphrase(vault: vaultPath) ?? false)
+    }
+
+    /// Saves the current passphrase (held while unlocked) for Touch ID unlock.
+    public func enableTouchID() {
+        touchIDMessage = nil
+        guard lockState == .unlocked, let b = biometric, b.isAvailable, let p = box.get() else {
+            touchIDMessage = "Unlock the vault first."; return
+        }
+        do { try b.save(passphrase: p, vault: vaultPath) } catch { touchIDMessage = "The passphrase could not be saved in the Keychain."; return }
+        refreshTouchID()
+    }
+
+    public func disableTouchID() {
+        touchIDMessage = nil
+        biometric?.remove(vault: vaultPath)
+        refreshTouchID()
+    }
+
+    /// Unlocks with the saved passphrase after a Touch ID check. A saved passphrase that no longer works
+    /// (changed with `valv passwd`) is forgotten.
+    public func unlockWithTouchID() async {
+        guard lockState == .locked, touchIDEnabled, let b = biometric else { return }
+        guard let p = await b.load(vault: vaultPath, reason: "unlock your vault") else { return }
+        await unlock(passphrase: p)
+        if lockState == .locked, vaultMessage == "Wrong passphrase." {
+            b.remove(vault: vaultPath)
+            refreshTouchID()
+            vaultMessage = "The saved passphrase no longer works. Type the passphrase."
+        }
+    }
+
+    // MARK: Recovery key (shown again on request)
+
+    /// The recovery key is the vault key in another encoding, so the helper can print it again for an unlocked
+    /// vault. Needs the passphrase typed again (or Touch ID, when enabled). The key is returned, never stored.
+    public func revealRecoveryKey(passphrase: String?) async -> String? {
+        touchIDMessage = nil
+        guard lockState == .unlocked, !vaultPath.isEmpty, let held = box.get() else { return nil }
+        if let typed = passphrase {
+            guard Self.sameSecret(typed, held) else { recoveryMessage = "Wrong passphrase."; return nil }
+        } else {
+            guard touchIDEnabled, let b = biometric,
+                  let p = await b.load(vault: vaultPath, reason: "show your recovery key"),
+                  Self.sameSecret(p, held) else { return nil }
+        }
+        let lines = LineCollector()
+        do {
+            let o = try await runner.run(
+                args: ["recovery-key", "--passphrase-stdin", "--vault=\(vaultPath)"],
+                passphrase: { [box] in box.get() },
+                onLine: { lines.add($0) })
+            guard !o.outputViolation, o.exitStatus == 0, lines.values.count == 1,
+                  InitAccumulator.plausibleKey(lines.values[0]) else {
+                recoveryMessage = "Could not read the recovery key."; return nil
+            }
+            recoveryMessage = nil
+            return lines.values[0]
+        } catch { recoveryMessage = Self.message(for: error); return nil }
+    }
+
+    static func sameSecret(_ a: String, _ b: String) -> Bool {
+        let (x, y) = (Array(a.utf8), Array(b.utf8))
+        guard x.count == y.count else { return false }
+        return zip(x, y).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
     // MARK: Add files straight into the vault
@@ -434,6 +516,7 @@ public final class AppModel {
         addItems = []
         addNotes = []
         vaultMessage = nil
+        recoveryMessage = nil
         if lockState != .noFolder { lockState = vaultPath.isEmpty ? .noFolder : .locked }
         // Say what was cut off; the messages show after the next unlock.
         if hadPull { pullMessage = "Interrupted: the app was locked during the pull. Files already ingested stay in the vault; the rest are still on the server." }
@@ -476,6 +559,20 @@ public final class AppModel {
             if !res.endSeen && res.errorCode == nil { return .failure("The listing is incomplete (the helper failed, exit \(o.exitStatus)).") }
             return .success(res)
         } catch { return .failure(Self.message(for: error)) }
+    }
+
+    /// Asks the helper for the inbox server's keys (the unlocked vault's passphrase is already held).
+    public func serverKeys() async -> ServerKeys? {
+        guard lockState == .unlocked, !vaultPath.isEmpty else { return nil }
+        let lines = LineCollector()
+        do {
+            let o = try await runner.run(
+                args: ["server-config", "--passphrase-stdin", "--vault=\(vaultPath)"],
+                passphrase: { [box] in box.get() },
+                onLine: { lines.add($0) })
+            guard !o.outputViolation, o.exitStatus == 0 else { return nil }
+            return ServerKeys(lines: lines.values)
+        } catch { return nil }
     }
 
     static func message(for error: Error) -> String {
@@ -567,4 +664,15 @@ public final class AppModel {
         default: return "The pull failed."
         }
     }
+}
+
+final class LineCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func add(_ d: Data) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard lines.count < 4, let s = String(data: d, encoding: .utf8) else { return false }
+        lines.append(s); return true
+    }
+    var values: [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }

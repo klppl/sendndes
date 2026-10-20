@@ -23,6 +23,41 @@ final class IntegrationTests: XCTestCase {
         XCTAssertTrue(env.model.entries.isEmpty)
     }
 
+    func testRecoveryKeyCanBeShownAgain() async throws {
+        let m = env.model
+        let none = await m.revealRecoveryKey(passphrase: passphrase)
+        XCTAssertNil(none, "locked")
+        await env.unlock()
+        let wrong = await m.revealRecoveryKey(passphrase: "nope")
+        XCTAssertNil(wrong)
+        XCTAssertEqual(m.recoveryMessage, "Wrong passphrase.")
+        let revealed = await m.revealRecoveryKey(passphrase: passphrase)
+        let key = try XCTUnwrap(revealed)
+        XCTAssertNotNil(key.range(of: "^[A-Z2-7]{4}(-[A-Z2-7]{4})+(-[A-Z2-7]{1,4})?$", options: .regularExpression), key)
+        let again = await m.revealRecoveryKey(passphrase: passphrase)
+        XCTAssertEqual(again, key)
+    }
+
+    func testTouchIDUnlock() async throws {
+        let m = env.model
+        XCTAssertFalse(m.touchIDEnabled)
+        await env.unlock()
+        m.enableTouchID()
+        XCTAssertTrue(m.touchIDEnabled)
+        let viaTouchID = await m.revealRecoveryKey(passphrase: nil)
+        XCTAssertNotNil(viaTouchID)
+        m.lock()
+        await m.unlockWithTouchID()
+        XCTAssertEqual(m.lockState, .unlocked)
+        // A saved passphrase that stopped working is forgotten.
+        m.lock()
+        env.biometric.saved[m.vaultPath] = "stale-passphrase"
+        await m.unlockWithTouchID()
+        XCTAssertEqual(m.lockState, .locked)
+        XCTAssertFalse(m.touchIDEnabled)
+        XCTAssertEqual(m.vaultMessage, "The saved passphrase no longer works. Type the passphrase.")
+    }
+
     func testCreateVaultFromTheApp() async throws {
         let m = env.model
         let folder = env.tmp + "/created"
