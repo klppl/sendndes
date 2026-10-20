@@ -3,12 +3,12 @@ import UniformTypeIdentifiers
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
-    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse
+    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute
 
     /// Failures after which the next file would fail the same way: the queue pauses.
     public var pausesQueue: Bool {
         switch self {
-        case .tokenRejected, .rateLimited, .inboxFull, .unreachable, .timedOut: return true
+        case .tokenRejected, .rateLimited, .inboxFull, .unreachable, .timedOut, .notTailscaleRoute: return true
         default: return false
         }
     }
@@ -28,6 +28,7 @@ public enum UploadFailure: Error, Equatable {
                            : "The file changed while sending; the server may keep a partial copy."
         case .cantRead: return "Can't read this file."
         case .unexpectedResponse: return "The server's answer was not understood."
+        case .notTailscaleRoute: return RouteGuard.routeMessage
         }
     }
 }
@@ -35,9 +36,12 @@ public enum UploadFailure: Error, Equatable {
 /// One upload = one fresh ephemeral session: no connection reuse, no redirects,
 /// no cookies/cache/credentials, response body capped at 4 KiB.
 public struct ServerClient {
-    public init() {}
+    private let route: RouteGuard
+    public init(route: RouteGuard = RouteGuard()) { self.route = route }
 
     public func upload(file: URL, name: String, dir: String, server: ServerURL, token: String) async -> Result<String, UploadFailure> {
+        // H1: checked again for every file (the route can change after sleep); never falls back.
+        guard route.allows(server) else { return .failure(.notTailscaleRoute) }
         let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { return .failure(.cantRead) }
         defer { close(fd) }

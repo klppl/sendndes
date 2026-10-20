@@ -2,10 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,9 +284,11 @@ func TestPullHostileServerNeverDeletesOnFailure(t *testing.T) {
 	if mock.deleted[forgedID.String()] != 0 || mock.deleted[tamperedID.String()] != 0 {
 		t.Fatalf("hostile files were deleted from server: %v", mock.deleted)
 	}
-	// Clean up the kept local failed inbox files before testing Q4 replay.
-	_ = os.Remove(filepath.Join(vaultDir, "inbox", forgedID.String()+".inb"))
-	_ = os.Remove(filepath.Join(vaultDir, "inbox", tamperedID.String()+".inb"))
+	for _, id := range []core.FileID{forgedID, tamperedID} {
+		if _, err := os.Lstat(filepath.Join(vaultDir, "inbox", id.String()+".inb")); err == nil {
+			t.Fatalf("unauthentic download %s was stored in <vault>/inbox/", id)
+		}
+	}
 	delete(mock.files, forgedID.String())
 	delete(mock.files, tamperedID.String())
 
@@ -298,9 +306,9 @@ func TestPullHostileServerNeverDeletesOnFailure(t *testing.T) {
 	if mock.deleted[q4ID.String()] != 1 {
 		t.Fatalf("Q4 corrupt replay triggered DELETE on server (count=%d)", mock.deleted[q4ID.String()])
 	}
-	// And the local corrupt .inb in <vault>/inbox/ must have been kept (SPEC 6.3 Q4).
-	if _, err := os.Stat(filepath.Join(vaultDir, "inbox", q4ID.String()+".inb")); err != nil {
-		t.Fatalf("Q4 corrupt inbox file was not kept locally: %v", err)
+	// M2: the corrupt download is never stored in the vault; it stays on the server.
+	if _, err := os.Lstat(filepath.Join(vaultDir, "inbox", q4ID.String()+".inb")); err == nil {
+		t.Fatal("corrupt download was stored in <vault>/inbox/")
 	}
 }
 
@@ -539,3 +547,168 @@ func TestPullOversizedAndStallingDownloads(t *testing.T) {
 	})
 }
 
+// vaultSnapshot returns every path under dir with its size and content hash.
+func vaultSnapshot(t *testing.T, dir string) string {
+	t.Helper()
+	var sb strings.Builder
+	filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel, _ := filepath.Rel(dir, p)
+		if d.IsDir() {
+			sb.WriteString("d " + rel + "\n")
+			return nil
+		}
+		b, _ := os.ReadFile(p)
+		sb.WriteString(fmt.Sprintf("f %s %d %x\n", rel, len(b), sha256.Sum256(b)))
+		return nil
+	})
+	return sb.String()
+}
+
+// TestPullRogueServerLeavesVaultUntouched is the M2 audit PoC: a server that
+// returns random bytes for every id must leave the vault byte-identical, with
+// nothing in inbox/, and the scratch directory must be gone afterwards.
+func TestPullRogueServerLeavesVaultUntouched(t *testing.T) {
+	pass := "correct-horse-battery"
+	vaultDir, _, tokenFile, token := setupPullVault(t, pass)
+	mock := newMockInboxServer(token)
+	for i := 0; i < 5; i++ {
+		var id [16]byte
+		rand.Read(id[:])
+		junk := make([]byte, 5000)
+		rand.Read(junk)
+		mock.files[hex.EncodeToString(id[:])] = junk
+	}
+	srvURL := withPullHandler(t, mock)
+	scratchBase := t.TempDir()
+	t.Setenv("TMPDIR", scratchBase)
+	before := vaultSnapshot(t, vaultDir)
+	code, _, stderr := runInProcess([]string{
+		"pull", "--vault", vaultDir, "--server", srvURL, "--token-file", tokenFile, "--passphrase-stdin",
+	}, pass+"\n")
+	if code == 0 {
+		t.Fatal("expected failure for junk files")
+	}
+	if !strings.Contains(stderr, "not authentic") {
+		t.Fatalf("expected not-authentic reports: %s", stderr)
+	}
+	if after := vaultSnapshot(t, vaultDir); after != before {
+		t.Fatalf("vault changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	if len(mock.deleted) != 0 || len(mock.files) != 5 {
+		t.Fatalf("junk must stay on the server: deleted=%v", mock.deleted)
+	}
+	if left, _ := os.ReadDir(scratchBase); len(left) != 0 {
+		t.Fatalf("scratch directory not cleaned: %v", left)
+	}
+}
+
+// TestPullTotalBytesCap: --max-total-bytes stops the run; nothing lands in the vault.
+func TestPullTotalBytesCap(t *testing.T) {
+	pass := "correct-horse-battery"
+	vaultDir, _, tokenFile, token := setupPullVault(t, pass)
+	mock := newMockInboxServer(token)
+	for _, id := range []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccccccccccc"} {
+		mock.files[id] = make([]byte, 600)
+	}
+	srvURL := withPullHandler(t, mock)
+	before := vaultSnapshot(t, vaultDir)
+	code, _, stderr := runInProcess([]string{
+		"pull", "--vault", vaultDir, "--server", srvURL, "--token-file", tokenFile, "--passphrase-stdin", "--max-total-bytes", "1000",
+	}, pass+"\n")
+	if code == 0 || !strings.Contains(stderr, "max-total-bytes") {
+		t.Fatalf("expected total cap error: code=%d %s", code, stderr)
+	}
+	if vaultSnapshot(t, vaultDir) != before {
+		t.Fatal("vault changed")
+	}
+}
+
+// H1: plain http to a Tailscale address must go through a Tailscale interface.
+func TestPullRefusesTailscaleURLNotRoutedThroughTailscale(t *testing.T) {
+	prev := routeInterfaceLookup
+	defer func() { routeInterfaceLookup = prev }()
+	cases := []struct {
+		name  string
+		iface string
+		err   error
+		extra string
+		want  bool // route accepted
+	}{
+		{"default gateway", "en0", nil, "", false},
+		{"utun", "utun4", nil, "", true},
+		{"tailscale0", "tailscale0", nil, "", true},
+		{"no interface", "", errors.New("none"), "", false},
+		{"override list", "wg0", nil, "wg0", true},
+		{"override does not match", "en0", nil, "wg0", false},
+	}
+	for _, c := range cases {
+		routeInterfaceLookup = func(netip.Addr) (string, error) { return c.iface, c.err }
+		err := checkTailscaleRoute("http://100.101.102.103:8485", splitList(c.extra))
+		if (err == nil) != c.want {
+			t.Errorf("%s: err=%v want accepted=%v", c.name, err, c.want)
+		}
+	}
+	// Loopback and https never look up a route.
+	routeInterfaceLookup = func(netip.Addr) (string, error) { t.Fatal("lookup called"); return "", nil }
+	for _, u := range []string{"http://127.0.0.1:1", "https://100.101.102.103", "https://example.com"} {
+		if err := checkTailscaleRoute(u, nil); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
+
+// The check runs at the start of a pull (nothing is requested) and again before every file.
+func TestPullChecksRouteAtStartAndBeforeEachFile(t *testing.T) {
+	prev := routeInterfaceLookup
+	defer func() { routeInterfaceLookup = prev }()
+	pass := "correct-horse-battery"
+	vaultDir, keys, tokenFile, token := setupPullVault(t, pass)
+	mock := newMockInboxServer(token)
+	var ids []string
+	for i := 0; i < 2; i++ {
+		var b bytes.Buffer
+		id, err := core.SealInbox(&b, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "f.txt", MTime: 1}, strings.NewReader("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mock.files[id.String()] = b.Bytes()
+		ids = append(ids, id.String())
+	}
+	requests := 0
+	counting := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		return handlerRoundTripper{h: mock}.RoundTrip(r)
+	})
+	prevT := pullTestTransport
+	pullTestTransport = counting
+	defer func() { pullTestTransport = prevT }()
+	args := []string{"pull", "--vault", vaultDir, "--server", "http://100.101.102.103:8485", "--token-file", tokenFile, "--passphrase-stdin"}
+
+	// Start: the route is wrong, so no request is made.
+	routeInterfaceLookup = func(netip.Addr) (string, error) { return "en0", nil }
+	code, _, stderr := runInProcess(args, pass+"\n")
+	if code == 0 || requests != 0 || !strings.Contains(stderr, "Tailscale") {
+		t.Fatalf("code=%d requests=%d stderr=%s", code, requests, stderr)
+	}
+
+	// The route flips to en0 after the first file: the second is not fetched or deleted.
+	calls := 0
+	routeInterfaceLookup = func(netip.Addr) (string, error) {
+		calls++
+		if calls <= 2 { // start + first file
+			return "utun3", nil
+		}
+		return "en0", nil
+	}
+	code, _, stderr = runInProcess(args, pass+"\n")
+	if code == 0 || !strings.Contains(stderr, "Tailscale") {
+		t.Fatalf("expected route failure: code=%d %s", code, stderr)
+	}
+	if len(mock.deleted) != 1 || len(mock.files) != 1 {
+		t.Fatalf("exactly one file should have been pulled: deleted=%v left=%d", mock.deleted, len(mock.files))
+	}
+	_ = ids
+}

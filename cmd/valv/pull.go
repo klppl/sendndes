@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -26,10 +29,12 @@ const (
 	maxPullTokenFileSize        = 4096           // 4 KiB
 	defaultMaxPullDownloadBytes = int64(4) << 30 // 4 GiB
 	defaultPullIOTimeout        = 30 * time.Second
+	defaultMaxPullTotalBytes    = int64(16) << 30 // 16 GiB per pull run
 )
 
 type pullOpts struct {
 	maxDownloadBytes int64
+	maxTotalBytes    int64
 	ioTimeout        time.Duration
 }
 
@@ -44,7 +49,9 @@ func (a *app) cmdPull(args []string) error {
 	tokenFileFlag := fs.String("token-file", "", "file containing the bearer token")
 	allowInsecure := fs.Bool("allow-insecure-http", false, "allow plain HTTP to a non-loopback, non-Tailscale host")
 	maxDownloadBytes := fs.Int64("max-download-bytes", defaultMaxPullDownloadBytes, "maximum size in bytes per downloaded inbox file")
+	maxTotalBytes := fs.Int64("max-total-bytes", defaultMaxPullTotalBytes, "maximum total bytes downloaded in one pull")
 	ioTimeout := fs.Duration("io-timeout", defaultPullIOTimeout, "per-read I/O timeout for server requests")
+	tsIfaces := fs.String("tailscale-interfaces", "", "extra interface names accepted as Tailscale for plain http to 100.64.0.0/10 (comma separated; utun* and tailscale* always are)")
 	jsonFlag := fs.Bool("json", false, "one JSON object per line (for the Mac app)")
 	js := jsonLines{a.stdout}
 	// fail prints the final "error" record in --json mode (fixed code, no text).
@@ -63,11 +70,15 @@ func (a *app) cmdPull(args []string) error {
 	if *maxDownloadBytes <= 0 {
 		return fail("", errors.New("pull: --max-download-bytes must be positive"))
 	}
+	if *maxTotalBytes <= 0 {
+		return fail("", errors.New("pull: --max-total-bytes must be positive"))
+	}
 	if *ioTimeout <= 0 {
 		return fail("", errors.New("pull: --io-timeout must be positive"))
 	}
 	opts := pullOpts{
 		maxDownloadBytes: *maxDownloadBytes,
+		maxTotalBytes:    *maxTotalBytes,
 		ioTimeout:        *ioTimeout,
 	}
 
@@ -81,6 +92,10 @@ func (a *app) cmdPull(args []string) error {
 	baseURL, err := validatePullServerURL(serverURL, *allowInsecure)
 	if err != nil {
 		return fail("server-url", fmt.Errorf("pull: %w", err))
+	}
+	extraIfaces := splitList(*tsIfaces)
+	if err := checkTailscaleRoute(baseURL, extraIfaces); err != nil {
+		return fail("route", fmt.Errorf("pull: %w", err))
 	}
 	if *tokenFileFlag == "" {
 		return fail("token-file", errors.New("pull: --token-file is required"))
@@ -145,6 +160,14 @@ func (a *app) cmdPull(args []string) error {
 		return fail("", fmt.Errorf("pull: %w", err))
 	}
 
+	scratch, err := os.MkdirTemp("", "valv-pull-") // 0700, unpredictable name, local temp (not the vault)
+	if err != nil {
+		return fail("", fmt.Errorf("pull: %w", err))
+	}
+	removeHook := addCleanupHook(func() { os.RemoveAll(scratch) })
+	defer func() { removeHook(); os.RemoveAll(scratch) }()
+	totalLeft := opts.maxTotalBytes
+
 	var ingested, already, failed, deleteFailed int
 	// report counts a failed file; typ/id/code feed the --json record (id ""
 	// when the server's id was not valid).
@@ -173,11 +196,27 @@ func (a *app) cmdPull(args []string) error {
 		}
 		inName := core.InboxName(id)
 		rel := path.Join(core.InboxDir, inName)
+		// H1: the route can change after sleep; check again before each file and never
+		// fall back to another route.
+		if err := checkTailscaleRoute(baseURL, extraIfaces); err != nil {
+			return fail("route", fmt.Errorf("pull: %w (this and the remaining files stay on the server)", err))
+		}
 
-		// Download to <vault>/inbox/<id>.inb via a .valv-*.part temp file unless
-		// it already exists locally from an earlier interrupted run.
+		// M2: a download is authenticated in a private temp directory outside the
+		// vault first. Only a file that passes is copied into <vault>/inbox/. A file
+		// already in the inbox (an earlier run, or `valv ingest` input) is used as is.
 		if _, lerr := inboxD.lstat(inName); errors.Is(lerr, os.ErrNotExist) {
-			if err := downloadInboxFile(client, baseURL, token, id, inboxD, inName, opts); err != nil {
+			if totalLeft <= 0 {
+				report(fmt.Sprintf("%s: --max-total-bytes (%d) reached; remaining files stay on the server", display(rel), opts.maxTotalBytes), "error", id.String(), "too-large")
+				break
+			}
+			n, err := fetchAuthenticated(client, baseURL, token, id, keys, inboxD, inName, scratch, opts, totalLeft)
+			totalLeft -= n
+			if errors.Is(err, errNotAuthentic) {
+				report(fmt.Sprintf("%s: not authentic (made without this vault's K_auth, or damaged): %v (left on the server, nothing stored in the vault)", display(rel), err), "not-authentic", id.String(), "")
+				continue
+			}
+			if err != nil {
 				report(fmt.Sprintf("%s: download failed: %v", display(rel), err), "error", id.String(), "download")
 				continue
 			}
@@ -391,13 +430,59 @@ func (p *pullProgressReader) Read(buf []byte) (int, error) {
 	return n, err
 }
 
-func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileID, inboxD *dirHandle, inName string, opts pullOpts) error {
+var errNotAuthentic = errors.New("not authentic")
+
+// fetchAuthenticated downloads inbox file id into scratch (outside the vault),
+// authenticates it with core.VerifyInbox, and only then copies it to
+// <vault>/inbox/<inName>. It returns the bytes downloaded (for the total cap).
+// A file that fails authentication returns core.ErrAuth and leaves no trace.
+func fetchAuthenticated(client *http.Client, baseURL, token string, id core.FileID, keys *core.VaultKeys, inboxD *dirHandle, inName, scratch string, opts pullOpts, totalLeft int64) (int64, error) {
+	var nameBytes [8]byte
+	if _, err := rand.Read(nameBytes[:]); err != nil {
+		return 0, err
+	}
+	tmp := filepath.Join(scratch, hex.EncodeToString(nameBytes[:])+".dl")
+	f, err := os.OpenFile(tmp, os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(tmp)
+	defer f.Close()
+	limit := min(opts.maxDownloadBytes, totalLeft)
+	n, err := downloadInboxFile(client, baseURL, token, id, f, limit, opts)
+	if err != nil {
+		return n, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return n, err
+	}
+	if _, err := core.VerifyInbox(bufio.NewReaderSize(f, core.StoredChunkSize), n, id, keys); err != nil {
+		if errors.Is(err, core.ErrAuth) || errors.Is(err, core.ErrMalformed) || errors.Is(err, core.ErrUnsupported) {
+			return n, fmt.Errorf("%w: %v", errNotAuthentic, err)
+		}
+		return n, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return n, err
+	}
+	err = writeAt(inboxD, inName, writeOpts{overwrite: false}, func(w io.Writer) error {
+		bw := bufio.NewWriterSize(w, core.StoredChunkSize)
+		if _, err := io.Copy(bw, f); err != nil {
+			return err
+		}
+		return bw.Flush()
+	})
+	return n, err
+}
+
+// downloadInboxFile streams GET /inbox/{id} into dst, at most limit bytes.
+func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileID, dst io.Writer, limit int64, opts pullOpts) (int64, error) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/inbox/"+id.String(), nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
@@ -408,38 +493,30 @@ func downloadInboxFile(client *http.Client, baseURL, token string, id core.FileI
 	hdrTimer.Stop()
 	if err != nil {
 		if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-			return cause
+			return 0, cause
 		}
-		return err
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET /inbox/%s: HTTP %d", id, resp.StatusCode)
+		return 0, fmt.Errorf("GET /inbox/%s: HTTP %d", id, resp.StatusCode)
 	}
-	if resp.ContentLength > opts.maxDownloadBytes {
-		return fmt.Errorf("remote inbox file size (%d bytes) exceeds maximum download size (%d bytes)", resp.ContentLength, opts.maxDownloadBytes)
+	if resp.ContentLength > limit {
+		return 0, fmt.Errorf("remote inbox file size (%d bytes) exceeds maximum download size (%d bytes)", resp.ContentLength, limit)
 	}
-	return writeAt(inboxD, inName, writeOpts{overwrite: false}, func(w io.Writer) error {
-		pr := &pullProgressReader{
-			r:       resp.Body,
-			timeout: opts.ioTimeout,
-			ctx:     ctx,
-			cancel:  cancel,
-		}
-		limited := io.LimitReader(pr, opts.maxDownloadBytes+1)
-		bw := bufio.NewWriterSize(w, core.StoredChunkSize)
-		n, err := io.Copy(bw, limited)
-		if err != nil {
-			return err
-		}
-		if n > opts.maxDownloadBytes {
-			return fmt.Errorf("remote inbox file exceeds maximum download size (%d bytes)", opts.maxDownloadBytes)
-		}
-		if resp.ContentLength >= 0 && n != resp.ContentLength {
-			return io.ErrUnexpectedEOF
-		}
-		return bw.Flush()
-	})
+	pr := &pullProgressReader{r: resp.Body, timeout: opts.ioTimeout, ctx: ctx, cancel: cancel}
+	bw := bufio.NewWriterSize(dst, core.StoredChunkSize)
+	n, err := io.Copy(bw, io.LimitReader(pr, limit+1))
+	if err != nil {
+		return n, err
+	}
+	if n > limit {
+		return n, fmt.Errorf("remote inbox file exceeds maximum download size (%d bytes)", limit)
+	}
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, bw.Flush()
 }
 
 func deleteRemoteInboxFile(client *http.Client, baseURL, token string, id core.FileID, opts pullOpts) error {

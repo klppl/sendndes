@@ -58,6 +58,7 @@ public final class AppModel {
     private let box = PassphraseBox()
     private var generation = 0
 
+    let routeGuard: RouteGuard
     public static let urlKey = "serverURL"
     public static let vaultKey = "vaultPath"
 
@@ -72,7 +73,9 @@ public final class AppModel {
         vaultPath = vault
         tokenIsSet = false
         lockState = vault.isEmpty ? .noFolder : .locked
-        sendQueue = SendQueue(credentials: { nil })
+        let defs = defaults
+        routeGuard = RouteGuard(extraInterfaces: { RouteGuard.parseInterfaceList(defs.string(forKey: RouteGuard.defaultsKey) ?? "") })
+        sendQueue = SendQueue(client: ServerClient(route: routeGuard), credentials: { nil })
         sendQueue.credentials = { [weak self] in self?.credentials() }
         tokenIsSet = secrets.token() != nil
     }
@@ -438,6 +441,10 @@ public final class AppModel {
             pullMessage = "Set the server address and token in Settings first."
             return
         }
+        guard routeGuard.allows(server) else {
+            pullMessage = RouteGuard.routeMessage
+            return
+        }
         let gen = generation
         pullRunning = true
         pullItems = []; pullSummary = nil; pullMessage = nil
@@ -454,7 +461,8 @@ public final class AppModel {
         do {
             outcome = try await runner.run(
                 args: ["pull", "--json", "--passphrase-stdin", "--vault=\(vaultPath)",
-                       "--server=\(server.canonical)", "--token-file=\(tf.filePath)"],
+                       "--server=\(server.canonical)", "--token-file=\(tf.filePath)"]
+                    + (routeGuard.extraInterfaces().isEmpty ? [] : ["--tailscale-interfaces=\(routeGuard.extraInterfaces().joined(separator: ","))"]),
                 passphrase: { [box] in box.get() },
                 onLine: { acc.feed($0) })
         } catch {
@@ -493,6 +501,7 @@ public final class AppModel {
         case "unauthorized": return "The server rejected the token."
         case "rate-limited": return "The server is refusing requests for a while (too many failed logins or uploads)."
         case "unreachable": return "Can't reach the server. Is Tailscale on?"
+        case "route": return RouteGuard.routeMessage
         default: return "The pull failed."
         }
     }

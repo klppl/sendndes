@@ -14,3 +14,13 @@ Trust and secrets, in plain words:
 Look and feel: `Theme.swift` (palette, sticker cards), `Mascot.swift` (Aster, the asterisk with moods), `Components.swift` (buttons, banners, pills). Motion stops under Reduce Motion; all file names still go through `Text(verbatim:)`.
 
 Icon: Aster on a mint rounded square. `scripts/make-icon.sh [mint|cream|plum]` renders it from `Mascot.swift` into `app/Resources/AppIcon.icns`; `build-app.sh` bundles it.
+
+## Plain http and Tailscale
+
+Plain `http://` is accepted only for loopback or a Tailscale address (100.64.0.0/10). For a Tailscale address the app also checks, before every upload and before a pull, which network interface the Mac would use to reach it, and refuses unless it is a Tailscale one (`utun*` or `tailscale*`): "The route to this address does not go through Tailscale; is Tailscale connected?". There is no fallback to another route. For an unusual setup (for example a WireGuard interface with another name) list extra interface names:
+
+```
+defaults write se.klippel.sendndes tailscaleInterfaces -string "wg0,utun9"
+```
+
+https is not checked. The recommended setup is https through `tailscale serve`; see `coordination/valvd-deploy.md` (§4.1b).

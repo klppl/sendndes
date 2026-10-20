@@ -142,3 +142,44 @@ final class OpenPolicyTests: XCTestCase {
         }
     }
 }
+
+final class RouteGuardTests: XCTestCase {
+    func guardFor(_ iface: String?, extra: [String] = [], looked: UnsafeMutablePointer<Int>? = nil) -> RouteGuard {
+        RouteGuard(lookup: { _ in looked?.pointee += 1; return iface }, extraInterfaces: { extra })
+    }
+    let ts = try! URLPolicy.parse("http://100.101.102.103:8485")
+
+    func testRouteViaDefaultGatewayWithTailscaleAddressIsRefused() {
+        XCTAssertFalse(guardFor("en0").allows(ts))
+    }
+    func testRouteViaTunnelInterfaceIsAccepted() {
+        XCTAssertTrue(guardFor("utun4").allows(ts))
+        XCTAssertTrue(guardFor("tailscale0").allows(ts))
+    }
+    func testNoInterfaceIsRefused() {
+        XCTAssertFalse(guardFor(nil).allows(ts))
+    }
+    func testOverrideListNamesAreAccepted() {
+        XCTAssertTrue(guardFor("wg0", extra: ["wg0"]).allows(ts))
+        XCTAssertFalse(guardFor("en0", extra: ["wg0"]).allows(ts))
+        XCTAssertEqual(RouteGuard.parseInterfaceList(" wg0, ,bad name,utun9"), ["wg0", "utun9"])
+    }
+    func testLoopbackAndHttpsAreNotChecked() {
+        var n = 0
+        let g = guardFor(nil, looked: &n)
+        XCTAssertTrue(g.allows(try! URLPolicy.parse("http://127.0.0.1:8485")))
+        XCTAssertTrue(g.allows(try! URLPolicy.parse("https://example.com")))
+        XCTAssertTrue(g.allows(try! URLPolicy.parse("https://100.101.102.103")))
+        XCTAssertEqual(n, 0)
+    }
+    func testUploadIsRefusedBeforeAnyNetworkOrFileAccess() async {
+        let client = ServerClient(route: guardFor("en0"))
+        let r = await client.upload(file: URL(fileURLWithPath: "/nonexistent"), name: "a", dir: "", server: ts, token: "x")
+        XCTAssertEqual(r, .failure(.notTailscaleRoute))
+        XCTAssertTrue(UploadFailure.notTailscaleRoute.pausesQueue)
+    }
+    func testSystemLookupFindsTheLoopbackInterfaceForLocalAddress() {
+        // 127.0.0.1 is owned by lo0 on macOS: proves the socket/getifaddrs path works.
+        XCTAssertEqual(RouteGuard.systemLookup("127.0.0.1"), "lo0")
+    }
+}
