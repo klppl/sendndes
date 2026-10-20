@@ -37,6 +37,23 @@ enum Pane: String, CaseIterable, Identifiable {
 enum Prefs {
     static let pullOnUnlock = "pullOnUnlock"
     static let skipOpenWarning = "skipOpenWarning"
+    static let recentVaults = "recentVaults"
+}
+
+/// Vault folders used on this Mac, most recent first, for one-click switching on the lock screen.
+enum RecentVaults {
+    static let limit = 6
+
+    static func list() -> [String] {
+        (UserDefaults.standard.stringArray(forKey: Prefs.recentVaults) ?? [])
+            .filter { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    static func note(_ path: String) {
+        guard !path.isEmpty else { return }
+        let rest = (UserDefaults.standard.stringArray(forKey: Prefs.recentVaults) ?? []).filter { $0 != path }
+        UserDefaults.standard.set(Array(([path] + rest).prefix(limit)), forKey: Prefs.recentVaults)
+    }
 }
 
 extension AppModel {
@@ -70,13 +87,16 @@ enum FilePanels {
         if p.runModal() == .OK { queue.add(urls: p.urls) }
     }
 
-    /// Points the app at an existing vault folder (locks the current one).
-    static func openExistingVault(_ model: AppModel) {
+    /// Points the app at an existing vault folder (locks the current one). True if a folder was chosen.
+    @discardableResult
+    static func openExistingVault(_ model: AppModel) -> Bool {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
         p.prompt = "Open vault"
         p.message = "Choose the folder that holds your vault (the one with vault.json)."
-        if p.runModal() == .OK, let u = p.url { model.setVaultPath(u.path) }
+        guard p.runModal() == .OK, let u = p.url else { return false }
+        model.setVaultPath(u.path)
+        return true
     }
 }
 
@@ -117,6 +137,8 @@ struct ContentView: View {
             RecoveryKeyView(model: model).interactiveDismissDisabled()
         }
         .sheet(isPresented: $showCreate) { CreateVaultView(model: model, close: { showCreate = false }) }
+        .onAppear { RecentVaults.note(model.vaultPath) }
+        .onChange(of: model.vaultPath) { _, new in RecentVaults.note(new) }
         .onChange(of: model.lockState) { _, new in
             guard new == .unlocked, pullOnUnlock, model.serverConfigured else { return }
             Task { await model.pullAndRefresh() }

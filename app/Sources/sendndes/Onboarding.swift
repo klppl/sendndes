@@ -138,8 +138,6 @@ struct LockScreen: View {
     let openCreate: () -> Void
     @State private var passphrase = ""
     @State private var shakes: CGFloat = 0
-    /// Touch ID prompts on its own once per time the app comes to the front, never right after a manual lock.
-    @State private var autoPrompted = false
     @FocusState private var fieldFocused: Bool
 
     private var unlocking: Bool { model.lockState == .unlocking }
@@ -169,10 +167,21 @@ struct LockScreen: View {
         }
         .onAppear {
             fieldFocused = !model.touchIDEnabled
-            if NSApp.isActive { autoTouchID() }
+            // At launch only: a lock screen that appears because you just locked must not prompt at once.
+            if !TouchIDPrompt.launched {
+                TouchIDPrompt.launched = true
+                if NSApp.isActive { autoTouchID() }
+            }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in autoTouchID() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in autoPrompted = false }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            TouchIDPrompt.launched = true
+            autoTouchID()
+        }
+        // The Touch ID dialog itself takes focus from the app; only a switch to another app re-arms the prompt,
+        // so cancelling it leaves you on the lock screen instead of looping.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if !TouchIDPrompt.inFlight { TouchIDPrompt.armed = true }
+        }
         .onChange(of: model.vaultMessage) { _, new in
             if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
         }
@@ -208,7 +217,16 @@ struct LockScreen: View {
     private var folderChip: some View {
         HStack(spacing: 6) {
             Menu {
-                Button("Open Another Vault…") { FilePanels.openExistingVault(model) }
+                let others = RecentVaults.list().filter { $0 != model.vaultPath }
+                if !others.isEmpty {
+                    Section("Recent") {
+                        ForEach(others, id: \.self) { path in
+                            Button { switchTo(path) } label: { Text(verbatim: (path as NSString).lastPathComponent) }
+                                .help(path)
+                        }
+                    }
+                }
+                Button("Open Another Vault…") { if FilePanels.openExistingVault(model) { vaultSwitched() } }
                 Button("Create a New Vault…", action: openCreate)
                 Divider()
                 Button("Show in Finder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: model.vaultPath) }
@@ -237,13 +255,41 @@ struct LockScreen: View {
         Task { await model.unlock(passphrase: p) }
     }
 
-    private func touchID() { Task { await model.unlockWithTouchID() } }
+    private func switchTo(_ path: String) {
+        model.setVaultPath(path)
+        vaultSwitched()
+    }
 
+    /// You picked this vault yourself, so asking for Touch ID straight away is what you expect.
+    private func vaultSwitched() {
+        passphrase = ""
+        fieldFocused = !model.touchIDEnabled
+        if model.touchIDEnabled { touchID() }
+    }
+
+    /// One prompt at a time: a second evaluatePolicy while the first is open fails without showing anything.
+    private func touchID() {
+        guard !TouchIDPrompt.inFlight else { return }
+        TouchIDPrompt.inFlight = true
+        Task {
+            await model.unlockWithTouchID()
+            TouchIDPrompt.inFlight = false
+        }
+    }
+
+    /// Touch ID prompts on its own at launch and when you come back from another app while locked.
     private func autoTouchID() {
-        guard model.touchIDEnabled, model.lockState == .locked, !autoPrompted else { return }
-        autoPrompted = true
+        guard model.touchIDEnabled, model.lockState == .locked, TouchIDPrompt.armed else { return }
+        TouchIDPrompt.armed = false
         touchID()
     }
+}
+
+/// Shared across lock screens (one is created on every lock).
+@MainActor private enum TouchIDPrompt {
+    static var launched = false
+    static var inFlight = false
+    static var armed = true
 }
 
 // MARK: Create
