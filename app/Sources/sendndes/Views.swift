@@ -93,10 +93,18 @@ struct Sidebar: View {
     let model: AppModel
     @Binding var pane: Pane
 
+    private var mood: Aster.Mood {
+        switch model.lockState {
+        case .locked: .asleep
+        case .unlocking: .working
+        case .unlocked, .noFolder: .happy
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                AppLogo(size: 40)
+                Aster(mood: mood, size: 40, interactive: true)
                 Wordmark(size: 19)
             }
             .padding(.leading, 4).padding(.bottom, 16)

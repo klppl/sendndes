@@ -8,6 +8,8 @@ struct Aster: View {
     var mood: Mood
     var size: CGFloat = 120
     var interactive = false
+    /// No idle sway or breathing (used when rendering the app icon).
+    var still = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bob = false
@@ -32,8 +34,8 @@ struct Aster: View {
             if mood == .asleep { zzz }
         }
         .frame(width: size, height: size)
-        .rotationEffect(.degrees(reduceMotion ? 0 : (bob ? 3 : -3)))
-        .scaleEffect(reduceMotion ? 1 : (bob ? 1.025 : 0.985))
+        .rotationEffect(.degrees(reduceMotion || still ? 0 : (bob ? 3 : -3)))
+        .scaleEffect(reduceMotion || still ? 1 : (bob ? 1.025 : 0.985))
         .offset(y: hop)
         .accessibilityHidden(true)
         .onTapGesture { if interactive { poke() } }
