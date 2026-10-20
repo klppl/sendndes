@@ -204,8 +204,8 @@ struct PaneHeader<Trailing: View>: View {
             Aster(mood: mood, size: 56, interactive: true)
                 .overlay { SparkleBurst(trigger: sparkle) }
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).display(28).foregroundStyle(Theme.ink)
-                Text(verbatim: subtitle).label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
+                Text(title).display(28).foregroundStyle(Theme.ink).lineLimit(1).minimumScaleFactor(0.7)
+                Text(verbatim: subtitle).label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft).lineLimit(2)
             }
             Spacer(minLength: 12)
             trailing

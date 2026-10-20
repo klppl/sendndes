@@ -59,6 +59,8 @@ struct VaultBrowser: View {
                     Button { FilePanels.addToVault(model) } label: { Label("Add files…", systemImage: "plus") }
                         .buttonStyle(.chunkyPrimary).disabled(model.adding)
                 }
+                .lineLimit(1)
+                .fixedSize()   // buttons keep one line; the title side gives way instead
             }
             banners
             if !model.addItems.isEmpty { addingList }
@@ -75,6 +77,8 @@ struct VaultBrowser: View {
         } isTargeted: { targeted = $0 }
         .searchable(text: $query, placement: .toolbar, prompt: "Search names and folders")
         .onChange(of: query) { _, _ in selection = selection.intersection(Set(visible.map(\.id))) }
+        .onChange(of: model.adding) { _, _ in clearWhenSealed() }
+        .onAppear { clearWhenSealed() }
         .quickLookPreview($quickLook)
         .alert("Open a decrypted copy?", isPresented: Binding(get: { confirmOpen != nil }, set: { if !$0 { confirmOpen = nil } }),
                presenting: confirmOpen) { e in
@@ -151,8 +155,21 @@ struct VaultBrowser: View {
                     Button("Clear finished") { model.clearAddFinished() }.buttonStyle(.chunkyQuietSmall)
                 }
             }
+            // As tall as its rows (about 44 pt each), up to four rows, then it scrolls.
             TransferList(items: model.addItems, activeText: "sealing…", doneText: "sealed")
-                .frame(maxHeight: 150)
+                .frame(height: min(CGFloat(model.addItems.count) * 44, 176))
+        }
+        .transition(.opacity)
+    }
+
+    /// Once everything is sealed the files are in the table below, so the progress list goes away by itself.
+    /// Failures stay until cleared.
+    private func clearWhenSealed() {
+        guard !model.adding, !model.addItems.isEmpty, model.addItems.allSatisfy({ $0.state == .sent }) else { return }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !model.adding, model.addItems.allSatisfy({ $0.state == .sent }) else { return }
+            withAnimation(.snappy(duration: 0.25)) { model.clearAddFinished() }
         }
     }
 
@@ -167,18 +184,21 @@ struct VaultBrowser: View {
                     if arrived.contains(e.id) { Pill(text: "new", tint: Theme.mint) }
                 }
             }
-            .width(min: 180, ideal: 320)
+            .width(min: 150, ideal: 220)
             TableColumn("Folder") { e in Text(verbatim: e.dir).foregroundStyle(Theme.inkSoft).lineLimit(1).truncationMode(.middle) }
-            .width(min: 80, ideal: 140)
+                .width(min: 50, ideal: 80)
             TableColumn("Size") { e in Text(verbatim: ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file)) }
-                .width(80)
-            TableColumn("Modified") { e in Text(verbatim: e.mtime.formatted(date: .abbreviated, time: .shortened)) }
-                .width(min: 120, ideal: 170)
+                .width(70)
+            TableColumn("Modified") { e in
+                Text(verbatim: e.mtime.formatted(.dateTime.year().month(.abbreviated).day()))
+                    .help(e.mtime.formatted(date: .complete, time: .shortened))
+            }
+            .width(min: 90, ideal: 100)
             TableColumn("ID") { e in Text(verbatim: e.shortID).font(.system(.callout, design: .monospaced)).foregroundStyle(Theme.inkSoft) }
-                .width(76)
+                .width(72)
         }
         .scrollContentBackground(.hidden)
-        .frame(minHeight: 180, idealHeight: 340)
+        .frame(minHeight: 140, idealHeight: 340)
         .background(Theme.card)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.ink, lineWidth: 2))

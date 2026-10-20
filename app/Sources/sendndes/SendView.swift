@@ -49,6 +49,8 @@ struct SendView: View {
                     if sentCount > 0 { Button("Clear finished") { queue.clearFinished() }.buttonStyle(.chunkyQuiet) }
                     Button { FilePanels.send(queue) } label: { Label("Send files…", systemImage: "plus") }.buttonStyle(.chunkyPrimary)
                 }
+                .lineLimit(1)
+                .fixedSize()
             }
             if let r = queue.pausedReason { Banner(kind: .warn, text: r, actionTitle: "Resume") { queue.resume() } }
             ForEach(queue.notes, id: \.self) { Banner(kind: .info, text: $0) }
