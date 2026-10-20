@@ -19,7 +19,8 @@ fi
 
 sh scripts/build-linux.sh >/dev/null
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
+cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp dist/valv-darwin-arm64 "$APP/Contents/Helpers/valv"
 chmod 755 "$APP/Contents/Helpers/valv"
 codesign --force -s - "$APP/Contents/Helpers/valv"
@@ -38,6 +39,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key><string>sendndes</string>
+	<key>CFBundleIconFile</key><string>AppIcon</string>
 	<key>CFBundleIdentifier</key><string>se.klippel.sendndes</string>
 	<key>CFBundleName</key><string>sendndes</string>
 	<key>CFBundleDisplayName</key><string>send n*des</string>

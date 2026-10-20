@@ -12,3 +12,5 @@ Trust and secrets, in plain words:
 - With Google Drive "stream" or Dropbox online-only folders, listing opens every file and can make the sync client download them.
 
 Look and feel: `Theme.swift` (palette, sticker cards), `Mascot.swift` (Aster, the asterisk with moods), `Components.swift` (buttons, banners, pills). Motion stops under Reduce Motion; all file names still go through `Text(verbatim:)`.
+
+Logo: `Logo.swift` draws the censored-image-file mark in code (sidebar and app icon). `scripts/make-icon.sh` regenerates `app/Resources/AppIcon.icns` from it; `build-app.sh` bundles it.
