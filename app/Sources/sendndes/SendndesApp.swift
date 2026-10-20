@@ -56,8 +56,11 @@ struct SendndesApp: App {
     var body: some Scene {
         Window("send n*des", id: "main") {
             ContentView(model: AppState.shared.model)
-                .frame(minWidth: 760, minHeight: 480)
+                .frame(minWidth: 760, minHeight: 520)
         }
         .defaultSize(width: 1000, height: 680)
+        .commands { AppCommands(model: AppState.shared.model) }
+
+        Settings { SettingsView(model: AppState.shared.model) }
     }
 }

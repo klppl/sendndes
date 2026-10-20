@@ -137,6 +137,30 @@ struct Note: View {
     }
 }
 
+/// An ⓘ that opens the small print in a popover, next to the thing it explains.
+struct HelpTip: View {
+    let title: String
+    let text: String
+    @State private var shown = false
+
+    var body: some View {
+        Button { shown.toggle() } label: {
+            Image(systemName: "info.circle").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.inkSoft)
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .popover(isPresented: $shown, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).label(.headline, weight: .bold).foregroundStyle(Theme.ink)
+                Text(verbatim: text).font(.callout).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14).frame(width: 320, alignment: .leading)
+        }
+    }
+}
+
 // MARK: Empty / centered states
 
 struct EmptyState: View {

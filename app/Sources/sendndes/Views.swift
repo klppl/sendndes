@@ -1,64 +1,100 @@
 import AppCore
 import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
+/// Two places: the vault (yours, needs the passphrase) and Send (to the inbox server, works while locked).
+/// Pulling is not a place: it happens when the vault unlocks and from "Check inbox".
 enum Pane: String, CaseIterable, Identifiable {
-    case vault, send, pull
+    case vault, send
     var id: String { rawValue }
     var title: String {
         switch self {
         case .vault: "Vault"
         case .send: "Send"
-        case .pull: "Pull"
-        }
-    }
-    var blurb: String {
-        switch self {
-        case .vault: "your stash"
-        case .send: "toss it over"
-        case .pull: "reel it in"
         }
     }
     var icon: String {
         switch self {
         case .vault: "lock.shield.fill"
         case .send: "paperplane.fill"
-        case .pull: "tray.and.arrow.down.fill"
         }
     }
     var tint: Color {
         switch self {
         case .vault: Theme.grape
         case .send: Theme.pink
-        case .pull: Theme.mint
         }
     }
     var key: Character {
         switch self {
         case .vault: "1"
         case .send: "2"
-        case .pull: "3"
         }
+    }
+}
+
+/// Preference keys owned by the views (AppCore keeps its own).
+enum Prefs {
+    static let pullOnUnlock = "pullOnUnlock"
+    static let skipOpenWarning = "skipOpenWarning"
+}
+
+extension AppModel {
+    var serverConfigured: Bool { tokenIsSet && !tokenNeedsReentry && !serverURLText.isEmpty }
+
+    /// Pull, then refresh the list so the arrivals show up by name.
+    func pullAndRefresh() async {
+        await pull()
+        if listingStale { await rebuildListing() }
+    }
+
+    /// Ids added by the last pull; cleared on lock.
+    var arrivedIDs: Set<String> { Set(pullItems.filter { $0.kind == .ingested }.map(\.id)) }
+}
+
+/// Open panels shared by the views and the menu bar.
+@MainActor
+enum FilePanels {
+    static func addToVault(_ model: AppModel) {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true; p.canChooseDirectories = true; p.allowsMultipleSelection = true
+        p.prompt = "Add to vault"
+        p.message = "Files are encrypted on this Mac. The originals stay where they are."
+        if p.runModal() == .OK { model.addToVault(urls: p.urls) }
+    }
+
+    static func send(_ queue: SendQueue) {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true; p.canChooseDirectories = true; p.allowsMultipleSelection = true
+        p.prompt = "Send"
+        if p.runModal() == .OK { queue.add(urls: p.urls) }
+    }
+
+    /// Points the app at an existing vault folder (locks the current one).
+    static func openExistingVault(_ model: AppModel) {
+        let p = NSOpenPanel()
+        p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
+        p.prompt = "Open vault"
+        p.message = "Choose the folder that holds your vault (the one with vault.json)."
+        if p.runModal() == .OK, let u = p.url { model.setVaultPath(u.path) }
     }
 }
 
 struct ContentView: View {
     @Bindable var model: AppModel
     @State private var pane: Pane = .vault
-    @State private var showSettings = false
     @State private var showCreate = false
+    @AppStorage(Prefs.pullOnUnlock) private var pullOnUnlock = true
 
     var body: some View {
         NavigationSplitView {
             Sidebar(model: model, pane: $pane)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 270)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
         } detail: {
             Group {
                 switch pane {
-                case .vault: VaultView(model: model, openSettings: { showSettings = true }, openCreate: { showCreate = true })
-                case .send: SendView(model: model, queue: model.sendQueue, openSettings: { showSettings = true })
-                case .pull: PullView(model: model, openSettings: { showSettings = true }, goVault: { pane = .vault })
+                case .vault: VaultView(model: model, openCreate: { showCreate = true }, goSend: { pane = .send })
+                case .send: SendView(model: model, queue: model.sendQueue)
                 }
             }
             .id(pane)
@@ -71,19 +107,20 @@ struct ContentView: View {
             ToolbarItemGroup {
                 if model.lockState == .unlocked {
                     Button { model.lock() } label: { Label("Lock", systemImage: "lock") }
-                        .keyboardShortcut("l", modifiers: .command)
                         .help("Lock the vault (⌘L)")
                 }
-                Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
-                    .help("Settings")
+                SettingsLink { Label("Settings", systemImage: "gearshape") }
+                    .help("Settings (⌘,)")
             }
         }
         .sheet(isPresented: Binding(get: { model.recoveryKey != nil }, set: { _ in })) {
             RecoveryKeyView(model: model).interactiveDismissDisabled()
         }
         .sheet(isPresented: $showCreate) { CreateVaultView(model: model, close: { showCreate = false }) }
-        .sheet(isPresented: $showSettings) { SettingsView(model: model, close: { showSettings = false }) }
-        .onAppear { if model.serverURLText.isEmpty && model.vaultPath.isEmpty { showSettings = true } }
+        .onChange(of: model.lockState) { _, new in
+            guard new == .unlocked, pullOnUnlock, model.serverConfigured else { return }
+            Task { await model.pullAndRefresh() }
+        }
     }
 }
 
@@ -102,12 +139,12 @@ struct Sidebar: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Aster(mood: mood, size: 40, interactive: true)
-                Wordmark(size: 19)
+                Aster(mood: mood, size: 36, interactive: true)
+                Wordmark(size: 18)
             }
-            .padding(.leading, 4).padding(.bottom, 16)
+            .padding(.leading, 4).padding(.bottom, 14)
             ForEach(Pane.allCases) { row($0) }
             Spacer()
             lockChip
@@ -117,28 +154,45 @@ struct Sidebar: View {
         .background(Theme.paperDeep.ignoresSafeArea())
     }
 
+    /// A small live count next to a pane: files still to send, or files that just arrived.
+    private func badge(_ p: Pane) -> (Int, Color)? {
+        switch p {
+        case .vault:
+            let n = model.arrivedIDs.count
+            return n > 0 ? (n, Theme.mint) : nil
+        case .send:
+            let n = model.sendQueue.items.filter { $0.state != .sent }.count
+            return n > 0 ? (n, Theme.pink) : nil
+        }
+    }
+
     private func row(_ p: Pane) -> some View {
         let selected = pane == p
         return Button { pane = p } label: {
             HStack(spacing: 10) {
-                Image(systemName: p.icon).font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Theme.onAccent).frame(width: 30, height: 30)
-                    .background(p.tint, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.ink, lineWidth: 1.5))
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(p.title).label(.body, weight: .bold).foregroundStyle(Theme.ink)
-                    Text(p.blurb).font(.caption).foregroundStyle(Theme.inkSoft)
-                }
+                Image(systemName: p.icon).font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Theme.onAccent).frame(width: 28, height: 28)
+                    .background(p.tint, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.ink, lineWidth: 1.5))
+                Text(p.title).label(.body, weight: .bold).foregroundStyle(Theme.ink)
                 Spacer(minLength: 0)
+                if let (n, tint) = badge(p) {
+                    Text(verbatim: "\(n)").label(.caption, weight: .heavy).foregroundStyle(Theme.onAccent)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(tint, in: Capsule())
+                        .overlay(Capsule().strokeBorder(Theme.ink, lineWidth: 1.5))
+                        .transition(.scale.combined(with: .opacity))
+                }
             }
-            .padding(.horizontal, 8).padding(.vertical, 6)
+            .padding(.horizontal, 7).padding(.vertical, 6)
             .contentShape(Rectangle())
-            .sticker(radius: 13, shadow: selected ? 3 : 0, fill: selected ? Theme.card : .clear, outlined: selected)
+            .sticker(radius: 12, shadow: selected ? 3 : 0, fill: selected ? Theme.card : .clear, outlined: selected)
         }
         .buttonStyle(.plain)
         .padding(.trailing, 3).padding(.bottom, 3)
         .keyboardShortcut(KeyEquivalent(p.key), modifiers: .command)
-        .accessibilityLabel("\(p.title), \(p.blurb)")
+        .accessibilityLabel(p.title)
+        .accessibilityValue(badge(p).map { "\($0.0)" } ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -146,11 +200,11 @@ struct Sidebar: View {
         switch model.lockState {
         case .unlocked:
             Button { model.lock() } label: {
-                Label("Unlocked · lock now", systemImage: "lock.open.fill").frame(maxWidth: .infinity)
+                Label("Lock now", systemImage: "lock.open.fill").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.chunkySmall).help("Lock the vault")
+            .buttonStyle(.chunkySmall).help("Lock the vault (⌘L)")
         case .locked, .unlocking:
-            chip("Locked and napping", "moon.zzz.fill", Theme.grape)
+            chip("Locked", "lock.fill", Theme.grape)
         case .noFolder:
             chip("No vault yet", "sparkles", Theme.sun)
         }
@@ -168,721 +222,33 @@ struct Sidebar: View {
     }
 }
 
-// MARK: Sheets
+// MARK: Menu bar
 
-/// Title row shared by the sheets.
-private struct SheetHeader: View {
-    var mood: Aster.Mood = .happy
-    let title: String
-    var body: some View {
-        HStack(spacing: 12) {
-            Aster(mood: mood, size: 50, interactive: true)
-            Text(title).display(26).foregroundStyle(Theme.ink)
-            Spacer()
-        }
-    }
-}
-
-private struct FieldLabel<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).label(.caption, weight: .bold).foregroundStyle(Theme.inkSoft).textCase(.uppercase).tracking(0.6)
-            content
-        }
-    }
-}
-
-/// A "folder chosen" box with a Choose… button.
-private struct FolderPicker: View {
-    let path: String
-    let action: () -> Void
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "folder.fill").foregroundStyle(Theme.sun).frame(width: 18)
-            Text(verbatim: path.isEmpty ? "None chosen" : path)
-                .label(.body, weight: .medium).foregroundStyle(path.isEmpty ? Theme.inkSoft : Theme.ink)
-                .lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 6)
-            Button("Choose…", action: action).buttonStyle(.chunkySmall)
-        }
-        .padding(.leading, 12).padding(.trailing, 4).padding(.vertical, 5)
-        .background(Theme.paper, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Theme.ink, lineWidth: 2))
-    }
-}
-
-struct SettingsView: View {
+struct AppCommands: Commands {
     let model: AppModel
-    let close: () -> Void
-    @State private var url = ""
-    @State private var token = ""
-    @State private var vault = ""
-    @State private var error: String?
-    @State private var keysNote: String?
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SheetHeader(title: "Settings")
-            FieldLabel(title: "Server address") {
-                TextField("Server address", text: $url, prompt: Text(verbatim: "http://100.x.y.z:8485 or https://…"))
-                    .textFieldStyle(StickerFieldStyle(icon: "network")).labelsHidden()
-            }
-            FieldLabel(title: "Bearer token") {
-                SecureField("Bearer token", text: $token,
-                            prompt: Text(model.tokenIsSet && !model.tokenNeedsReentry ? "Saved in the Keychain; type to replace" : "Paste the token"))
-                    .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
-            }
-            FieldLabel(title: "Vault folder") { FolderPicker(path: vault, action: chooseVault) }
-            Stepper(value: Bindable(model).autoLockMinutes, in: AppModel.autoLockRange) {
-                Text("Lock after \(model.autoLockMinutes) min without activity")
-            }
-            Note(text: "The app also locks when the Mac sleeps, the screen locks or you switch user. A running pull or send is then cancelled.")
-            Note(text: "The token is kept in your login keychain: not synchronizable, not iCloud-synced, readable while the login keychain is unlocked (normally the whole login session). macOS may ask you to allow access after each rebuild of this app.")
-            if model.tokenNeedsReentry {
-                Banner(kind: .error, text: "The token was saved for a different server address and is not sent to this one. Enter the token again.")
-            }
-            FieldLabel(title: "Inbox server keys") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Button("Copy server keys") { copyServerKeys() }
-                        .buttonStyle(.chunky).disabled(model.lockState != .unlocked)
-                    Note(text: "Pastes into the valvd admin page (step 1). Warning: k_auth is a secret. Give it only to your own inbox server; anyone holding it can add files that look authentic, and it cannot be rotated. It cannot decrypt anything. The clipboard is cleared after 60 seconds. Unlock the vault first.")
-                    if let keysNote { Text(keysNote).font(.callout) }
-                }
-            }
-            if model.touchIDAvailable {
-                FieldLabel(title: "Touch ID") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if model.touchIDEnabled {
-                            Button("Turn off Touch ID unlock") { model.disableTouchID() }.buttonStyle(.chunky)
-                        } else {
-                            Button("Turn on Touch ID unlock") { model.enableTouchID() }
-                                .buttonStyle(.chunky).disabled(model.lockState != .unlocked)
-                        }
-                        Note(text: "Saves the passphrase in your login keychain and releases it after Touch ID (or your Mac password). That is weaker than typing it: anything running as you with the keychain open could read it. The passphrase and recovery key still work. Unlock the vault first to turn it on.")
-                        if let m = model.touchIDMessage { Text(m).font(.callout) }
-                    }
-                }
-            }
-            FieldLabel(title: "Recovery key") {
-                RecoveryReveal(model: model)
-            }
-            if let error { Banner(kind: .error, text: error) }
-            HStack(spacing: 10) {
-                Spacer()
-                Button("Cancel", action: close).buttonStyle(.chunky).keyboardShortcut(.cancelAction)
-                Button("Save") { save() }.buttonStyle(.chunkyPrimary).keyboardShortcut(.defaultAction)
-            }
+    var body: some Commands {
+        CommandGroup(after: .newItem) {
+            Button("Add to Vault…") { FilePanels.addToVault(model) }
+                .keyboardShortcut("o")
+                .disabled(model.lockState != .unlocked || model.adding)
+            Button("Send to Inbox…") { FilePanels.send(model.sendQueue) }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(!model.serverConfigured)
+            Divider()
+            Button("Open Another Vault…") { FilePanels.openExistingVault(model) }
         }
-        .padding(24).frame(width: 560)
-        .background(Theme.paper)
-        .onAppear { url = model.serverURLText; vault = model.vaultPath }
-    }
-
-    private func copyServerKeys() {
-        keysNote = nil
-        Task {
-            guard let keys = await model.serverKeys() else { keysNote = "Could not read the keys. Is the vault unlocked?"; return }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(keys.clipboardText, forType: .string)
-            pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
-            let count = pb.changeCount
-            keysNote = "Copied. Key check value: \(keys.fingerprint) (the admin page shows the same)."
-            DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
-                if NSPasteboard.general.changeCount == count { NSPasteboard.general.clearContents() }
-            }
-        }
-    }
-
-    private func chooseVault() {
-        let p = NSOpenPanel()
-        p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
-        p.prompt = "Choose vault folder"
-        if p.runModal() == .OK, let u = p.url { vault = u.path }
-    }
-
-    private func save() {
-        do {
-            try model.saveSettings(serverURL: url, token: token.isEmpty ? nil : token, vaultPath: vault)
-            token = ""
-            close()
-        } catch let e as AppModel.SettingsError { error = e.message } catch { self.error = "Could not save." }
-    }
-}
-
-/// Shows the recovery key again after the passphrase (or Touch ID) is given. Hides itself after 30 seconds,
-/// when the sheet closes, and when the vault locks.
-struct RecoveryReveal: View {
-    @Bindable var model: AppModel
-    @State private var pass = ""
-    @State private var key: String?
-    @State private var working = false
-    @State private var hideTask: Task<Void, Never>?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let key {
-                Text(verbatim: key).font(.system(.body, design: .monospaced).bold()).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.sun.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                Button("Hide") { hide() }.buttonStyle(.chunkySmall)
-            } else {
-                HStack(spacing: 8) {
-                    SecureField("Passphrase", text: $pass)
-                        .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden().onSubmit { reveal(typed: true) }
-                    Button("Show") { reveal(typed: true) }.buttonStyle(.chunky).disabled(pass.isEmpty || working)
-                    if model.touchIDEnabled {
-                        Button { reveal(typed: false) } label: { Image(systemName: "touchid") }
-                            .buttonStyle(.chunky).disabled(working).help("Show with Touch ID")
-                    }
-                }
-                .disabled(model.lockState != .unlocked)
-            }
-            Note(text: "Type the passphrase again to see the recovery key. Anyone who sees it can open the vault without the passphrase, so show it only when you are writing it down. Unlock the vault first.")
-            if let m = model.recoveryMessage { Text(m).font(.callout) }
-        }
-        .onChange(of: model.lockState) { _, new in if new != .unlocked { hide() } }
-        .onDisappear { hide() }
-    }
-
-    private func hide() { hideTask?.cancel(); key = nil; pass = "" }
-
-    private func reveal(typed: Bool) {
-        let p = typed ? pass : nil
-        pass = ""
-        working = true
-        Task {
-            let k = await model.revealRecoveryKey(passphrase: p)
-            working = false
-            guard let k else { return }
-            key = k
-            hideTask = Task {
-                try? await Task.sleep(nanoseconds: 30_000_000_000)
-                if !Task.isCancelled { hide() }
-            }
-        }
-    }
-}
-
-struct CreateVaultView: View {
-    @Bindable var model: AppModel
-    let close: () -> Void
-    @State private var folder = ""
-    @State private var pass = ""
-    @State private var again = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SheetHeader(mood: model.creating ? .working : .happy, title: "Build a vault")
-            FieldLabel(title: "Folder") { FolderPicker(path: folder, action: choose) }
-            Note(text: "Pick an empty folder, or make a new one in the dialog. If it is inside Google Drive or Dropbox, the sealed files will sync there.")
-            FieldLabel(title: "Passphrase") {
-                SecureField("Passphrase (at least \(AppModel.minPassphraseCharacters) characters)", text: $pass)
-                    .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
-            }
-            SecureField("Repeat passphrase", text: $again)
-                .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
-            Note(text: "Nobody can reset the passphrase. You will get a recovery key once; it is the only way back in if you forget the passphrase.")
-            if let m = model.createMessage { Banner(kind: .error, text: m) }
-            HStack(spacing: 10) {
-                Spacer()
-                Button("Cancel") { model.createMessage = nil; close() }.buttonStyle(.chunky).keyboardShortcut(.cancelAction)
-                Button(model.creating ? "Creating…" : "Create vault") { create() }
-                    .buttonStyle(.chunkyPrimary).keyboardShortcut(.defaultAction).disabled(model.creating)
-            }
-        }
-        .padding(24).frame(width: 540)
-        .background(Theme.paper)
-        .onAppear { model.createMessage = nil }
-        .onChange(of: model.recoveryKey) { _, new in if new != nil { pass = ""; again = ""; close() } }
-    }
-
-    private func choose() {
-        let p = NSOpenPanel()
-        p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
-        p.canCreateDirectories = true
-        p.prompt = "Use this folder"
-        if p.runModal() == .OK, let u = p.url { folder = u.path }
-    }
-
-    private func create() {
-        let (a, b, f) = (pass, again, folder)
-        Task { await model.createVault(at: f, passphrase: a, repeated: b) }
-    }
-}
-
-/// Shown once after creation. It cannot be dismissed until the key has been typed back correctly.
-struct RecoveryKeyView: View {
-    let model: AppModel
-    @State private var typed = ""
-
-    private func normalized(_ s: String) -> String {
-        s.uppercased().filter { !$0.isWhitespace && $0 != "-" }
-    }
-
-    var body: some View {
-        let key = model.recoveryKey ?? ""
-        let matches = !typed.isEmpty && normalized(typed) == normalized(key)
-        VStack(alignment: .leading, spacing: 16) {
-            SheetHeader(mood: matches ? .happy : .wow, title: "Your recovery key")
-            Text("The vault is created. Write this key down or store it in a password manager now. It is shown only once, this app does not keep it, and without it a forgotten passphrase cannot be undone.")
-                .label(.body, weight: .medium).foregroundStyle(Theme.ink)
-            ticket(key)
-            FieldLabel(title: "Prove you wrote it down") {
-                TextField("Type the key again to confirm", text: $typed)
-                    .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
-                    .font(.system(.body, design: .monospaced)).autocorrectionDisabled()
-            }
-            HStack {
-                if matches {
-                    Label("That's the one.", systemImage: "checkmark.circle.fill").label(.callout).foregroundStyle(Theme.mintText)
-                } else if !typed.isEmpty {
-                    Text("That doesn't match yet.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
-                }
-                Spacer()
-                Button("I have stored it") { model.acknowledgeRecoveryKey() }
-                    .buttonStyle(.chunkyPrimary).keyboardShortcut(.defaultAction).disabled(!matches)
-            }
-        }
-        .padding(24).frame(width: 560)
-        .background(Theme.paper)
-        .animation(.snappy(duration: 0.2), value: matches)
-    }
-
-    /// Four groups per line so the key wraps predictably instead of mid-group.
-    private func keyLines(_ key: String) -> String {
-        let groups = key.split(separator: "-").map(String.init)
-        guard groups.count > 4 else { return key }
-        return stride(from: 0, to: groups.count, by: 4)
-            .map { groups[$0..<min($0 + 4, groups.count)].joined(separator: "-") }
-            .joined(separator: "\n")
-    }
-
-    private func ticket(_ key: String) -> some View {
-        VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "key.horizontal.fill")
-                Text("RECOVERY KEY · SHOWN ONCE").tracking(1.2)
-                Spacer()
-            }
-            .label(.caption, weight: .bold).foregroundStyle(Theme.ink.opacity(0.75))
-            .padding(.horizontal, 16).padding(.vertical, 10)
-            Line().stroke(Theme.ink.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [6, 6])).frame(height: 2)
-            Text(verbatim: keyLines(key))
-                .font(.system(size: 21, weight: .bold, design: .monospaced)).foregroundStyle(Theme.ink)
-                .textSelection(.enabled).multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 16).padding(.vertical, 18).frame(maxWidth: .infinity)
-        }
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Theme.sun.opacity(0.3), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .sticker(radius: 16, shadow: 4)
-        .padding(.trailing, 4).padding(.bottom, 4)
-    }
-}
-
-private struct Line: Shape {
-    func path(in r: CGRect) -> Path {
-        var p = Path()
-        p.move(to: CGPoint(x: r.minX, y: r.midY)); p.addLine(to: CGPoint(x: r.maxX, y: r.midY))
-        return p
-    }
-}
-
-// MARK: Transfer lists (Send queue, adding to the vault)
-
-struct TransferList: View {
-    let items: [SendItem]
-    let activeText: String
-    let doneText: String
-    var retry: ((UUID) -> Void)?
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                    row(item)
-                    if i < items.count - 1 { Divider().overlay(Theme.ink.opacity(0.12)).padding(.horizontal, 12) }
-                }
-            }
-        }
-        .sticker(radius: 14)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    @ViewBuilder private func row(_ item: SendItem) -> some View {
-        switch item.state {
-        case .waiting:
-            FileRow(name: item.displayName) { Pill(text: "waiting", icon: "clock", tint: Theme.inkSoft) }
-        case .sending:
-            FileRow(name: item.displayName) { Pill(text: activeText, tint: Theme.grape, spinner: true) }
-        case .sent:
-            FileRow(name: item.displayName) { Pill(text: doneText, icon: "checkmark", tint: Theme.mint) }
-        case .failed(let m):
-            FileRow(name: item.displayName, detail: m, detailIsError: true) {
-                HStack(spacing: 8) {
-                    Pill(text: "failed", icon: "xmark", tint: Theme.tomato)
-                    if let retry { Button("Retry") { retry(item.id) }.buttonStyle(.chunkySmall) }
-                }
-            }
-        }
-    }
-}
-
-// MARK: Vault
-
-struct VaultView: View {
-    @Bindable var model: AppModel
-    let openSettings: () -> Void
-    let openCreate: () -> Void
-    @State private var passphrase = ""
-    @State private var selection = Set<FileEntry.ID>()
-    @State private var query = ""
-    @State private var targeted = false
-    @State private var shakes: CGFloat = 0
-
-    var body: some View {
-        switch model.lockState {
-        case .noFolder:
-            EmptyState(mood: .happy, title: "Let's build you a vault",
-                       text: "Create a new vault, or choose the folder of an existing one in Settings.",
-                       button: "Create a vault…", action: openCreate,
-                       secondaryButton: "Use an existing folder…", secondaryAction: openSettings)
-        case .locked, .unlocking:
-            lockedView
-        case .unlocked:
-            unlockedView
-        }
-    }
-
-    // MARK: Locked
-
-    private var lockedView: some View {
-        let unlocking = model.lockState == .unlocking
-        let warming = unlocking || !passphrase.isEmpty
-        let mood: Aster.Mood = warming ? .flustered : (model.vaultMessage != nil ? .oops : .asleep)
-        return ScrollView {
-            VStack(spacing: 14) {
-                Aster(mood: mood, size: 150, interactive: true)
-                Text(warming ? "Ooh… getting warmed up…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
-                Text("Whisper the passphrase to wake it up.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
-                Text(verbatim: model.vaultPath).font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.inkSoft)
-                    .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
-                VStack(spacing: 12) {
-                    SecureField("Passphrase", text: $passphrase)
-                        .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
-                        .onSubmit(unlock)
-                    Button(unlocking ? "Unlocking…" : "Unlock", action: unlock)
-                        .buttonStyle(.chunkyPrimary)
-                        .disabled(unlocking || passphrase.isEmpty)
-                        .keyboardShortcut(.defaultAction)
-                    if model.touchIDEnabled {
-                        Button { Task { await model.unlockWithTouchID() } } label: {
-                            Label("Unlock with Touch ID", systemImage: "touchid").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.chunky).disabled(unlocking)
-                    }
-                }
-                .frame(width: 300)
-                if let m = model.vaultMessage { Banner(kind: .error, text: m).frame(maxWidth: 400) }
-                Button("Create a new vault instead…", action: openCreate).buttonStyle(.chunkyQuietSmall)
-                Note(text: "Listing opens every file in the vault. In Google Drive “stream” mode or Dropbox online-only folders this can download files and take a while.")
-                    .frame(maxWidth: 420)
-            }
-            .modifier(Shake(shakes: shakes))
-            .padding(24)
-            .frame(maxWidth: .infinity, minHeight: 440)
-        }
-        .onChange(of: model.vaultMessage) { _, new in
-            if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
-        }
-    }
-
-    // MARK: Unlocked
-
-    private var visible: [FileEntry] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return model.entries }
-        return model.entries.filter { $0.name.localizedCaseInsensitiveContains(q) || $0.dir.localizedCaseInsensitiveContains(q) }
-    }
-
-    private var chosen: [FileEntry] { visible.filter { selection.contains($0.id) } }
-
-    private var subtitle: String {
-        switch model.entries.count {
-        case 0: "Empty. Suspiciously tidy."
-        case 1: "1 file, all tucked in."
-        default: "\(model.entries.count) files tucked away."
-        }
-    }
-
-    private var unlockedView: some View {
-        let shown = visible
-        return VStack(alignment: .leading, spacing: 12) {
-            PaneHeader(mood: model.busy || model.adding ? .working : .smitten, title: "Your vault", subtitle: subtitle,
-                       sparkle: model.addItems.filter { $0.state == .sent }.count) { EmptyView() }
-            HStack(spacing: 10) {
-                Button { addFiles() } label: { Label("Add files…", systemImage: "plus") }
-                    .buttonStyle(.chunkyPrimary).disabled(model.adding)
-                Button { openSelected() } label: { Label("Open", systemImage: "arrow.up.forward.app") }
-                    .buttonStyle(.chunky).disabled(chosen.count != 1 || model.busy)
-                Button { exportSelected() } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                    .buttonStyle(.chunky).disabled(chosen.isEmpty || model.exporting)
-                Spacer()
-                Button { Task { await model.rebuildListing() } } label: {
-                    Label(model.busy ? "Working…" : "Rebuild listing", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.chunkyQuiet).disabled(model.busy)
-                .help("Read the whole vault again and refresh this list")
-            }
-            if model.listingProblems > 0 {
-                Banner(kind: .warn, text: "\(model.listingProblems) problems — run `valv verify` in Terminal.")
-            }
-            if model.listingStale { Banner(kind: .info, text: "List may be out of date after the pull.") }
-            if !model.addItems.isEmpty {
-                HStack {
-                    Text("Tucking files in").label(.callout, weight: .bold).foregroundStyle(Theme.ink)
-                    Spacer()
-                    if model.addItems.contains(where: { $0.state == .sent }) {
-                        Button("Clear finished") { model.clearAddFinished() }.buttonStyle(.chunkyQuietSmall)
-                    }
-                }
-                TransferList(items: model.addItems, activeText: "sealing…", doneText: "tucked in")
-                    .frame(maxHeight: 170)
-            }
-            ForEach(model.addNotes, id: \.self) { Banner(kind: .info, text: $0) }
-            if let m = model.vaultMessage { Banner(kind: .error, text: m) }
-            if let m = model.openMessage { Banner(kind: .warn, text: m) }
-            if let m = model.exportMessage {
-                Banner(kind: .success, text: m,
-                       actionTitle: model.exportFolder == nil ? nil : "Show in Finder",
-                       action: { if let f = model.exportFolder { NSWorkspace.shared.open(URL(fileURLWithPath: f)) } })
-            }
-            table(shown)
-            Note(text: "Open and Export hand you a decrypted copy that the vault no longer protects. Opened copies are kept in a private temporary folder and deleted when you lock or quit, but the app you open them in may keep its own copy. Exported copies stay where you put them (watch out for synced or indexed folders).")
-        }
-        .padding(20)
-        .overlay { if targeted { DropHint(title: "Drop to tuck it in").padding(10) } }
-        .animation(.snappy(duration: 0.18), value: targeted)
-        .dropDestination(for: URL.self) { urls, _ in
-            model.addToVault(urls: urls.filter { $0.isFileURL })
-            return true
-        } isTargeted: { targeted = $0 }
-        .searchable(text: $query, placement: .toolbar, prompt: "Search names and folders")
-        .onChange(of: query) { _, _ in
-            let ids = Set(visible.map(\.id))
-            selection = selection.intersection(ids)
-        }
-    }
-
-    private func table(_ shown: [FileEntry]) -> some View {
-        Table(shown, selection: $selection) {
-            TableColumn("Name") { e in
-                HStack(spacing: 8) {
-                    FileGlyph(name: e.name, size: 20)
-                    Text(verbatim: e.name).label(.body, weight: .semibold).lineLimit(1).truncationMode(.middle)
-                }
-            }
-            TableColumn("Folder") { e in Text(verbatim: e.dir).foregroundStyle(Theme.inkSoft) }
-            TableColumn("Size") { e in Text(verbatim: ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file)) }
-                .width(80)
-            TableColumn("Modified") { e in Text(verbatim: e.mtime.formatted(date: .abbreviated, time: .shortened)) }
-                .width(130)
-            TableColumn("ID") { e in Text(verbatim: e.shortID).font(.system(.callout, design: .monospaced)).foregroundStyle(Theme.inkSoft) }
-                .width(80)
-        }
-        .scrollContentBackground(.hidden)
-        .frame(minHeight: 180, idealHeight: 340)
-        .background(Theme.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.ink, lineWidth: 2))
-        .overlay {
-            if shown.isEmpty {
-                VStack(spacing: 8) {
-                    Aster(mood: model.entries.isEmpty ? .asleep : .oops, size: 84)
-                    if model.entries.isEmpty {
-                        Text("Nothing in here yet").display(20).foregroundStyle(Theme.ink)
-                        Text("Drop files anywhere in this window, or hit Add files.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
-                    } else {
-                        Text("No matches").display(20).foregroundStyle(Theme.ink)
-                        Text(verbatim: "Nothing in the vault matches “\(query)”.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
-                    }
-                }
-                .padding(.top, 24)
-                .allowsHitTesting(false)
-            }
-        }
-        .contextMenu(forSelectionType: FileEntry.ID.self) { ids in
-            if ids.count == 1 { Button("Open") { selection = ids; openSelected() } }
-            Button("Export…") { selection = ids; exportSelected() }
-        } primaryAction: { ids in
-            if ids.count == 1 { selection = ids; openSelected() }
-        }
-    }
-
-    private func openSelected() {
-        let c = chosen
-        guard c.count == 1, let e = c.first else { return }
-        Task { if let url = await model.prepareOpen(e) { NSWorkspace.shared.open(url) } }
-    }
-
-    private func exportSelected() {
-        let chosen = self.chosen
-        guard !chosen.isEmpty else { return }
-        let p = NSOpenPanel()
-        p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; p.allowsMultipleSelection = false
-        p.prompt = "Export here"
-        p.message = "Exported files are not encrypted. Choose a folder outside the vault; avoid synced or indexed folders."
-        if p.runModal() == .OK, let u = p.url { Task { await model.export(chosen, toFolder: u.path) } }
-    }
-
-    private func addFiles() {
-        let p = NSOpenPanel()
-        p.canChooseFiles = true; p.canChooseDirectories = true; p.allowsMultipleSelection = true
-        p.prompt = "Add to vault"
-        if p.runModal() == .OK { model.addToVault(urls: p.urls) }
-    }
-
-    private func unlock() {
-        let p = passphrase
-        passphrase = ""
-        Task { await model.unlock(passphrase: p) }
-    }
-}
-
-// MARK: Send
-
-struct SendView: View {
-    let model: AppModel
-    @Bindable var queue: SendQueue
-    let openSettings: () -> Void
-    @State private var targeted = false
-
-    private var configured: Bool { model.tokenIsSet && !model.tokenNeedsReentry && !model.serverURLText.isEmpty }
-    private var sentCount: Int { queue.items.filter { $0.state == .sent }.count }
-
-    private var subtitle: String {
-        if queue.items.isEmpty { return "Toss files over to the server." }
-        return "\(queue.items.count) in the queue · \(sentCount) sent."
-    }
-
-    var body: some View {
-        if !configured {
-            EmptyState(mood: .oops, title: "Where do the files go?",
-                       text: "Server not set up. Enter the server address and token in Settings.",
-                       button: "Open Settings", action: openSettings)
-        } else {
-            content
-                .dropDestination(for: URL.self) { urls, _ in
-                    queue.add(urls: urls.filter { $0.isFileURL })
-                    return true
-                } isTargeted: { targeted = $0 }
-        }
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            PaneHeader(mood: queue.running ? .working : .happy, title: "Send", subtitle: subtitle, sparkle: sentCount) {
-                HStack(spacing: 10) {
-                    if sentCount > 0 { Button("Clear finished") { queue.clearFinished() }.buttonStyle(.chunkyQuiet) }
-                    Button { addFiles() } label: { Label("Add files…", systemImage: "plus") }.buttonStyle(.chunkyPrimary)
-                }
-            }
-            if let r = queue.pausedReason { Banner(kind: .warn, text: r, actionTitle: "Resume") { queue.resume() } }
-            ForEach(queue.notes, id: \.self) { Banner(kind: .info, text: $0) }
-            if queue.items.isEmpty {
-                dropZone
-            } else {
-                TransferList(items: queue.items, activeText: "sending…", doneText: "sent!") { queue.retry($0) }
-            }
-            Note(text: "Files are sent one at a time. If a send fails and you retry, the vault can end up with a duplicate. Don't send files that are still being written. In this version the server briefly sees the file's contents and name while it seals them.")
-        }
-        .padding(20)
-        .overlay { if targeted && !queue.items.isEmpty { DropHint(title: "Drop to send").padding(10) } }
-        .animation(.snappy(duration: 0.18), value: targeted)
-    }
-
-    private var dropZone: some View {
-        VStack(spacing: 10) {
-            Aster(mood: targeted ? .wow : .happy, size: 124, interactive: true)
-            Text(targeted ? "Ooh. Let go!" : "Drop files here").display(28).foregroundStyle(Theme.ink)
-            Text("Folders too. We don't judge.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
-            Button("Choose files…", action: addFiles).buttonStyle(.chunky).padding(.top, 4)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(targeted ? Theme.pink.opacity(0.16) : Theme.card.opacity(0.55)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(targeted ? Theme.pink : Theme.ink.opacity(0.5),
-                              style: StrokeStyle(lineWidth: targeted ? 4 : 2.5, dash: targeted ? [] : [10, 8]))
-        )
-    }
-
-    private func addFiles() {
-        let p = NSOpenPanel()
-        p.canChooseFiles = true; p.canChooseDirectories = true; p.allowsMultipleSelection = true
-        if p.runModal() == .OK { queue.add(urls: p.urls) }
-    }
-}
-
-// MARK: Pull
-
-struct PullView: View {
-    @Bindable var model: AppModel
-    let openSettings: () -> Void
-    let goVault: () -> Void
-
-    private var added: Int { model.pullItems.filter { $0.kind == .ingested }.count }
-
-    var body: some View {
-        if model.lockState != .unlocked {
-            EmptyState(mood: .asleep, title: "Unlock the vault first",
-                       text: "Pulling needs the passphrase to open the sealed files. Unlock it in the Vault section.",
-                       button: "Go to the vault", action: goVault)
-        } else {
-            VStack(alignment: .leading, spacing: 12) {
-                PaneHeader(mood: model.pullRunning ? .working : .smitten, title: "Pull",
-                           subtitle: "Reel in whatever is waiting on the server.", sparkle: added) {
-                    Button(model.pullRunning ? "Pulling…" : "Pull from server") { Task { await model.pull() } }
-                        .buttonStyle(.chunkyPrimary).disabled(model.pullRunning)
-                }
-                if let m = model.pullMessage { Banner(kind: .error, text: m) }
-                if let s = model.pullSummary { Banner(kind: .info, text: s) }
-                if model.pullItems.isEmpty {
-                    VStack(spacing: 8) {
-                        Aster(mood: model.pullRunning ? .working : .asleep, size: 96)
-                        Text("Nothing pulled yet").display(22).foregroundStyle(Theme.ink)
-                        Text("Hit the button when you're expecting something.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(model.pullItems.enumerated()), id: \.element.id) { i, item in
-                                FileRow(name: String(item.id.prefix(8)), showsIcon: false, mono: true) { pill(item.kind) }
-                                if i < model.pullItems.count - 1 { Divider().overlay(Theme.ink.opacity(0.12)).padding(.horizontal, 12) }
-                            }
-                        }
-                    }
-                    .sticker(radius: 14)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                }
-                Note(text: "Pulled files are listed by id, not name: names stay inside the vault. Rebuild the listing in Vault to see them.")
-            }
-            .padding(20)
-        }
-    }
-
-    @ViewBuilder private func pill(_ kind: PullKind) -> some View {
-        switch kind {
-        case .ingested: Pill(text: "added", icon: "checkmark", tint: Theme.mint)
-        case .alreadyIngested: Pill(text: "already in the vault", icon: "tray.full", tint: Theme.inkSoft)
-        case .notAuthentic: Pill(text: "not authentic — left on the server", icon: "exclamationmark.triangle.fill", tint: Theme.tomato)
-        case .conflict: Pill(text: "conflicts with an existing file — left on the server", icon: "xmark", tint: Theme.tomato)
-        case .error: Pill(text: "failed — left on the server", icon: "xmark", tint: Theme.tomato)
+        CommandMenu("Vault") {
+            Button("Refresh") { Task { await model.rebuildListing() } }
+                .keyboardShortcut("r")
+                .disabled(model.lockState != .unlocked || model.busy)
+            Button("Check Inbox") { Task { await model.pullAndRefresh() } }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(model.lockState != .unlocked || model.pullRunning || !model.serverConfigured)
+            Divider()
+            Button("Lock") { model.lock() }
+                .keyboardShortcut("l")
+                .disabled(model.lockState != .unlocked && model.lockState != .unlocking)
         }
     }
 }
