@@ -51,6 +51,10 @@ services:
   valvd:
     image: ghcr.io/klppl/valv:latest
     restart: unless-stopped
+    # Only if the GUI is behind a Cloudflare Tunnel / reverse proxy. Protect the
+    # hostname with a Cloudflare Access policy too (see coordination/valvd-deploy.md).
+    # environment:
+    #   VALVD_ADMIN_BEHIND_PROXY: "1"
     volumes:
       - valvd-data:/data
     ports:
