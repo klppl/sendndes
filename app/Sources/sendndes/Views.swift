@@ -48,17 +48,15 @@ struct ContentView: View {
     @State private var pane: Pane = .vault
     @State private var showSettings = false
     @State private var showCreate = false
-    /// True while there is text in the passphrase field; Aster warms up as you type.
-    @State private var typing = false
 
     var body: some View {
         NavigationSplitView {
-            Sidebar(model: model, pane: $pane, typing: typing)
+            Sidebar(model: model, pane: $pane)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 270)
         } detail: {
             Group {
                 switch pane {
-                case .vault: VaultView(model: model, typing: $typing, openSettings: { showSettings = true }, openCreate: { showCreate = true })
+                case .vault: VaultView(model: model, openSettings: { showSettings = true }, openCreate: { showCreate = true })
                 case .send: SendView(model: model, queue: model.sendQueue, openSettings: { showSettings = true })
                 case .pull: PullView(model: model, openSettings: { showSettings = true }, goVault: { pane = .vault })
                 }
@@ -94,14 +92,12 @@ struct ContentView: View {
 struct Sidebar: View {
     let model: AppModel
     @Binding var pane: Pane
-    var typing = false
 
     private var mood: Aster.Mood {
         switch model.lockState {
-        case .locked: typing ? .flustered : .asleep
-        case .unlocking: .flustered
-        case .unlocked: .smitten
-        case .noFolder: .happy
+        case .locked: .asleep
+        case .unlocking: .working
+        case .unlocked, .noFolder: .happy
         }
     }
 
@@ -425,7 +421,6 @@ struct TransferList: View {
 
 struct VaultView: View {
     @Bindable var model: AppModel
-    @Binding var typing: Bool
     let openSettings: () -> Void
     let openCreate: () -> Void
     @State private var passphrase = ""
@@ -480,8 +475,6 @@ struct VaultView: View {
             .padding(24)
             .frame(maxWidth: .infinity, minHeight: 440)
         }
-        .onChange(of: passphrase) { _, new in typing = !new.isEmpty }
-        .onDisappear { typing = false }
         .onChange(of: model.vaultMessage) { _, new in
             if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
         }
