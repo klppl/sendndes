@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>send n*des · your own encrypted vault and inbox</title>
+<meta name="description" content="An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. The server seals every file, your cloud stores ciphertext, and only your Mac can read the names again.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="send n*des">
+<meta property="og:description" content="Your own encrypted vault and self-hosted inbox. Nobody in between can look.">
+<meta property="og:image" content="https://klppl.github.io/Valv/screenshots/mac-vault.png">
+<link rel="preload" href="fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-6 -6 112 112'%3E%3Cg fill='%23241B2F'%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(30 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(90 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(150 50 50)'/%3E%3C/g%3E%3Cg fill='%23FF5C8A'%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(30 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(90 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(150 50 50)'/%3E%3C/g%3E%3C/svg%3E">
+</head>
+<body>
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="i-laptop" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></symbol>
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="7" rx="2"/><rect x="4" y="13.5" width="16" height="7" rx="2"/><path d="M8 7h.01M8 17h.01"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18.5h10.5a4 4 0 0 0 .4-8 6 6 0 0 0-11.5 1.4A3.4 3.4 0 0 0 7 18.5z"/></symbol>
+  <symbol id="i-vault" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="3"/><circle cx="12" cy="12" r="3.2"/><path d="M12 8.8V7M15.2 12H17"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4"/></symbol>
+</svg>
+
+<header class="nav">
+  <a class="brand" href="#top" aria-label="send n*des home"><span data-aster="happy" data-size="38"></span><span class="wordmark">send n<span class="ast">*</span>des</span></a>
+  <nav aria-label="Sections">
+    <a href="#trip">The trip</a>
+    <a href="#features">Features</a>
+    <a href="#security">Security</a>
+    <a href="#selfhost">Self-host</a>
+  </nav>
+  <a class="btn small" href="https://github.com/klppl/Valv">GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="hero-copy">
+      <h1>Send <span class="pk">n*des</span>.<br>Nobody in between can look.</h1>
+      <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. The server seals every file for you, your cloud stores ciphertext, and only your Mac can read the names again.</p>
+      <div class="actions">
+        <a class="btn primary" href="https://github.com/klppl/Valv">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+        <a class="quiet-link" href="#trip">Follow the file <svg class="ic"><use href="#i-down"/></svg></a>
+      </div>
+      <ul class="chips" aria-label="What's included">
+        <li>Mac app</li><li>Docker server</li><li>Open format</li><li>Go + Swift</li>
+      </ul>
+    </div>
+
+    <div class="route" aria-label="The trip of one file, in four stops">
+      <svg class="route-line" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        <path d="M14 13 C 52 9, 90 12, 82 33 S 22 46, 22 63 S 70 78, 84 88"/>
+      </svg>
+      <ol>
+        <li class="stop s1"><svg class="stop-ic"><use href="#i-laptop"/></svg><span class="k">Your laptop</span><span class="f">Passport scan.pdf</span><span class="d">Sent over Tailscale</span></li>
+        <li class="stop s2"><svg class="stop-ic"><use href="#i-server"/></svg><span class="k">Your inbox server</span><span class="f c">sealed</span><span class="d">Can seal. Can never open.</span></li>
+        <li class="stop s3"><svg class="stop-ic"><use href="#i-cloud"/></svg><span class="k">Google Drive</span><span class="f c">7755bb95…7e0f.obj</span><span class="d">All Drive ever sees.</span></li>
+        <li class="stop s4"><svg class="stop-ic"><use href="#i-vault"/></svg><span class="k">Your Mac vault</span><span class="f">Passport scan.pdf</span><span class="d">Back by name. <em class="new">new</em></span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="trip" id="trip">
+    <h2>Follow one file.</h2>
+    <p class="section-lede">Who can read <code>Passport scan.pdf</code> at each step of the way. Scroll, and watch the label.</p>
+
+    <div class="trip-grid">
+      <aside class="traveller" aria-hidden="true">
+        <div class="ticket">
+          <svg class="ticket-ic"><use href="#i-file"/></svg>
+          <span class="ticket-name" data-ticket-name>Passport scan.pdf</span>
+          <span class="ticket-where" data-ticket-where>On your laptop</span>
+          <ul class="readers">
+            <li data-reader="you" class="yes">You</li>
+            <li data-reader="server" class="no">Server</li>
+            <li data-reader="cloud" class="no">Drive</li>
+          </ul>
+        </div>
+      </aside>
+
+      <div class="stops">
+        <article class="leg" data-name="Passport scan.pdf" data-where="On your laptop" data-server="no">
+          <div class="leg-head"><span class="leg-ic"><svg><use href="#i-laptop"/></svg></span><h3>Drop it in the Send window.</h3></div>
+          <p>Connect your inbox server once with an address and a token, then drag files onto the window. Sending works while your vault is locked, from any Mac you own, or anything that can make an HTTP request with the token.</p>
+          <figure class="shot"><img src="screenshots/mac-send-setup.webp" width="1600" height="1017" loading="lazy" alt="The Send screen in the Mac app, asking for the server address and access token"><figcaption>The one-time step: address and token. After that, Send is a drop zone.</figcaption></figure>
+        </article>
+
+        <article class="leg" data-name="sealed for your vault" data-where="Waiting in your inbox" data-server="brief">
+          <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox seals it, then forgets it.</h3></div>
+          <p>The inbox server holds your vault's <em>public</em> key and an upload secret. It seals each file the moment it arrives and keeps only the sealed copy. Nothing it holds can open that copy again: not today's uploads, not last year's, not your vault.</p>
+          <p class="aside">Honest bit: in this version the server sees a file in the clear while it seals it. Keep it on Tailscale or behind HTTPS. Sealing on the device itself is planned.</p>
+          <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The valvd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
+        </article>
+
+        <article class="leg" data-name="7755bb95…7e0f.obj" data-where="In your synced vault folder" data-server="no">
+          <div class="leg-head"><span class="leg-ic sun"><svg><use href="#i-cloud"/></svg></span><h3>Your cloud stores noise.</h3></div>
+          <p>The vault is an ordinary folder: put it on a NAS, Google Drive, Dropbox or just your disk. File names, folder names and contents are all sealed, so your sync service sees random ids and sizes, nothing else.</p>
+          <figure class="listing" aria-label="What a synced vault folder holds">
+            <figcaption>~/Google Drive/MyVault</figcaption>
+            <ul>
+              <li><svg><use href="#i-file"/></svg><code>vault.json</code><span>2 KB</span></li>
+              <li><svg><use href="#i-file"/></svg><code>objects/dd/dd81b69357d1e5bbfd092f5dd3add66f.obj</code><span>200 KB</span></li>
+              <li><svg><use href="#i-file"/></svg><code>objects/77/7755bb958c3308d5496a9f4e191b7e0f.obj</code><span>200 KB</span></li>
+              <li><svg><use href="#i-file"/></svg><code>objects/ac/ac78a115621f7821cb9cf712c01f2337.obj</code><span>200 KB</span></li>
+              <li><svg><use href="#i-file"/></svg><code>objects/37/37ce667ce5241a3b8a7feeaa24077205.obj</code><span>200 KB</span></li>
+            </ul>
+            <p class="listing-note">The demo vault from the screenshots. The passport is <code>7755bb95…</code>; Drive has no way to know that.</p>
+          </figure>
+        </article>
+
+        <article class="leg" data-name="Passport scan.pdf" data-where="Back in your vault" data-server="no" data-new>
+          <div class="leg-head"><span class="leg-ic mint"><svg><use href="#i-vault"/></svg></span><h3>Unlock, and it's home. By name.</h3></div>
+          <p>When you unlock the vault on your Mac, it checks the inbox, brings new files in and tags them <em class="new">new</em>. Press Space for Quick Look, export a copy when you need one. Lock the Mac and the vault locks with it.</p>
+          <figure class="shot"><img src="screenshots/mac-vault.webp" width="1600" height="1160" loading="lazy" alt="The unlocked demo vault in the Mac app with Passport scan.pdf selected"><figcaption>The demo vault, with the passport selected. Files that just came in from the inbox also carry a <em class="new">new</em> tag.</figcaption></figure>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <h2>Two small apps. One job each.</h2>
+
+    <div class="feature">
+      <div class="feature-copy">
+        <h3>The Mac app</h3>
+        <p>Your vault, with the boring parts handled.</p>
+        <ul class="ticks">
+          <li><b>Touch ID unlock</b>, or your passphrase. Switch between vaults from the lock screen.</li>
+          <li><b>Locks itself</b> after inactivity, and at once when the Mac sleeps, the screen locks or you switch user.</li>
+          <li><b>Quick Look and export</b>, with decrypted copies kept in a private folder that's emptied on lock.</li>
+          <li><b>A recovery key you'll actually keep</b>: shown once, and you prove you wrote it down.</li>
+          <li><b>Keyboard first</b>: ⌘O add, ⌘R refresh, ⇧⌘I check inbox, ⌘L lock.</li>
+        </ul>
+      </div>
+      <div class="contact-sheet">
+        <img class="p1" src="screenshots/mac-welcome.webp" width="1600" height="1017" loading="lazy" alt="Welcome screen: create a vault or open one you already have">
+        <img class="p2" src="screenshots/mac-locked.webp" width="1600" height="1017" loading="lazy" alt="Lock screen asking for the passphrase">
+      </div>
+    </div>
+
+    <div class="feature flip">
+      <div class="feature-copy">
+        <h3>The inbox server</h3>
+        <p>A write-only drop box you run yourself.</p>
+        <ul class="ticks">
+          <li><b>Guided setup</b>: claim it, paste your vault's keys, pick how devices reach it, send a test file.</li>
+          <li><b>Made for Tailscale</b>, and happy behind tailscale serve, Caddy or a Cloudflare Tunnel.</li>
+          <li><b>Can't read your vault.</b> It holds a public key and an upload secret, never your passphrase.</li>
+          <li><b>One Docker image</b>: <code>ghcr.io/klppl/valv</code>. The admin page only answers your own network.</li>
+          <li><b>Works on your phone</b>, light or dark.</li>
+        </ul>
+      </div>
+      <div class="server-shots">
+        <img class="wide" src="screenshots/web-setup-reachability.webp" width="1600" height="1542" loading="lazy" alt="Setup step: choosing how your devices reach the server, with Tailscale recommended">
+        <img class="phone" src="screenshots/web-phone.webp" width="780" height="2000" loading="lazy" alt="The server dashboard on a phone">
+        <span class="example-note">Example data</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="security" id="security">
+    <h2>What it protects. And what it doesn't.</h2>
+    <p class="section-lede">Security tools oversell. This is the whole receipt.</p>
+    <div class="receipt">
+      <div class="col sealed">
+        <h3>Sealed</h3>
+        <ul>
+          <li><svg><use href="#i-check"/></svg>File contents</li>
+          <li><svg><use href="#i-check"/></svg>File names</li>
+          <li><svg><use href="#i-check"/></svg>Folder structure</li>
+          <li><svg><use href="#i-check"/></svg>Any tampering, detected</li>
+        </ul>
+      </div>
+      <div class="col seen">
+        <h3>The host can see</h3>
+        <ul>
+          <li><svg><use href="#i-eye"/></svg>How many files</li>
+          <li><svg><use href="#i-eye"/></svg>Their exact sizes</li>
+          <li><svg><use href="#i-eye"/></svg>When they changed</li>
+        </ul>
+      </div>
+      <div class="col open">
+        <h3>Not protected</h3>
+        <ul>
+          <li><svg><use href="#i-x"/></svg>Malware on an unlocked Mac</li>
+          <li><svg><use href="#i-x"/></svg>A weak passphrase</li>
+          <li><svg><use href="#i-x"/></svg><span>Losing the passphrase <i>and</i> the recovery key</span></li>
+          <li><svg><use href="#i-x"/></svg>A host deleting or rolling back files</li>
+        </ul>
+      </div>
+      <div class="receipt-foot">
+        <span>Argon2id · ChaCha20-Poly1305 · X25519 · HKDF-SHA256</span>
+        <a href="https://github.com/klppl/Valv/blob/main/SPEC.md">Read the spec <svg class="ic"><use href="#i-arrow"/></svg></a>
+      </div>
+    </div>
+    <p class="warning"><b>Experimental.</b> The format is frozen and has two independent implementations that agree byte for byte, but it has only had model-assisted review, no external audit. Keep plaintext backups of anything you can't lose.</p>
+  </section>
+
+  <section class="selfhost" id="selfhost">
+    <div class="selfhost-copy">
+      <h2>Up in three commands.</h2>
+      <p>Run the inbox on any Linux box with Docker. Open its admin page on that machine (or over an SSH tunnel) and it walks you through the rest, then tells you when your first file arrives.</p>
+      <p class="small">Build the Mac app from the same repo with <code>scripts/build-app.sh</code> (macOS 14+, Apple silicon). Full guide in the <a href="https://github.com/klppl/Valv#quick-start">README</a>.</p>
+    </div>
+    <div class="terminal">
+      <div class="terminal-bar"><span></span><span></span><span></span><button class="copy" type="button" data-copy="terminal-text"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="terminal-text"><code><span class="pr">$</span> git clone https://github.com/klppl/Valv && cd Valv
+<span class="pr">$</span> docker compose up -d
+<span class="pr">$</span> docker compose logs valvd   <span class="cm"># your one-time setup code</span>
+<span class="cm"># then browse to http://127.0.0.1:8080 on that machine (or over an SSH tunnel)</span></code></pre>
+    </div>
+  </section>
+
+  <section class="close">
+    <span data-aster="smitten" data-size="128"></span>
+    <h2>Your files. Your folder. Your server.</h2>
+    <a class="btn primary big" href="https://github.com/klppl/Valv">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+  </section>
+</main>
+
+<footer class="foot">
+  <span class="wordmark small">send n<span class="ast">*</span>des</span>
+  <span>Open format · Go and Swift · macOS and Linux</span>
+  <a href="https://github.com/klppl/Valv">github.com/klppl/Valv</a>
+</footer>
+
+<script src="site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,885 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-20T22:40:00Z",
+  "title": "Design System: send n*des",
+  "extensions": {
+    "colorMeta": {
+      "paper": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "#FBF3E4",
+        "tonalRamp": [
+          "#100A03",
+          "#2A2419",
+          "#484135",
+          "#676054",
+          "#898174",
+          "#ACA496",
+          "#D0C8BA",
+          "#F6EEDF"
+        ]
+      },
+      "paper-dark": {
+        "role": "neutral",
+        "displayName": "Warm Paper (dark)",
+        "canonical": "#1C1923",
+        "tonalRamp": [
+          "#0C0912",
+          "#26232E",
+          "#43404B",
+          "#625F6B",
+          "#84808D",
+          "#A6A3B0",
+          "#CAC7D5",
+          "#F0ECFA"
+        ]
+      },
+      "paper-deep": {
+        "role": "neutral",
+        "displayName": "Deep Paper",
+        "canonical": "#F3E6CD",
+        "tonalRamp": [
+          "#110A00",
+          "#2D240F",
+          "#4B412C",
+          "#6B604A",
+          "#8D816A",
+          "#B0A48C",
+          "#D4C8AF",
+          "#FAEDD4"
+        ]
+      },
+      "paper-deep-dark": {
+        "role": "neutral",
+        "displayName": "Deep Paper (dark)",
+        "canonical": "#141219",
+        "tonalRamp": [
+          "#0C0A10",
+          "#26242B",
+          "#434049",
+          "#626069",
+          "#83818A",
+          "#A6A3AD",
+          "#CAC7D1",
+          "#EFEDF7"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Card Cream",
+        "canonical": "#FFFCF5",
+        "tonalRamp": [
+          "#0D0B07",
+          "#272520",
+          "#44423C",
+          "#63615B",
+          "#85827C",
+          "#A7A59E",
+          "#CCC9C2",
+          "#F1EEE7"
+        ]
+      },
+      "card-dark": {
+        "role": "neutral",
+        "displayName": "Card Cream (dark)",
+        "canonical": "#29252F",
+        "tonalRamp": [
+          "#0D0912",
+          "#27232D",
+          "#44404B",
+          "#635F6A",
+          "#84808C",
+          "#A7A2AF",
+          "#CBC6D4",
+          "#F1ECF9"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Aubergine Ink",
+        "canonical": "#241B2F",
+        "tonalRamp": [
+          "#0F0718",
+          "#292035",
+          "#473D53",
+          "#665C74",
+          "#877D96",
+          "#AA9FB9",
+          "#CFC3DE",
+          "#F2EAFE"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Aubergine Ink (dark)",
+        "canonical": "#F6EDE0",
+        "tonalRamp": [
+          "#100A03",
+          "#2B241A",
+          "#484136",
+          "#686055",
+          "#898175",
+          "#ACA498",
+          "#D1C8BB",
+          "#F6EDE0"
+        ]
+      },
+      "ink-soft": {
+        "role": "neutral",
+        "displayName": "Soft Ink",
+        "canonical": "#5C5266",
+        "tonalRamp": [
+          "#0F0716",
+          "#2A2132",
+          "#473D50",
+          "#665C71",
+          "#887D93",
+          "#ABA0B6",
+          "#CFC4DB",
+          "#F4EAFE"
+        ]
+      },
+      "ink-soft-dark": {
+        "role": "neutral",
+        "displayName": "Soft Ink (dark)",
+        "canonical": "#BBB1C6",
+        "tonalRamp": [
+          "#0F0715",
+          "#292131",
+          "#463E4F",
+          "#665D70",
+          "#877E91",
+          "#AAA0B5",
+          "#CEC4DA",
+          "#F3EAFE"
+        ]
+      },
+      "on-accent": {
+        "role": "neutral",
+        "displayName": "On-Accent Ink",
+        "canonical": "#241B2F",
+        "tonalRamp": [
+          "#0F0718",
+          "#292035",
+          "#473D53",
+          "#665C74",
+          "#877D96",
+          "#AA9FB9",
+          "#CFC3DE",
+          "#F2EAFE"
+        ]
+      },
+      "pink": {
+        "role": "primary",
+        "displayName": "Hot Pink",
+        "canonical": "#FF5C8A",
+        "tonalRamp": [
+          "#1D0107",
+          "#4A021D",
+          "#7A0B35",
+          "#AF1850",
+          "#DD3B6E",
+          "#FA7193",
+          "#FFB0BF",
+          "#FEE8EC"
+        ]
+      },
+      "pink-dark": {
+        "role": "primary",
+        "displayName": "Hot Pink (dark)",
+        "canonical": "#FF7AA3",
+        "tonalRamp": [
+          "#1E0009",
+          "#480421",
+          "#7C003B",
+          "#A72859",
+          "#CE4E7A",
+          "#F7739C",
+          "#FDB0C4",
+          "#FEE8ED"
+        ]
+      },
+      "pink-text": {
+        "role": "primary",
+        "displayName": "Deep Raspberry",
+        "canonical": "#C2185B",
+        "tonalRamp": [
+          "#1D0108",
+          "#4A021E",
+          "#7A0A37",
+          "#AF1752",
+          "#DD3A71",
+          "#FA7195",
+          "#FBB2C1",
+          "#FEE8EC"
+        ]
+      },
+      "pink-text-dark": {
+        "role": "primary",
+        "displayName": "Deep Raspberry (dark)",
+        "canonical": "#FF8FB2",
+        "tonalRamp": [
+          "#1D000A",
+          "#480422",
+          "#77103E",
+          "#9D375D",
+          "#C35A7D",
+          "#EB7DA0",
+          "#FCB0C6",
+          "#FFE8ED"
+        ]
+      },
+      "mint": {
+        "role": "secondary",
+        "displayName": "Mint",
+        "canonical": "#2FC594",
+        "tonalRamp": [
+          "#000F08",
+          "#032D1F",
+          "#0D4E39",
+          "#047353",
+          "#1B9971",
+          "#27C090",
+          "#5BE6B3",
+          "#C1FFE3"
+        ]
+      },
+      "mint-dark": {
+        "role": "secondary",
+        "displayName": "Mint (dark)",
+        "canonical": "#4FD8A8",
+        "tonalRamp": [
+          "#000F08",
+          "#042D1F",
+          "#034F39",
+          "#0C7354",
+          "#219872",
+          "#2EC091",
+          "#5FE5B5",
+          "#C2FEE4"
+        ]
+      },
+      "mint-text": {
+        "role": "secondary",
+        "displayName": "Forest Mint",
+        "canonical": "#0B6B4C",
+        "tonalRamp": [
+          "#000F08",
+          "#032D1E",
+          "#0C4E37",
+          "#187253",
+          "#429473",
+          "#67B895",
+          "#8BDDB9",
+          "#C4FEE2"
+        ]
+      },
+      "mint-text-dark": {
+        "role": "secondary",
+        "displayName": "Forest Mint (dark)",
+        "canonical": "#7BE8C2",
+        "tonalRamp": [
+          "#000F09",
+          "#032D21",
+          "#004F3B",
+          "#057357",
+          "#1C9876",
+          "#4CBC98",
+          "#74E1BC",
+          "#C1FEE6"
+        ]
+      },
+      "mint-tint": {
+        "role": "secondary",
+        "displayName": "Mint Wash",
+        "canonical": "#E3F8EF",
+        "tonalRamp": [
+          "#020E09",
+          "#192923",
+          "#35463F",
+          "#54665E",
+          "#74877F",
+          "#97AAA2",
+          "#BACFC6",
+          "#DFF4EB"
+        ]
+      },
+      "mint-tint-dark": {
+        "role": "secondary",
+        "displayName": "Mint Wash (dark)",
+        "canonical": "#1F3A31",
+        "tonalRamp": [
+          "#000F09",
+          "#102B22",
+          "#2D493F",
+          "#4C685E",
+          "#6D8A7F",
+          "#8FADA2",
+          "#B2D1C6",
+          "#D7F7EB"
+        ]
+      },
+      "grape": {
+        "role": "secondary",
+        "displayName": "Grape",
+        "canonical": "#8466FF",
+        "tonalRamp": [
+          "#0C002C",
+          "#270664",
+          "#4601AB",
+          "#623BD2",
+          "#8062FA",
+          "#A095F9",
+          "#C5C2FB",
+          "#EDECFF"
+        ]
+      },
+      "grape-dark": {
+        "role": "secondary",
+        "displayName": "Grape (dark)",
+        "canonical": "#A48FFF",
+        "tonalRamp": [
+          "#0E012A",
+          "#2A0165",
+          "#46278E",
+          "#644AB3",
+          "#846DDA",
+          "#A593FA",
+          "#C8C1FB",
+          "#EEECFF"
+        ]
+      },
+      "grape-text": {
+        "role": "secondary",
+        "displayName": "Deep Grape",
+        "canonical": "#5B3FD6",
+        "tonalRamp": [
+          "#0A002D",
+          "#24006C",
+          "#4008AE",
+          "#5A3ED5",
+          "#7865FD",
+          "#9A97FB",
+          "#C2C3FC",
+          "#ECEDFE"
+        ]
+      },
+      "grape-text-dark": {
+        "role": "secondary",
+        "displayName": "Deep Grape (dark)",
+        "canonical": "#C3B5FF",
+        "tonalRamp": [
+          "#0F0129",
+          "#291552",
+          "#453574",
+          "#645597",
+          "#8476BB",
+          "#A799E1",
+          "#CABFFE",
+          "#EEECFE"
+        ]
+      },
+      "grape-tint": {
+        "role": "secondary",
+        "displayName": "Grape Wash",
+        "canonical": "#ECE7FF",
+        "tonalRamp": [
+          "#0C0817",
+          "#262233",
+          "#433F52",
+          "#625E72",
+          "#837F94",
+          "#A6A1B8",
+          "#CAC5DD",
+          "#EFEBFE"
+        ]
+      },
+      "grape-tint-dark": {
+        "role": "secondary",
+        "displayName": "Grape Wash (dark)",
+        "canonical": "#2D2748",
+        "tonalRamp": [
+          "#0C0521",
+          "#251F3F",
+          "#423C5F",
+          "#615B81",
+          "#827DA4",
+          "#A49FC8",
+          "#C8C3EE",
+          "#EEECFE"
+        ]
+      },
+      "sun": {
+        "role": "tertiary",
+        "displayName": "Sun",
+        "canonical": "#FFC93C",
+        "tonalRamp": [
+          "#110A00",
+          "#302300",
+          "#533F04",
+          "#795D0C",
+          "#A37C01",
+          "#CD9D07",
+          "#F6C130",
+          "#FEEDC6"
+        ]
+      },
+      "sun-dark": {
+        "role": "tertiary",
+        "displayName": "Sun (dark)",
+        "canonical": "#FFD45C",
+        "tonalRamp": [
+          "#100A00",
+          "#2F2301",
+          "#523F06",
+          "#775E0F",
+          "#9F7E09",
+          "#C99F12",
+          "#EEC44A",
+          "#FEEDC3"
+        ]
+      },
+      "sun-tint": {
+        "role": "tertiary",
+        "displayName": "Sun Wash",
+        "canonical": "#FFF1C9",
+        "tonalRamp": [
+          "#100A00",
+          "#2F2400",
+          "#4D411E",
+          "#6D603D",
+          "#8E825D",
+          "#B2A47F",
+          "#D6C9A2",
+          "#FCEEC6"
+        ]
+      },
+      "sun-tint-dark": {
+        "role": "tertiary",
+        "displayName": "Sun Wash (dark)",
+        "canonical": "#3A3220",
+        "tonalRamp": [
+          "#110A00",
+          "#2C2412",
+          "#49412F",
+          "#69604D",
+          "#8B816D",
+          "#AEA48F",
+          "#D2C8B2",
+          "#F8EED7"
+        ]
+      },
+      "amber": {
+        "role": "tertiary",
+        "displayName": "Amber",
+        "canonical": "#F2A31F",
+        "tonalRamp": [
+          "#130900",
+          "#352002",
+          "#5A3B0A",
+          "#855602",
+          "#AF7515",
+          "#DC9420",
+          "#FEBA5E",
+          "#FFEBD3"
+        ]
+      },
+      "amber-dark": {
+        "role": "tertiary",
+        "displayName": "Amber (dark)",
+        "canonical": "#FFB947",
+        "tonalRamp": [
+          "#120900",
+          "#342101",
+          "#593B05",
+          "#81580E",
+          "#AD7606",
+          "#DA960F",
+          "#FCBC58",
+          "#FEECD2"
+        ]
+      },
+      "amber-text": {
+        "role": "tertiary",
+        "displayName": "Burnt Amber",
+        "canonical": "#8A5200",
+        "tonalRamp": [
+          "#150800",
+          "#371F02",
+          "#5E3809",
+          "#8A5200",
+          "#AE7432",
+          "#D49756",
+          "#FABB7A",
+          "#FFEBD7"
+        ]
+      },
+      "amber-text-dark": {
+        "role": "tertiary",
+        "displayName": "Burnt Amber (dark)",
+        "canonical": "#FFC56B",
+        "tonalRamp": [
+          "#120900",
+          "#342100",
+          "#593C04",
+          "#80590D",
+          "#AC7604",
+          "#D1993D",
+          "#F7BE64",
+          "#FEECD2"
+        ]
+      },
+      "tomato": {
+        "role": "tertiary",
+        "displayName": "Tomato",
+        "canonical": "#E0334F",
+        "tonalRamp": [
+          "#1E0003",
+          "#4C0010",
+          "#7E0522",
+          "#B40F36",
+          "#E33751",
+          "#F9767F",
+          "#FEB2B3",
+          "#FEE9E8"
+        ]
+      },
+      "tomato-dark": {
+        "role": "tertiary",
+        "displayName": "Tomato (dark)",
+        "canonical": "#FF7088",
+        "tonalRamp": [
+          "#1E0005",
+          "#4C0017",
+          "#7D042C",
+          "#AD2146",
+          "#D54A66",
+          "#FE6F87",
+          "#FEB1B9",
+          "#FEE8EA"
+        ]
+      },
+      "tomato-text": {
+        "role": "tertiary",
+        "displayName": "Brick",
+        "canonical": "#B3162F",
+        "tonalRamp": [
+          "#1E0002",
+          "#4C010D",
+          "#7D091D",
+          "#B3162F",
+          "#DC454F",
+          "#FE7275",
+          "#FEB3B1",
+          "#FEE9E8"
+        ]
+      },
+      "tomato-text-dark": {
+        "role": "tertiary",
+        "displayName": "Brick (dark)",
+        "canonical": "#FF8EA0",
+        "tonalRamp": [
+          "#1E0006",
+          "#490519",
+          "#791130",
+          "#9F384E",
+          "#C65B6E",
+          "#ED7E90",
+          "#FEB1BB",
+          "#FEE8EB"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Site hero headline only. App equivalent: SF Rounded heavy via display(size)."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Site section headings; admin h1 is 800 at 1.9rem."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card, leg and feature headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Running copy; 18px on the site, 16px in admin and app."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase in-component labels: field labels, stop place names, ledger column heads, tags."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "File names, ids, ciphertext, URLs, commands."
+      }
+    },
+    "shadows": [
+      {
+        "name": "lift-3",
+        "value": "3px 3px 0 var(--ink)",
+        "purpose": "Buttons and collapsible cards in product UI; small site buttons; stop markers."
+      },
+      {
+        "name": "lift-4",
+        "value": "4px 4px 0 var(--ink)",
+        "purpose": "Product sticker cards and selected choice cards."
+      },
+      {
+        "name": "lift-5",
+        "value": "5px 5px 0 var(--ink)",
+        "purpose": "Site buttons at rest (7px on hover)."
+      },
+      {
+        "name": "lift-6",
+        "value": "6px 6px 0 var(--ink)",
+        "purpose": "Site stop stickers."
+      },
+      {
+        "name": "lift-7",
+        "value": "7px 7px 0 var(--ink)",
+        "purpose": "Ticket, screenshots on the site."
+      },
+      {
+        "name": "lift-8",
+        "value": "8px 8px 0 var(--ink)",
+        "purpose": "Listing, shot and terminal frames on the site."
+      },
+      {
+        "name": "lift-9",
+        "value": "9px 9px 0 var(--ink)",
+        "purpose": "The security receipt, the heaviest sticker."
+      },
+      {
+        "name": "pressed",
+        "value": "0 0 0 var(--ink)",
+        "purpose": "Active button; paired with translate by the lift amount."
+      },
+      {
+        "name": "focus-ring",
+        "value": "outline: 3px solid var(--grape); outline-offset: 2px",
+        "purpose": "Keyboard focus on every interactive element."
+      }
+    ],
+    "motion": [
+      {
+        "name": "press",
+        "value": "transform .08s, box-shadow .08s",
+        "purpose": "Product button press."
+      },
+      {
+        "name": "ease-sticker",
+        "value": "cubic-bezier(.2,.8,.2,1) 120ms",
+        "purpose": "Site button lift and press."
+      },
+      {
+        "name": "ease-spring",
+        "value": "cubic-bezier(.3,1.6,.5,1) .5-.6s",
+        "purpose": "Wordmark asterisk 180deg spin on hover."
+      },
+      {
+        "name": "aster-bob",
+        "value": "3.8s ease-in-out infinite alternate, rotate +/-3deg",
+        "purpose": "Aster idle sway."
+      },
+      {
+        "name": "aster-blink",
+        "value": "4.7s infinite",
+        "purpose": "Aster blink."
+      },
+      {
+        "name": "aster-hop",
+        "value": "cubic-bezier(.3,1.7,.5,1) .5-.9s",
+        "purpose": "Wow, smitten and poke reactions."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "animation: none; transition: none",
+        "purpose": "All motion stops under prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "admin-xs",
+        "value": "420px"
+      },
+      {
+        "name": "admin-sm",
+        "value": "560px"
+      },
+      {
+        "name": "admin-md",
+        "value": "720px"
+      },
+      {
+        "name": "site-sm",
+        "value": "760px"
+      },
+      {
+        "name": "site-md",
+        "value": "980px"
+      }
+    ],
+    "mascot": {
+      "name": "Aster",
+      "geometry": "Three capsules at 30/90/150deg, length 0.94 x size, thickness 0.235 x size; ink outline is the same shape fattened by 2 x max(1.5, 0.035 x size); face strokes max(1.2, 0.026 x size) in on-accent ink.",
+      "moods": [
+        "happy",
+        "asleep",
+        "wow",
+        "oops",
+        "working",
+        "flustered",
+        "smitten"
+      ],
+      "sources": [
+        "app/Sources/sendndes/Mascot.swift",
+        "cmd/valvd/web/app.js",
+        "docs/site.js"
+      ]
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Chunky pink action that presses onto its ink shadow. One per region.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">View on GitHub</button>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-btn{font:700 1rem/1.2 var(--round);color:var(--ink);background:var(--card);border:2px solid var(--ink);border-radius:12px;padding:9px 16px;box-shadow:3px 3px 0 var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:transform .08s,box-shadow .08s;} .ds-btn:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--ink);} .ds-btn:active{transform:translate(3px,3px);box-shadow:0 0 0 var(--ink);} .ds-btn:focus-visible{outline:3px solid var(--grape);outline-offset:2px;} .ds-btn-primary{background:var(--pink);color:var(--on-accent);}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Cream sticker button for every non-primary action.",
+      "html": "<button class=\"ds-btn\">Copy link</button>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-btn{font:700 1rem/1.2 var(--round);color:var(--ink);background:var(--card);border:2px solid var(--ink);border-radius:12px;padding:9px 16px;box-shadow:3px 3px 0 var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:transform .08s,box-shadow .08s;} .ds-btn:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--ink);} .ds-btn:active{transform:translate(3px,3px);box-shadow:0 0 0 var(--ink);} .ds-btn:focus-visible{outline:3px solid var(--grape);outline-offset:2px;}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "No fill, outline or shadow; faint ink wash on hover.",
+      "html": "<button class=\"ds-btn ds-btn-quiet\">Cancel</button>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-btn{font:700 1rem/1.2 var(--round);color:var(--ink);background:var(--card);border:2px solid var(--ink);border-radius:12px;padding:9px 16px;box-shadow:3px 3px 0 var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:transform .08s,box-shadow .08s;} .ds-btn:hover{transform:translate(-1px,-1px);box-shadow:4px 4px 0 var(--ink);} .ds-btn:active{transform:translate(3px,3px);box-shadow:0 0 0 var(--ink);} .ds-btn:focus-visible{outline:3px solid var(--grape);outline-offset:2px;} .ds-btn-quiet{background:transparent;border-color:transparent;box-shadow:none;} .ds-btn-quiet:hover{background:color-mix(in srgb,var(--ink) 8%,transparent);box-shadow:none;transform:none;}"
+    },
+    {
+      "name": "Sticker Card",
+      "kind": "card",
+      "refersTo": "sticker-card",
+      "description": "Cream card with ink outline and hard offset shadow; the base surface.",
+      "html": "<div class=\"ds-sticker\"><h3 class=\"ds-t\">Inbox</h3><p class=\"ds-d\">3 files waiting to be collected.</p></div>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-sticker{background:var(--card);color:var(--ink);border:2px solid var(--ink);border-radius:18px;box-shadow:4px 4px 0 var(--ink);padding:20px;font:500 16px/1.5 var(--round);max-width:320px;} .ds-t{margin:0;font:800 1.05rem/1.2 var(--round);} .ds-d{margin:6px 0 0;color:var(--ink-soft);}"
+    },
+    {
+      "name": "Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Paper-inset text field with ink outline and grape focus ring.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-fl\">Server name</span><input class=\"ds-input\" placeholder=\"valvd.tailnet.ts.net\"></label>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-field{display:block;max-width:320px;} .ds-fl{display:block;font:800 .72rem/1 var(--round);text-transform:uppercase;letter-spacing:.07em;color:var(--ink-soft);margin-bottom:6px;} .ds-input{width:100%;box-sizing:border-box;font:600 1rem/1.3 var(--round);color:var(--ink);background:var(--paper);border:2px solid var(--ink);border-radius:11px;padding:10px 12px;} .ds-input:focus-visible{outline:3px solid var(--grape);outline-offset:2px;}"
+    },
+    {
+      "name": "Status Pills",
+      "kind": "chip",
+      "refersTo": "pill",
+      "description": "Capsule status with a tinted dot; ok, warn, bad, off.",
+      "html": "<span class=\"ds-pill ds-ok\">Running</span> <span class=\"ds-pill ds-warn\">No vault key</span> <span class=\"ds-pill ds-bad\">Offline</span>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-pill{--tint:var(--ink-soft);display:inline-flex;align-items:center;gap:6px;font:800 .78rem/1 var(--round);color:var(--ink);padding:5px 10px;border-radius:99px;border:1.5px solid var(--tint);background:color-mix(in srgb,var(--tint) 22%,transparent);} .ds-pill::before{content:\"\";width:8px;height:8px;border-radius:50%;background:var(--tint);} .ds-ok{--tint:var(--mint);} .ds-warn{--tint:var(--amber);} .ds-bad{--tint:var(--tomato);}"
+    },
+    {
+      "name": "Banner",
+      "kind": "custom",
+      "refersTo": "banner",
+      "description": "Tinted message strip with a round tint icon; info, success, warn, error.",
+      "html": "<div class=\"ds-banner ds-warn\"><svg viewBox=\"0 0 20 20\" width=\"20\" height=\"20\"><circle cx=\"10\" cy=\"10\" r=\"10\" fill=\"var(--amber)\"/><path d=\"M10 5v6M10 14.5v.5\" stroke=\"#241B2F\" stroke-width=\"2.4\" stroke-linecap=\"round\"/></svg><span>Keep a plaintext backup. The format has had no external audit.</span></div>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-banner{--tint:var(--grape);display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:12px;border:2px solid var(--tint);background:color-mix(in srgb,var(--tint) 17%,transparent);color:var(--ink);font:600 .95rem/1.45 var(--round);max-width:420px;} .ds-banner svg{flex:none;} .ds-warn{--tint:var(--amber);}"
+    },
+    {
+      "name": "Choice Card",
+      "kind": "card",
+      "refersTo": "choice-card",
+      "description": "Radio option as a sticker with a role-coloured badge; selected lifts and washes pink.",
+      "html": "<label class=\"ds-choice ds-on\"><span class=\"ds-badge\">TS</span><span class=\"ds-ct\">Tailscale</span><span class=\"ds-cd\">Only your devices can reach it.</span></label>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-choice{display:grid;grid-template-columns:44px 1fr;gap:4px 12px;padding:14px 16px;border:2px solid var(--ink);border-radius:16px;background:var(--card);color:var(--ink);cursor:pointer;max-width:360px;font-family:var(--round);} .ds-choice:hover{background:color-mix(in srgb,var(--pink) 5%,var(--card));} .ds-on{box-shadow:4px 4px 0 var(--ink);background:color-mix(in srgb,var(--pink) 10%,var(--card));} .ds-badge{grid-row:span 2;width:44px;height:44px;border-radius:12px;border:2px solid var(--ink);display:grid;place-items:center;font:900 1rem/1 var(--round);color:var(--on-accent);background:var(--grape);} .ds-ct{font:800 1.05rem/1.25 var(--round);} .ds-cd{color:var(--ink-soft);font-size:.92rem;}"
+    },
+    {
+      "name": "Stop Sticker",
+      "kind": "custom",
+      "refersTo": "stop-sticker",
+      "description": "Site signature: a tilted stop on the dashed route showing the file as stored there.",
+      "html": "<div class=\"ds-stop\"><span class=\"ds-ic\"><svg viewBox=\"0 0 24 24\" width=\"22\" height=\"22\" fill=\"none\" stroke=\"#241B2F\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M7 18h10a4 4 0 0 0 .5-8A6 6 0 0 0 6 9a4.5 4.5 0 0 0 1 9z\"/></svg></span><span class=\"ds-k\">Google Drive</span><span class=\"ds-f\">7755bb95…7e0f.obj</span><span class=\"ds-sd\">All Drive ever sees.</span></div>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-stop{position:relative;width:270px;background:var(--sun-tint);color:var(--ink);border:3px solid var(--ink);border-radius:20px;box-shadow:6px 6px 0 var(--ink);padding:14px 16px 14px 62px;display:grid;gap:2px;transform:rotate(-1deg);font:600 1rem/1.4 var(--round);} .ds-ic{position:absolute;left:14px;top:16px;width:36px;height:36px;box-sizing:border-box;border:2.5px solid var(--ink);border-radius:11px;background:var(--sun);display:grid;place-items:center;} .ds-k{font:900 .78rem/1.2 var(--round);color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;} .ds-f{font:800 1.05rem/1.25 var(--mono);color:var(--grape-text);overflow-wrap:anywhere;} .ds-sd{font-size:.9rem;color:var(--ink-soft);}"
+    },
+    {
+      "name": "Ticket",
+      "kind": "custom",
+      "refersTo": "ticket",
+      "description": "Sticky travelling card: monospace file name, location, and who can read it here.",
+      "html": "<div class=\"ds-ticket\"><span class=\"ds-tn\">Passport scan.pdf</span><span class=\"ds-tw\">On your inbox server</span><ul class=\"ds-readers\"><li class=\"ds-yes\">You</li><li class=\"ds-brief\">Server</li><li class=\"ds-no\">Drive</li></ul></div>",
+      "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-ticket{background:var(--grape-tint);color:var(--ink);border:3px solid var(--ink);border-radius:22px;box-shadow:7px 7px 0 var(--ink);padding:22px 20px 18px;transform:rotate(-1.5deg);width:260px;font:600 1rem/1.4 var(--round);} .ds-tn{display:block;font:800 1.2rem/1.25 var(--mono);} .ds-tw{display:block;font-size:.95rem;color:var(--ink-soft);margin:6px 0 14px;} .ds-readers{list-style:none;margin:0;padding:12px 0 0;border-top:2.5px dashed var(--ink);display:flex;gap:6px;flex-wrap:wrap;} .ds-readers li{font:900 .8rem/1 var(--round);padding:7px 10px;border-radius:99px;border:2px solid currentColor;display:inline-flex;gap:6px;align-items:center;} .ds-readers li::before{content:\"\";width:8px;height:8px;border-radius:50%;background:currentColor;} .ds-yes{color:var(--mint-text);} .ds-brief{color:var(--amber-text);} .ds-no{color:var(--ink-soft);text-decoration:line-through;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Sticker Sheet",
+    "overview": "Every surface is a sticker peeled off a sheet and pressed onto warm paper: a cream card, a firm ink outline, and a solid ink shadow offset down and to the right, as if the sticker is lifted a few millimetres off the page. The world is the same in three places (the Mac app in SwiftUI, the valvd admin page, the GitHub Pages site) and the tokens agree across all three; the Mac app's `Theme.swift` is the origin and both web stylesheets mirror it.\n\nThe tone is a cheeky hook delivered in heavy rounded type, then plain facts. Colour is mostly paper and ink; one hot pink carries the action and the asterisk, and four role colours (mint, grape, sun, tomato) tint stops, states and badges. Aster, a pink asterisk with a face, is the one character and appears as wordmark companion, empty-state host and status mood. Density differs by surface: the app and admin page use the light hand (2px outlines, 3-5px shadows); the marketing site uses the heavy hand (3px outlines, 5-9px shadows, slight rotations).",
+    "keyCharacteristics": [
+      "Warm paper ground with cream cards; dark mode is aubergine paper with cream ink, never pure black.",
+      "Ink outlines on every raised surface: 2px in product UI, 3px on the site.",
+      "Hard offset ink shadows with zero blur; buttons press into them.",
+      "One hot-pink action colour; text sits in ink, never on pink-coloured words except the documented exception.",
+      "Heavy rounded type everywhere: SF Rounded in the app, self-hosted Nunito on the web; monospace for file names, ids, ciphertext and code.",
+      "Aster the asterisk mascot, with moods."
+    ],
+    "rules": [
+      {
+        "name": "The Words Are Ink Rule",
+        "body": "Text is ink or soft ink. Role colours are fills, outlines and icons; when a role colour must carry words, use its `-text` sibling (`mint-text`, `amber-text`, `tomato-text`, `grape-text`, `pink-text`), never the fill value.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Pink Rule",
+        "body": "Hot pink marks the action and the asterisk. One pink button per view region; secondary actions are cream or quiet.",
+        "section": "colors"
+      },
+      {
+        "name": "The Always-Dark Ink On Fills Rule",
+        "body": "Anything drawn on a bright fill (button label, badge glyph, stop icon stroke, Aster's face) uses `on-accent`, not `ink`, so it stays dark when the page goes dark.",
+        "section": "colors"
+      },
+      {
+        "name": "The Heavy Rounded Rule",
+        "body": "Headings are 800-900 weight in a rounded face with slightly tight tracking (-0.01 to -0.02em). No serif, no thin weights.",
+        "section": "typography"
+      },
+      {
+        "name": "The Machine Truth Rule",
+        "body": "Anything a disk, host or server literally stores (file name, ciphertext name, id, URL, command) is set in monospace; everything a person says is rounded.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sticker Lift Rule",
+        "body": "Shadows are solid ink, offset equally down and right, zero blur. Hover lifts a site button 2px further (translate -2px, shadow 7px); press drops it onto the page.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** put every raised surface on card cream with an ink outline, and lift it with a solid ink offset shadow (3-5px product, up to 9px on the site).",
+      "**Do** use hot pink only for the primary action, the asterisk and Aster; use `pink-text` (#C2185B light, #FF8FB2 dark) when pink must be words.",
+      "**Do** use `on-accent` for anything drawn on a bright fill, in both appearances.",
+      "**Do** set file names, ids, ciphertext, URLs and commands in monospace.",
+      "**Do** ship a dark value for every colour and honour `prefers-reduced-motion` by stopping all animation.",
+      "**Do** use the grape 3px outline for keyboard focus."
+    ],
+    "donts": [
+      "**Don't** blur a shadow or use ambient, coloured or gradient elevation; depth is ink offset only.",
+      "**Don't** set words in a role fill colour (pink, mint, sun, amber, grape, tomato); use the `-text` sibling or ink.",
+      "**Don't** use pure black or pure white grounds; paper and ink carry the warmth in both modes.",
+      "**Don't** rotate stickers in product UI; tilt is a site-only gesture.",
+      "**Don't** load third-party fonts or assets on the admin page; Nunito is self-hosted on the site."
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "bounce-easing",
+        "value": "cubic-bezier(.3, 1.6, .5, 1)",
+        "createdAt": "2026-10-20T20:20:02.693Z",
+        "reason": "brand: the wordmark asterisk spin uses the same spring overshoot as the Mac app's Wordmark (Mascot.swift); one-shot on hover"
+      }
+    ]
+  }
+}

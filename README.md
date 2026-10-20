@@ -1,64 +1,133 @@
-# Valv
+<h1 align="center">send n*des</h1>
 
-Personal, single-user encrypted vault. File contents, names and folders are unreadable to whoever hosts or syncs the vault. Experimental: keep plaintext backups of anything important. Format: [SPEC.md](SPEC.md).
+<p align="center">
+  <b>A private vault for your files, and an inbox your devices can drop them into.</b><br>
+  Contents, names and folders stay sealed, wherever the vault is stored or synced.
+</p>
 
-Runs on macOS, iOS and Linux (not Windows). Needs Go 1.26+.
+<p align="center">
+  <img src="docs/screenshots/mac-vault.png" alt="The send n*des Mac app showing an unlocked vault with five files" width="760">
+</p>
 
-## 1. Build
+> **Experimental.** The format is frozen (v1) but has only had model-assisted review, no external human review. Keep plaintext backups of anything important.
+
+## What's in the box
+
+| Piece | What it does |
+|---|---|
+| **Vault** | A folder of sealed files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
+| **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
+| **Inbox server** (`valvd`) | A write-only drop box your devices send to, with a web admin page. It seals each file for your vault and can never read the vault. |
+| **CLI** (`valv`) | Everything the app does, plus verify, recover and change the passphrase. |
+
+```
+ Mac / phone ──send──> valvd inbox (seals each file for the vault)
+                              │
+ Mac app or valv ──pull───────┘──> vault folder (local, NAS, Drive, Dropbox…)
+```
+
+Runs on macOS and Linux (not Windows). The format has two independent implementations, Go and Swift, that agree byte for byte ([SPEC.md](SPEC.md)).
+
+## The Mac app
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/mac-welcome.png" alt="Welcome screen with Create a vault and Open a vault"></td>
+    <td width="50%"><img src="docs/screenshots/mac-locked.png" alt="Lock screen asking for the passphrase"></td>
+  </tr>
+  <tr>
+    <td><b>First launch.</b> Create a vault or open one you already have.</td>
+    <td><b>Locked.</b> Passphrase or Touch ID. Switch between recent vaults from the folder menu.</td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/mac-vault.png" alt="Unlocked vault with a file selected"></td>
+    <td><img src="docs/screenshots/mac-send-setup.png" alt="Send screen asking for the server address and access token"></td>
+  </tr>
+  <tr>
+    <td><b>Unlocked.</b> Drop files in, press Space for Quick Look, export when you need a copy. Files that arrived from the inbox are tagged <i>new</i>.</td>
+    <td><b>Send.</b> Works while the vault is locked: connect your inbox server once, then drop files.</td>
+  </tr>
+</table>
+
+- Locks after inactivity (1–120 min), and at once on sleep, screen lock or user switch.
+- Unlocking checks the inbox and brings new files in by itself (can be turned off in Settings).
+- The recovery key is shown once at creation; you confirm three random groups of it before you can continue.
+- Keyboard: ⌘O add, ⌘R refresh, ⇧⌘I check inbox, ⌘L lock, ⌘, settings.
+
+## The inbox server
+
+<table>
+  <tr>
+    <td width="68%"><img src="docs/screenshots/web-dashboard.png" alt="valvd admin dashboard: inbox open, three files waiting, connect details"></td>
+    <td width="32%"><img src="docs/screenshots/web-phone.png" alt="The same dashboard on a phone, light mode"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/web-setup-reachability.png" alt="Guided setup step 2: choosing how devices reach the server"></td>
+  </tr>
+</table>
+
+The admin page walks you through setup once: **claim** the server with the one-time code, **link your vault** (paste the server keys from the Mac app), choose **how your devices reach it** (Tailscale, a proxy on the machine, the local network or every interface), then **connect your Mac**. The page tells you when the first file arrives. After that it shows status, what's waiting, connection details and settings.
+
+The server only ever holds the vault's *public* inbox key and an upload-authentication secret. It cannot decrypt anything, past or future.
+
+## Quick start
+
+You need Go 1.26+ (and Swift for the Mac app).
+
+### 1. Build
 
 ```bash
 go build -o valv ./cmd/valv          # CLI
+scripts/build-app.sh                 # Mac app -> build/sendndes.app
 scripts/build-linux.sh               # release binaries into dist/ (valvd for Linux, valv for Mac)
-scripts/build-app.sh                 # Mac app -> build/sendndes.app (needs Swift)
 ```
 
-## 2. Use the vault
+For a code signature that stays stable between builds (so the Keychain keeps trusting the app), set `SIGN_IDENTITY="Apple Development: Name (TEAMID)"`.
+
+### 2. Make a vault
+
+Open `build/sendndes.app` and choose **Create a vault**, or use the CLI:
 
 ```bash
-./valv init ~/MyVault                # prints a recovery key: write it down
+./valv init ~/MyVault                # prints the recovery key: write it down
 export VALV_VAULT=~/MyVault          # or pass --vault after the command
 ./valv add photo.jpg
 ./valv ls
 ./valv get <id> -o photo.jpg
 ```
 
-Put the vault folder anywhere (Drive, NAS, local). It only ever sees ciphertext.
+### 3. Run the inbox server (optional)
 
-## 3. Optional: inbox server (`valvd`)
-
-A write-only server your devices can send files to. It can't read your vault.
+With Docker, on the machine that will receive files:
 
 ```bash
-docker compose up -d                 # or: valvd --data /var/lib/valvd
+docker compose up -d
 docker compose logs valvd            # shows the one-time setup code
 ```
 
-1. Open <http://127.0.0.1:8080> and enter the setup code with a new password.
-2. Paste the output of `./valv server-config` into the GUI.
-3. Copy the server URL and token into the Mac app (or save the token to a file).
-4. Pull received files into your vault:
+Open <http://127.0.0.1:8080> and follow the setup. To pull from the command line instead of the Mac app:
 
 ```bash
 ./valv pull --server http://<tailscale-ip>:8485 --token-file token.txt
 ```
 
-### Run the prebuilt image
+#### Prebuilt image
 
-Run the **Docker image** workflow from the repo's Actions tab (it publishes `ghcr.io/klppl/valv`). If the package is private, make it public or `docker login ghcr.io` on the server. Then on the server, save as `docker-compose.yml`:
+Run the **Docker image** workflow from the repo's Actions tab (it publishes `ghcr.io/klppl/valv`). If the package is private, make it public or `docker login ghcr.io` on the server. Then save this as `docker-compose.yml` on the server:
 
 ```yaml
 services:
   valvd:
     image: ghcr.io/klppl/valv:latest
     restart: unless-stopped
-    # Only if the GUI is behind a Cloudflare Tunnel / reverse proxy. Protect the
+    # Only if the admin page is behind a Cloudflare Tunnel / reverse proxy. Protect the
     # hostname with a Cloudflare Access policy too (see coordination/valvd-deploy.md).
     # environment:
     #   VALVD_ADMIN_BEHIND_PROXY: "1"
     volumes:
       - valvd-data:/data
     ports:
-      - "127.0.0.1:8080:8080"   # admin GUI, this machine only
+      - "127.0.0.1:8080:8080"   # admin page, this machine only
       - "8485:8485"             # sync port: put on Tailscale or behind HTTPS
 volumes:
   valvd-data:
@@ -68,11 +137,57 @@ volumes:
 docker compose pull && docker compose up -d
 ```
 
-The sync port (8485) is plain HTTP: keep it on Tailscale/VPN or behind an HTTPS proxy. The GUI is local-only by default; use an SSH tunnel or Tailscale to reach it remotely. More options (systemd, Cloudflare Tunnel, limits): [coordination/valvd-deploy.md](coordination/valvd-deploy.md).
+The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HTTPS in front of it. The admin page only answers this machine, the local network and Tailscale; reach it remotely over an SSH tunnel or Tailscale. More options (systemd, Cloudflare Tunnel, limits): [coordination/valvd-deploy.md](coordination/valvd-deploy.md).
 
-## Tests
+## Security in short
+
+**Protected:** file contents, names and folder structure, against the storage host, the sync service and the inbox server. Any change to a file is detected. Argon2id for the passphrase, ChaCha20-Poly1305 for content, X25519 to seal inbox uploads ([SPEC.md §2](SPEC.md)).
+
+**Visible to the host:** how many files there are, their exact sizes, and modification times.
+
+**Not protected:** malware on an unlocked device, a weak passphrase, a lost passphrase *and* recovery key (the data is gone), and a host deleting files or rolling them back to an older version.
+
+**Good to know**
+- In this version the inbox server briefly sees a sent file's contents and name while it seals them. Keep that traffic on Tailscale or HTTPS; sealing on the device is planned.
+- The server's upload secret can't be rotated in v1. Give it only to your own server.
+- The Mac app keeps the server token in your login keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
+
+Full threat model: [SPEC.md §7](SPEC.md). App details: [app/README.md](app/README.md).
+
+## CLI reference
+
+```
+valv init <vault-dir>                       create a new vault
+valv add <file> [--dir <path>] [--name <n>] encrypt a file into the vault
+valv ls [--dir <path>]                      list files
+valv get <id-or-path> [-o <out>]            decrypt a file
+valv pull --server <url> --token-file <f>   pull sealed files from a valvd server
+valv ingest [--inbox <dir>]                 move sealed inbox files into the vault
+valv verify                                 authenticate every file in the vault
+valv passwd                                 change the passphrase
+valv recover <vault-dir>                    rebuild vault.json from the recovery key
+valv recovery-key                           print the recovery key
+valv server-config                          print the inbox server's keys
+```
+
+Common flags: `--vault <dir>` (default `$VALV_VAULT`, then `.`), `--passphrase-stdin`. Run `valv --help` for the rest.
+
+## Development
 
 ```bash
-go test ./...
-scripts/test-app.sh
+go test ./...                # Go: core, CLI, server
+scripts/test-app.sh          # Mac app core tests (builds a real helper and server)
 ```
+
+| Path | What's there |
+|---|---|
+| `core/` | Go reference implementation of the format |
+| `cmd/valv`, `cmd/valvd` | CLI and inbox server (admin page in `cmd/valvd/web`) |
+| `app/` | Mac app (SwiftUI); it runs the bundled `valv` as a checked helper |
+| `swift/ValvCore` | Swift implementation of the format |
+| `testvectors/` | Shared vectors both implementations must match |
+| `coordination/` | Design notes, reviews and decisions, including the UX write-ups for the [app](coordination/app-ux-v1.md) and the [server](coordination/valvd-ux-v1.md) |
+
+## License
+
+[The Lagom License](LICENSE) ([klppl.github.io/lagom-license](https://klppl.github.io/lagom-license/)). Copyright (c) 2026 klppl.

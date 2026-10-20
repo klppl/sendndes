@@ -4,3 +4,10 @@ build/
 /valv
 /valvd
 *.test
+
+# design-tool scratch (sketches, review captures); keep config.json, design.json, surfaces/
+.impeccable/mocks/
+.impeccable/review/
+.impeccable/questions/
+.impeccable/tmp/
+.impeccable/hook.cache.json
