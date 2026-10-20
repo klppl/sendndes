@@ -1,0 +1,17 @@
+# Valv sync server. Start with:  docker compose up -d
+# Setup code for the web GUI:     docker compose logs valvd
+services:
+  valvd:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - valvd-data:/data
+    ports:
+      # Admin web GUI: bound to this machine only. Reach it from elsewhere over
+      # an SSH tunnel or Tailscale (use "<tailscale-ip>:8080:8080").
+      - "127.0.0.1:8080:8080"
+      # Sync port your devices connect to. Plain HTTP: put it on Tailscale/VPN
+      # ("<tailscale-ip>:8485:8485") or behind an HTTPS reverse proxy.
+      - "8485:8485"
+volumes:
+  valvd-data:

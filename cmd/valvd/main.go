@@ -23,9 +23,18 @@ import (
 	"time"
 )
 
-const usage = `usage: valvd --config <file> --inbox <dir> [flags]
+const usage = `usage: valvd [--data <dir>] [web GUI flags]
+       valvd --config <file> --inbox <dir> [flags]
 
-flags:
+With no --config/--inbox, valvd runs with a web GUI for setup (managed mode):
+  --data <dir>                     where everything is kept (default $VALVD_DATA or ./valvd-data)
+  --admin-listen <addr>            web GUI address (default $VALVD_ADMIN_LISTEN or 127.0.0.1:8080)
+  --admin-behind-proxy             trust a reverse proxy/tunnel (Cloudflare Tunnel) on this host; proxy headers allowed
+  --admin-allow-public             let the web GUI answer public addresses (not recommended)
+  --sync-listen <addr>             first-run default for the sync server (default $VALVD_SYNC_LISTEN or 127.0.0.1:8485);
+                                   after setup, change it in the web GUI
+
+Classic mode (no web GUI), flags:
   --config <file>                  server config file (mode 0600, with inbox_pub, k_auth, and token)
   --token-file <file>              bearer token file (mode 0600, if token is not in --config)
   --inbox <dir>                    inbox storage directory
@@ -74,6 +83,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		minFreeBytes   int64
 		minUploadRate  int64
 		maxChunkedTime time.Duration
+		dataDir        string
+		adminListen    string
+		adminPublic    bool
+		adminProxy     bool
+		syncListen     string
 	)
 	fs.StringVar(&configPath, "config", "", "server config file")
 	fs.StringVar(&tokenFile, "token-file", "", "bearer token file")
@@ -91,6 +105,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Int64Var(&minUploadRate, "min-upload-rate", defaultMinUploadRate, "minimum upload rate in bytes/s")
 	fs.DurationVar(&maxChunkedTime, "max-chunked-duration", defaultMaxChunkedDuration, "max duration of an upload without Content-Length")
 
+	fs.StringVar(&dataDir, "data", os.Getenv("VALVD_DATA"), "data directory (managed mode)")
+	fs.StringVar(&adminListen, "admin-listen", envOr("VALVD_ADMIN_LISTEN", "127.0.0.1:8080"), "web GUI address")
+	fs.BoolVar(&adminPublic, "admin-allow-public", false, "let the web GUI answer public addresses")
+	fs.BoolVar(&adminProxy, "admin-behind-proxy", os.Getenv("VALVD_ADMIN_BEHIND_PROXY") == "1", "web GUI is behind a reverse proxy/tunnel")
+	fs.StringVar(&syncListen, "sync-listen", envOr("VALVD_SYNC_LISTEN", "127.0.0.1:8485"), "first-run sync address")
+
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, usage)
@@ -102,6 +122,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "valvd: unexpected positional arguments (see valvd --help)")
 		return 1
+	}
+	if configPath == "" && inboxPath == "" {
+		if dataDir == "" {
+			dataDir = "valvd-data"
+		}
+		return runManaged(dataDir, adminListen, adminPublic, adminProxy, syncListen, stderr)
 	}
 	if configPath == "" || inboxPath == "" {
 		fmt.Fprintln(stderr, "valvd: --config and --inbox are required (see valvd --help)")
@@ -217,4 +243,11 @@ func isLoopbackListen(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
