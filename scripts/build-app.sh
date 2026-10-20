@@ -4,7 +4,10 @@
 # Steps: build the helper (scripts/build-linux.sh) -> sign it and hash it -> write the hash into a
 # build copy of the Swift package -> swift build -c release -> assemble -> sign the app -> re-hash
 # the helper and fail if it changed. Swift compiler output is kept in build/swift-build.log.
+#   SIGN_IDENTITY="Apple Development: Name (TEAMID)" scripts/build-app.sh   (stable identity: the Keychain
+#   keeps trusting the app across rebuilds; default "-" is ad-hoc and changes on every build)
 set -eu
+SIGN_IDENTITY=${SIGN_IDENTITY:--}
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -23,7 +26,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp dist/valv-darwin-arm64 "$APP/Contents/Helpers/valv"
 chmod 755 "$APP/Contents/Helpers/valv"
-codesign --force --options runtime -s - "$APP/Contents/Helpers/valv"
+codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/valv"
 HASH=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
 
 mkdir -p "$SRC"
@@ -53,7 +56,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --options runtime -s - "$APP"
+codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP"
 AFTER=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
 if [ "$HASH" != "$AFTER" ]; then
 	echo "error: helper changed while signing the app" >&2
