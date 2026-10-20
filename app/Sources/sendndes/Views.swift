@@ -96,8 +96,9 @@ struct Sidebar: View {
     private var mood: Aster.Mood {
         switch model.lockState {
         case .locked: .asleep
-        case .unlocking: .working
-        case .unlocked, .noFolder: .happy
+        case .unlocking: .flustered
+        case .unlocked: .smitten
+        case .noFolder: .happy
         }
     }
 
@@ -447,11 +448,11 @@ struct VaultView: View {
 
     private var lockedView: some View {
         let unlocking = model.lockState == .unlocking
-        let mood: Aster.Mood = unlocking ? .working : (model.vaultMessage != nil ? .oops : .asleep)
+        let mood: Aster.Mood = unlocking ? .flustered : (model.vaultMessage != nil ? .oops : .asleep)
         return ScrollView {
             VStack(spacing: 14) {
                 Aster(mood: mood, size: 150, interactive: true)
-                Text(unlocking ? "Peeking inside…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
+                Text(unlocking ? "Ooh… getting warmed up…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
                 Text("Whisper the passphrase to wake it up.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                 Text(verbatim: model.vaultPath).font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.inkSoft)
                     .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
@@ -500,7 +501,7 @@ struct VaultView: View {
     private var unlockedView: some View {
         let shown = visible
         return VStack(alignment: .leading, spacing: 12) {
-            PaneHeader(mood: model.busy || model.adding ? .working : .happy, title: "Your vault", subtitle: subtitle,
+            PaneHeader(mood: model.busy || model.adding ? .working : .smitten, title: "Your vault", subtitle: subtitle,
                        sparkle: model.addItems.filter { $0.state == .sent }.count) { EmptyView() }
             HStack(spacing: 10) {
                 Button { addFiles() } label: { Label("Add files…", systemImage: "plus") }
@@ -722,7 +723,7 @@ struct PullView: View {
                        button: "Go to the vault", action: goVault)
         } else {
             VStack(alignment: .leading, spacing: 12) {
-                PaneHeader(mood: model.pullRunning ? .working : .happy, title: "Pull",
+                PaneHeader(mood: model.pullRunning ? .working : .smitten, title: "Pull",
                            subtitle: "Reel in whatever is waiting on the server.", sparkle: added) {
                     Button(model.pullRunning ? "Pulling…" : "Pull from server") { Task { await model.pull() } }
                         .buttonStyle(.chunkyPrimary).disabled(model.pullRunning)

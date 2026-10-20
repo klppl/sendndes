@@ -3,7 +3,7 @@ import SwiftUI
 /// Aster, the asterisk from "n*des", with a face. Purely decorative (hidden from VoiceOver); the words
 /// next to it always say the same thing. Idle motion stops when Reduce Motion is on.
 struct Aster: View {
-    enum Mood { case asleep, happy, wow, oops, working }
+    enum Mood { case asleep, happy, wow, oops, working, flustered, smitten }
 
     var mood: Mood
     var size: CGFloat = 120
@@ -17,6 +17,8 @@ struct Aster: View {
     @State private var winking = false
     @State private var hop: CGFloat = 0
     @State private var spin = false
+    @State private var pulse = false
+    @State private var shiver = false
 
     private var outline: CGFloat { max(1.5, size * 0.035) }
     private var line: CGFloat { max(1.2, size * 0.026) }
@@ -31,20 +33,22 @@ struct Aster: View {
             }
             .rotationEffect(.degrees(spin ? 360 : 0))
             face
+            floaters
             if mood == .asleep { zzz }
         }
         .frame(width: size, height: size)
-        .rotationEffect(.degrees(reduceMotion || still ? 0 : (bob ? 3 : -3)))
+        .rotationEffect(.degrees(reduceMotion || still ? 0 : (bob ? 3 : -3) + (mood == .flustered ? (shiver ? 2.5 : -2.5) : 0)))
         .scaleEffect(reduceMotion || still ? 1 : (bob ? 1.025 : 0.985))
+        .scaleEffect(throbScale)
         .offset(y: hop)
         .accessibilityHidden(true)
         .onTapGesture { if interactive { poke() } }
         .onAppear {
             guard !reduceMotion else { return }
             withAnimation(.easeInOut(duration: mood == .asleep ? 2.8 : 1.9).repeatForever(autoreverses: true)) { bob = true }
-            updateSpin()
+            updateMotion()
         }
-        .onChange(of: mood) { _, _ in updateSpin() }
+        .onChange(of: mood) { _, _ in updateMotion() }
         .task(id: mood) { await blinkLoop() }
     }
 
@@ -60,6 +64,8 @@ struct Aster: View {
     }
 
     private var closedEyes: Bool { mood == .asleep }
+    private var hot: Bool { mood == .flustered || mood == .smitten }
+    private var throbScale: CGFloat { reduceMotion || still ? 1 : (hot && pulse ? 1.045 : 1) }
 
     private var face: some View {
         ZStack {
@@ -68,14 +74,20 @@ struct Aster: View {
                 eye(closed: closedEyes || winking, happyArc: winking && !closedEyes)
             }
             .offset(y: -size * 0.04)
-            HStack(spacing: size * 0.23) {
-                Circle().fill(Theme.tomato.opacity(0.45)).frame(width: size * 0.05, height: size * 0.05)
-                Circle().fill(Theme.tomato.opacity(0.45)).frame(width: size * 0.05, height: size * 0.05)
+            HStack(spacing: size * (hot ? 0.25 : 0.23)) {
+                cheek
+                cheek
             }
             .offset(y: size * 0.045)
             mouth.offset(y: size * 0.075)
         }
         .foregroundStyle(Theme.onAccentInk)
+    }
+
+    private var cheek: some View {
+        Circle().fill(Theme.tomato.opacity(hot ? 0.8 : 0.45))
+            .frame(width: size * (hot ? 0.075 : 0.05), height: size * (hot ? 0.075 : 0.05))
+            .scaleEffect(hot && pulse && !reduceMotion && !still ? 1.2 : 1)
     }
 
     @ViewBuilder private func eye(closed: Bool, happyArc: Bool = false) -> some View {
@@ -84,6 +96,13 @@ struct Aster: View {
             Curve(depth: happyArc ? -1 : 1)
                 .stroke(style: StrokeStyle(lineWidth: line, lineCap: .round))
                 .frame(width: w * 1.5, height: h * 0.45)
+        } else if mood == .smitten {
+            Heart().fill(Theme.tomato)
+                .overlay(Heart().stroke(Theme.onAccent, lineWidth: max(0.8, size * 0.012)))
+                .frame(width: size * 0.105, height: size * 0.095)
+                .scaleEffect(pulse && !reduceMotion && !still ? 1.2 : 1)
+        } else if mood == .flustered {
+            HalfEye().frame(width: w * 1.2, height: h * 0.8 * (blink ? 0.2 : 1))
         } else {
             Ellipse().frame(width: w, height: h * (blink ? 0.1 : 1))
                 .overlay(alignment: .topLeading) {
@@ -100,6 +119,16 @@ struct Aster: View {
         case .asleep: Curve(depth: 0.25).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: size * 0.06, height: size * 0.03)
         case .wow: Ellipse().frame(width: size * 0.06, height: size * 0.08)
         case .oops: Ellipse().stroke(lineWidth: line).frame(width: size * 0.05, height: size * 0.045)
+        case .flustered:
+            Ellipse().frame(width: size * 0.05, height: size * 0.06)
+                .scaleEffect(pulse && !reduceMotion && !still ? 1.3 : 0.85)
+        case .smitten:
+            OpenGrin().fill(Theme.onAccent)
+                .overlay(alignment: .bottom) {
+                    Ellipse().fill(Theme.tomato).frame(width: size * 0.08, height: size * 0.05).offset(y: size * 0.02)
+                }
+                .clipShape(OpenGrin())
+                .frame(width: size * 0.14, height: size * 0.085)
         case .working: Curve(depth: 0.5).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: size * 0.08, height: size * 0.04)
         }
     }
@@ -113,7 +142,80 @@ struct Aster: View {
         .opacity(reduceMotion ? 1 : (bob ? 1 : 0.35))
     }
 
+    // MARK: Floating extras (hearts when smitten; breath and a sweat drop when flustered)
+
+    @ViewBuilder private var floaters: some View {
+        if hot {
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion || still)) { tl in
+                let t = reduceMotion || still ? 0.3 : tl.date.timeIntervalSinceReferenceDate
+                ZStack {
+                    ForEach(0..<3, id: \.self) { i in
+                        if mood == .smitten { floatingHeart(i, t) } else { puff(i, t) }
+                    }
+                    if mood == .flustered { sweat(t) }
+                }
+            }
+            .frame(width: size, height: size)
+        }
+    }
+
+    private func phase(_ t: Double, _ i: Int, speed: Double) -> Double {
+        (t * speed + Double(i) / 3).truncatingRemainder(dividingBy: 1)
+    }
+
+    private func floatingHeart(_ i: Int, _ t: Double) -> some View {
+        let p = CGFloat(phase(t, i, speed: 0.45))
+        let grow: CGFloat = 0.6 + 0.5 * p
+        let sway: CGFloat = 0.1 * CGFloat(sin(Double(p) * 6 + Double(i) * 2.1))
+        let spread: CGFloat = (CGFloat(i) - 1) * 0.12
+        let lift: CGFloat = 0.44 + 0.3 * p
+        let fill: Color = i == 1 ? Theme.tomato : Theme.pink
+        let edge: CGFloat = max(0.8, size * 0.008)
+        return Heart().fill(fill)
+            .overlay(Heart().stroke(Theme.onAccent, lineWidth: edge))
+            .frame(width: size * 0.13 * grow, height: size * 0.12 * grow)
+            .offset(x: size * (sway + spread), y: -size * lift)
+            .opacity(sin(Double(p) * .pi))
+    }
+
+    private func puff(_ i: Int, _ t: Double) -> some View {
+        let p = CGFloat(phase(t, i, speed: 0.7))
+        let d: CGFloat = size * (0.03 + 0.05 * p)
+        let x: CGFloat = size * (0.14 + 0.3 * p)
+        let y: CGFloat = size * (0.1 - 0.14 * p)
+        let edge: CGFloat = max(0.6, size * 0.006)
+        return Circle().fill(Theme.card.opacity(0.9))
+            .overlay(Circle().stroke(Theme.ink.opacity(0.5), lineWidth: edge))
+            .frame(width: d, height: d)
+            .offset(x: x, y: y)
+            .opacity(Double(0.9 * (1 - p)))
+    }
+
+    private func sweat(_ t: Double) -> some View {
+        let p = CGFloat((t * 0.5).truncatingRemainder(dividingBy: 1))
+        let y: CGFloat = -size * (0.3 - 0.2 * p)
+        let edge: CGFloat = max(0.8, size * 0.01)
+        return Drop().fill(Color(red: 0.56, green: 0.83, blue: 1.0))
+            .overlay(Drop().stroke(Theme.onAccent, lineWidth: edge))
+            .frame(width: size * 0.06, height: size * 0.085)
+            .offset(x: -size * 0.34, y: y)
+            .opacity(sin(Double(p) * .pi))
+    }
+
     // MARK: Motion
+
+    private func updateMotion() {
+        updateSpin()
+        if hot && !reduceMotion && !still {
+            pulse = false; shiver = false
+            withAnimation(.easeInOut(duration: mood == .flustered ? 0.4 : 0.75).repeatForever(autoreverses: true)) { pulse = true }
+            if mood == .flustered {
+                withAnimation(.easeInOut(duration: 0.08).repeatForever(autoreverses: true)) { shiver = true }
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.2)) { pulse = false; shiver = false }
+        }
+    }
 
     private func updateSpin() {
         if mood == .working && !reduceMotion {
@@ -150,6 +252,57 @@ struct Aster: View {
 extension Theme {
     /// Face ink: always the dark ink, because the face sits on the pink arms in both appearances.
     static let onAccentInk = Theme.onAccent
+}
+
+/// A heart in its rect.
+struct Heart: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let w = r.width, h = r.height
+        p.move(to: CGPoint(x: r.midX, y: r.maxY))
+        p.addCurve(to: CGPoint(x: r.minX, y: r.minY + h * 0.3), control1: CGPoint(x: r.minX + w * 0.1, y: r.maxY - h * 0.25), control2: CGPoint(x: r.minX, y: r.minY + h * 0.55))
+        p.addArc(center: CGPoint(x: r.minX + w * 0.25, y: r.minY + h * 0.28), radius: w * 0.25, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+        p.addArc(center: CGPoint(x: r.minX + w * 0.75, y: r.minY + h * 0.28), radius: w * 0.25, startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+        p.addCurve(to: CGPoint(x: r.midX, y: r.maxY), control1: CGPoint(x: r.maxX, y: r.minY + h * 0.55), control2: CGPoint(x: r.maxX - w * 0.1, y: r.maxY - h * 0.25))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// The bottom half of an ellipse with a flat top: a heavy-lidded eye.
+struct HalfEye: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+        p.addArc(center: CGPoint(x: r.midX, y: r.minY), radius: r.width / 2, startAngle: .degrees(0), endAngle: .degrees(180), clockwise: false)
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// An open grin: flat top, rounded bottom.
+struct OpenGrin: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY))
+        p.addCurve(to: CGPoint(x: r.minX, y: r.minY), control1: CGPoint(x: r.maxX - r.width * 0.1, y: r.maxY * 1.25), control2: CGPoint(x: r.minX + r.width * 0.1, y: r.maxY * 1.25))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// A teardrop.
+struct Drop: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.midX, y: r.minY))
+        p.addCurve(to: CGPoint(x: r.midX, y: r.maxY), control1: CGPoint(x: r.maxX + r.width * 0.1, y: r.midY), control2: CGPoint(x: r.maxX, y: r.maxY))
+        p.addCurve(to: CGPoint(x: r.midX, y: r.minY), control1: CGPoint(x: r.minX, y: r.maxY), control2: CGPoint(x: r.minX - r.width * 0.1, y: r.midY))
+        p.closeSubpath()
+        return p
+    }
 }
 
 /// A quadratic arc across the top edge of its rect: `depth` 1 dips to the bottom (a smile or a closed
