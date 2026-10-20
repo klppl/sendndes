@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
-    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute
+    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute, dateOutOfRange
 
     /// Failures after which the next file would fail the same way: the queue pauses.
     public var pausesQueue: Bool {
@@ -29,6 +29,7 @@ public enum UploadFailure: Error, Equatable {
         case .cantRead: return "Can't read this file."
         case .unexpectedResponse: return "The server's answer was not understood."
         case .notTailscaleRoute: return RouteGuard.routeMessage
+        case .dateOutOfRange: return "This file's modification date is out of range (before 1677 or after 2262)."
         }
     }
 }
@@ -38,6 +39,8 @@ public enum UploadFailure: Error, Equatable {
 public struct ServerClient {
     private let route: RouteGuard
     public init(route: RouteGuard = RouteGuard()) { self.route = route }
+    /// Test seam: runs after the file was opened and checked, before the body is sent.
+    var beforeBody: (() -> Void)?
 
     public func upload(file: URL, name: String, dir: String, server: ServerURL, token: String) async -> Result<String, UploadFailure> {
         // H1: checked again for every file (the route can change after sleep); never falls back.
@@ -53,14 +56,20 @@ public struct ServerClient {
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(Data(name.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Name-B64")
         if !dir.isEmpty { req.setValue(Data(dir.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Dir-B64") }
-        let ns = Int64(before.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(before.st_mtimespec.tv_nsec)
+        guard let ns = Self.mtimeNanos(sec: Int64(before.st_mtimespec.tv_sec), nsec: Int64(before.st_mtimespec.tv_nsec)) else {
+            return .failure(.dateOutOfRange)
+        }
         req.setValue(String(ns), forHTTPHeaderField: "X-Valv-Mtime")
         if let mime = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType,
            mime.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) {
             req.setValue(mime, forHTTPHeaderField: "X-Valv-Mime")
         }
 
-        let outcome = await Transfer.run(request: req, body: file)
+        // L5: the body is streamed from this open descriptor (pread on a dup), never re-opened by path, so a
+        // path swapped after the check above cannot change what is sent. Exactly st_size bytes are sent.
+        req.setValue(String(before.st_size), forHTTPHeaderField: "Content-Length")
+        beforeBody?()
+        let outcome = await Transfer.run(request: req, body: FDBody(fd: fd, length: Int64(before.st_size)))
         var after = stat()
         let changed = fstat(fd, &after) != 0 || after.st_size != before.st_size || after.st_ino != before.st_ino
             || after.st_dev != before.st_dev
@@ -89,6 +98,16 @@ public struct ServerClient {
         }
     }
 
+    /// L6: seconds+nanoseconds as Unix nanoseconds, nil when the date does not fit in an Int64
+    /// (before 1677 or after 2262, possible on file systems other than APFS). Never traps.
+    static func mtimeNanos(sec: Int64, nsec: Int64) -> Int64? {
+        guard (0..<1_000_000_000).contains(nsec) else { return nil }
+        let (whole, o1) = sec.multipliedReportingOverflow(by: 1_000_000_000)
+        guard !o1 else { return nil }
+        let (total, o2) = whole.addingReportingOverflow(nsec)
+        return o2 ? nil : total
+    }
+
     static func parseID(_ body: Data) -> String? {
         struct R: Decodable { let id: String }
         guard let r = try? JSONDecoder().decode(R.self, from: body), isValidID(r.id) else { return nil }
@@ -113,12 +132,14 @@ private final class Transfer: NSObject, URLSessionDataDelegate {
     private var overflow = false
     private var cancelledByUs = false
     private var session: URLSession?
+    private var body: FDBody?
 
-    static func run(request: URLRequest, body: URL?) async -> Result<(Int, Data), UploadFailure> {
+    static func run(request: URLRequest, body: FDBody?) async -> Result<(Int, Data), UploadFailure> {
         let t = Transfer()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (c: CheckedContinuation<Result<(Int, Data), UploadFailure>, Never>) in
                 t.cont = c
+                if Task.isCancelled { c.resume(returning: .failure(.unreachable)); t.cont = nil; return }
                 let cfg = URLSessionConfiguration.ephemeral
                 cfg.httpMaximumConnectionsPerHost = 1
                 cfg.waitsForConnectivity = false
@@ -132,7 +153,8 @@ private final class Transfer: NSObject, URLSessionDataDelegate {
                 cfg.connectionProxyDictionary = [:] // no system proxy: the token goes straight to the server
                 let s = URLSession(configuration: cfg, delegate: t, delegateQueue: nil)
                 t.session = s
-                let task = body.map { s.uploadTask(with: request, fromFile: $0) } ?? s.dataTask(with: request)
+                t.body = body
+                let task = body != nil ? s.uploadTask(withStreamedRequest: request) : s.dataTask(with: request)
                 task.resume()
             }
         } onCancel: {
@@ -145,6 +167,10 @@ private final class Transfer: NSObject, URLSessionDataDelegate {
         cont = nil
         session?.finishTasksAndInvalidate()
         c.resume(returning: r)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, needNewBodyStream completionHandler: @escaping (InputStream?) -> Void) {
+        completionHandler(body?.makeStream())
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -193,5 +219,46 @@ private final class Transfer: NSObject, URLSessionDataDelegate {
             return
         }
         finish(.success((status, data)))
+    }
+}
+
+/// The request body: `length` bytes of an already opened file, read with pread from a private dup of the
+/// descriptor on a helper thread and handed to URLSession through a bound stream pair. A fresh stream
+/// (needed if URLSession must resend) starts again at offset 0 of the same open file.
+final class FDBody: @unchecked Sendable {
+    let fd: Int32
+    let length: Int64
+    init(fd: Int32, length: Int64) { self.fd = fd; self.length = length }
+
+    func makeStream() -> InputStream? {
+        var input: InputStream?
+        var output: OutputStream?
+        Stream.getBoundStreams(withBufferSize: 64 * 1024, inputStream: &input, outputStream: &output)
+        guard let input, let output else { return nil }
+        let mine = dup(fd)
+        guard mine >= 0 else { return nil }
+        let length = self.length
+        let thread = Thread {
+            defer { close(mine) }
+            output.open()
+            defer { output.close() }
+            var buf = [UInt8](repeating: 0, count: 64 * 1024)
+            var off: Int64 = 0
+            while off < length {
+                let want = Int(min(Int64(buf.count), length - off))
+                let n = buf.withUnsafeMutableBytes { pread(mine, $0.baseAddress, want, off_t(off)) }
+                if n <= 0 { return } // the file got shorter: the body ends early and the request fails
+                var sent = 0
+                while sent < n {
+                    let w = buf.withUnsafeBufferPointer { output.write($0.baseAddress! + sent, maxLength: n - sent) }
+                    if w <= 0 { return } // URLSession closed its end (cancelled or finished)
+                    sent += w
+                }
+                off += Int64(n)
+            }
+        }
+        thread.stackSize = 256 * 1024
+        thread.start()
+        return input
     }
 }

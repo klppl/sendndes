@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -283,48 +282,10 @@ func cleanStaleInboxParts(inboxD *dirHandle) {
 	}
 }
 
-func validatePullServerURL(raw string, allowInsecure bool) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid server URL: %w", err)
-	}
-	if u.User != nil {
-		return "", errors.New("server URL must not contain userinfo credentials")
-	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return "", errors.New("server URL must not contain query parameters or fragments")
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		if !allowInsecure && !isTrustedPlainHTTPHost(u.Hostname()) {
-			return "", fmt.Errorf("refusing plain HTTP to %s (use https://, a loopback/Tailscale IP, or --allow-insecure-http)", display(u.Host))
-		}
-	default:
-		return "", fmt.Errorf("unsupported URL scheme %q (want https or http)", u.Scheme)
-	}
-	if u.Hostname() == "" {
-		return "", errors.New("server URL is missing host")
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String(), nil
-}
-
 var (
 	tailscaleIPv4Prefix = netip.MustParsePrefix("100.64.0.0/10")
 	tailscaleIPv6Prefix = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
 )
-
-func isTrustedPlainHTTPHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil {
-		return false
-	}
-	return addr.IsLoopback() || tailscaleIPv4Prefix.Contains(addr) || tailscaleIPv6Prefix.Contains(addr)
-}
 
 func readPullTokenFile(p string) (string, error) {
 	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)

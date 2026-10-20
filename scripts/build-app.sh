@@ -23,7 +23,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp dist/valv-darwin-arm64 "$APP/Contents/Helpers/valv"
 chmod 755 "$APP/Contents/Helpers/valv"
-codesign --force -s - "$APP/Contents/Helpers/valv"
+codesign --force --options runtime -s - "$APP/Contents/Helpers/valv"
 HASH=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
 
 mkdir -p "$SRC"
@@ -53,7 +53,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force -s - "$APP"
+codesign --force --options runtime -s - "$APP"
 AFTER=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
 if [ "$HASH" != "$AFTER" ]; then
 	echo "error: helper changed while signing the app" >&2

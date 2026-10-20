@@ -7,6 +7,8 @@ final class AppState {
     static let shared = AppState()
     let model: AppModel
     private var signalSources: [DispatchSourceSignal] = []
+    private var systemLock: SystemLockObserver?
+    private var activity: ActivityMonitor?
 
     private init() {
         UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
@@ -15,6 +17,9 @@ final class AppState {
         let path = Self.helperPath()
         model = AppModel(secrets: KeychainSecretStore(),
                          runner: HelperRunner(helperPath: path, expectedSHA256: helperSHA256))
+        let m = model
+        systemLock = SystemLockObserver(onLock: { m.lockForSystemEvent() })
+        activity = ActivityMonitor(model: m)
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)

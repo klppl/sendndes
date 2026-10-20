@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -711,4 +712,52 @@ func TestPullChecksRouteAtStartAndBeforeEachFile(t *testing.T) {
 		t.Fatalf("exactly one file should have been pulled: deleted=%v left=%d", mock.deleted, len(mock.files))
 	}
 	_ = ids
+}
+
+// decodeBytes turns \xNN escapes of the shared policy list into raw bytes.
+func decodeBytes(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s)+0 && s[i+1] == 'x' {
+			v, err := strconv.ParseUint(s[i+2:i+4], 16, 8)
+			if err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// L12: the server-address policy must agree with the Swift app's (same list on both sides).
+func TestURLPolicyCases(t *testing.T) {
+	data, err := os.ReadFile("../../app/Tests/AppCoreTests/url-policy-cases.tsv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		in, want, ok := strings.Cut(line, "\t")
+		if !ok {
+			t.Fatalf("bad line %q", line)
+		}
+		in = decodeBytes(in)
+		got, err := validatePullServerURL(in, false)
+		if want == "REJECT" {
+			if err == nil {
+				t.Errorf("%q: accepted as %q, want REJECT", in, got)
+			}
+		} else if err != nil || got != want {
+			t.Errorf("%q: got %q (%v), want %q", in, got, err, want)
+		}
+		n++
+	}
+	if n < 80 {
+		t.Fatalf("only %d cases", n)
+	}
 }

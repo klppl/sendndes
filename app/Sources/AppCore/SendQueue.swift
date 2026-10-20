@@ -25,7 +25,10 @@ public final class SendQueue {
 
     private let client: ServerClient
     public var credentials: () -> (ServerURL, String)?
+    public var credentialsProblem: () -> String = { "Set the server address and token in Settings first." }
     private var activity: NSObjectProtocol?
+    private var loopTask: Task<Void, Never>?
+    private var interruptReason: String?
 
     public init(client: ServerClient = ServerClient(), credentials: @escaping () -> (ServerURL, String)?) {
         self.client = client
@@ -67,7 +70,15 @@ public final class SendQueue {
         guard !running, pausedReason == nil, items.contains(where: { $0.state == .waiting }) else { return }
         running = true
         activity = ProcessInfo.processInfo.beginActivity(options: .idleSystemSleepDisabled, reason: "Sending files")
-        Task { await self.loop() }
+        loopTask = Task { await self.loop() }
+    }
+
+    /// Cancels the upload in flight (the connection is dropped, so the server removes its partial file), puts
+    /// that item back to waiting and pauses the queue with `reason`. Nothing happens when idle.
+    public func interrupt(_ reason: String) {
+        guard running else { return }
+        interruptReason = reason
+        loopTask?.cancel()
     }
 
     /// Waits until the queue has nothing left to do (for tests).
@@ -81,23 +92,28 @@ public final class SendQueue {
             if let a = activity { ProcessInfo.processInfo.endActivity(a); activity = nil }
         }
         while pausedReason == nil, let i = items.firstIndex(where: { $0.state == .waiting }) {
+            if let r = interruptReason { interruptReason = nil; pausedReason = r; return }
             guard let (server, token) = credentials() else {
-                pausedReason = "Set the server address and token in Settings first."
+                pausedReason = credentialsProblem()
                 return
             }
             items[i].state = .sending
             let spec = items[i].spec
             let result = await client.upload(file: spec.url, name: spec.name, dir: spec.dir, server: server, token: token)
             guard let j = items.firstIndex(where: { $0.spec == spec && $0.state == .sending }) else { continue }
+            let interrupted = interruptReason
             switch result {
             case .success:
                 items[j].state = .sent
+            case .failure where interrupted != nil:
+                items[j].state = .waiting
             case .failure(let f) where f.pausesQueue:
                 items[j].state = .waiting
                 pausedReason = f.message
             case .failure(let f):
                 items[j].state = .failed(f.message)
             }
+            if let r = interrupted { interruptReason = nil; pausedReason = r; return }
         }
     }
 }

@@ -230,11 +230,18 @@ struct SettingsView: View {
             }
             FieldLabel(title: "Bearer token") {
                 SecureField("Bearer token", text: $token,
-                            prompt: Text(model.tokenIsSet ? "Saved in the Keychain; type to replace" : "Paste the token"))
+                            prompt: Text(model.tokenIsSet && !model.tokenNeedsReentry ? "Saved in the Keychain; type to replace" : "Paste the token"))
                     .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
             }
             FieldLabel(title: "Vault folder") { FolderPicker(path: vault, action: chooseVault) }
+            Stepper(value: Bindable(model).autoLockMinutes, in: AppModel.autoLockRange) {
+                Text("Lock after \(model.autoLockMinutes) min without activity")
+            }
+            Note(text: "The app also locks when the Mac sleeps, the screen locks or you switch user. A running pull or send is then cancelled.")
             Note(text: "The token is kept in your login keychain: not synchronizable, not iCloud-synced, readable while the login keychain is unlocked (normally the whole login session). macOS may ask you to allow access after each rebuild of this app.")
+            if model.tokenNeedsReentry {
+                Banner(kind: .error, text: "The token was saved for a different server address and is not sent to this one. Enter the token again.")
+            }
             if let error { Banner(kind: .error, text: error) }
             HStack(spacing: 10) {
                 Spacer()
@@ -640,7 +647,7 @@ struct SendView: View {
     let openSettings: () -> Void
     @State private var targeted = false
 
-    private var configured: Bool { model.tokenIsSet && !model.serverURLText.isEmpty }
+    private var configured: Bool { model.tokenIsSet && !model.tokenNeedsReentry && !model.serverURLText.isEmpty }
     private var sentCount: Int { queue.items.filter { $0.state == .sent }.count }
 
     private var subtitle: String {

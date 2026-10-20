@@ -400,3 +400,69 @@ final class HostileServerTests: XCTestCase {
         }
     }
 }
+
+/// L5: the body comes from the descriptor that was checked, not from the path.
+final class UploadTOCTOUTests: XCTestCase {
+    final class Captured: @unchecked Sendable { var body = Data(); var head = "" }
+
+    func capturingServer(_ cap: Captured) -> FakeServer {
+        FakeServer { fd, srv in
+            let len = srv.lastHead.lowercased().components(separatedBy: "\r\n")
+                .first { $0.hasPrefix("content-length:") }.flatMap { Int($0.dropFirst(15).trimmingCharacters(in: .whitespaces)) } ?? -1
+            var body = srv.lastBodyPrefix
+            var buf = [UInt8](repeating: 0, count: 65536)
+            while len >= 0 && body.count < len {
+                let n = read(fd, &buf, buf.count)
+                if n <= 0 { break }
+                body.append(contentsOf: buf[0..<n])
+            }
+            if srv.lastHead.hasPrefix("PUT ") { cap.head = srv.lastHead; cap.body = body }
+            srv.write(fd, "HTTP/1.1 201 Created\r\nContent-Length: 41\r\nConnection: close\r\n\r\n{\"id\":\"\(String(repeating: "b", count: 32))\"}")
+        }
+    }
+
+    func testBodyComesFromTheOpenedFileNotThePath() async {
+        let cap = Captured()
+        let srv = capturingServer(cap); defer { srv.shutdown() }
+        let dir = realTemp()
+        let path = dir + "/f.bin"
+        let original = Data((0..<300_000).map { UInt8($0 % 251) })
+        try! original.write(to: URL(fileURLWithPath: path))
+        var client = ServerClient()
+        client.beforeBody = {
+            // The attacker (or a sync client) swaps the path right after the checks.
+            try? FileManager.default.removeItem(atPath: path)
+            symlink("/etc/hosts", path)
+        }
+        let s = try! URLPolicy.parse("http://127.0.0.1:\(srv.port)")
+        let r = await client.upload(file: URL(fileURLWithPath: path), name: "f.bin", dir: "", server: s, token: goodToken)
+        XCTAssertEqual(r, .success(String(repeating: "b", count: 32)))
+        XCTAssertEqual(cap.body, original, "what the server got is the file that was opened")
+        XCTAssertTrue(cap.head.lowercased().contains("content-length: \(original.count)"), cap.head)
+        XCTAssertFalse(cap.head.lowercased().contains("transfer-encoding"), cap.head)
+    }
+
+    func testEmptyFileAndGrowingFile() async {
+        let cap = Captured()
+        let srv = capturingServer(cap); defer { srv.shutdown() }
+        let dir = realTemp()
+        let s = try! URLPolicy.parse("http://127.0.0.1:\(srv.port)")
+        let empty = dir + "/empty"
+        FileManager.default.createFile(atPath: empty, contents: Data())
+        let r0 = await ServerClient().upload(file: URL(fileURLWithPath: empty), name: "e", dir: "", server: s, token: goodToken)
+        XCTAssertEqual(r0, .success(String(repeating: "b", count: 32)))
+        XCTAssertEqual(cap.body.count, 0)
+
+        // The file grows after the checks: only the checked length is sent, and the change is reported.
+        let grow = dir + "/grow"
+        try! Data(repeating: 1, count: 1000).write(to: URL(fileURLWithPath: grow))
+        var client = ServerClient()
+        client.beforeBody = {
+            let h = FileHandle(forWritingAtPath: grow)!
+            h.seekToEndOfFile(); h.write(Data(repeating: 2, count: 500)); try? h.close()
+        }
+        let r1 = await client.upload(file: URL(fileURLWithPath: grow), name: "g", dir: "", server: s, token: goodToken)
+        XCTAssertEqual(cap.body, Data(repeating: 1, count: 1000), )
+        if case .failure(.fileChanged) = r1 {} else { XCTFail("expected fileChanged, got \(r1)") }
+    }
+}

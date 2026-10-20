@@ -18,6 +18,9 @@ public final class AppModel {
     public private(set) var serverURLText: String
     public private(set) var vaultPath: String
     public private(set) var tokenIsSet: Bool
+    /// M3: a token is saved but not for the server address now configured (for example UserDefaults was
+    /// edited from outside). The token is not sent until it is typed in again in Settings.
+    public private(set) var tokenNeedsReentry = false
 
     // Vault
     public private(set) var lockState: LockState
@@ -51,6 +54,18 @@ public final class AppModel {
 
     public let sendQueue: SendQueue
 
+    // Auto-lock (M1): minutes without input in the app; default 10.
+    public static let autoLockKey = "autoLockMinutes"
+    public static let autoLockRange = 1...120
+    public var autoLockMinutes: Int {
+        didSet {
+            let v = min(max(autoLockMinutes, Self.autoLockRange.lowerBound), Self.autoLockRange.upperBound)
+            if v != autoLockMinutes { autoLockMinutes = v; return }
+            defaults.set(v, forKey: Self.autoLockKey)
+        }
+    }
+    private var lastActivity = Date()
+
     private let defaults: UserDefaults
     private let secrets: SecretStoring
     private let runner: HelperRunner
@@ -69,6 +84,8 @@ public final class AppModel {
         self.tempBase = tempBase
         let url = defaults.string(forKey: Self.urlKey) ?? ""
         let vault = defaults.string(forKey: Self.vaultKey) ?? ""
+        let stored = defaults.integer(forKey: Self.autoLockKey)
+        autoLockMinutes = stored == 0 ? 10 : min(max(stored, Self.autoLockRange.lowerBound), Self.autoLockRange.upperBound)
         serverURLText = url
         vaultPath = vault
         tokenIsSet = false
@@ -77,13 +94,31 @@ public final class AppModel {
         routeGuard = RouteGuard(extraInterfaces: { RouteGuard.parseInterfaceList(defs.string(forKey: RouteGuard.defaultsKey) ?? "") })
         sendQueue = SendQueue(client: ServerClient(route: routeGuard), credentials: { nil })
         sendQueue.credentials = { [weak self] in self?.credentials() }
-        tokenIsSet = secrets.token() != nil
+        sendQueue.credentialsProblem = { [weak self] in self?.credentialsProblem() ?? "Set the server address and token in Settings first." }
+        refreshTokenState()
     }
 
-    /// The server URL (validated again) and token for an upload or pull.
+    private func refreshTokenState() {
+        let c = secrets.credential()
+        tokenIsSet = c != nil
+        let u = try? URLPolicy.parse(serverURLText)
+        tokenNeedsReentry = c != nil && (u == nil || c?.server != u?.canonical)
+    }
+
+    /// The server URL (validated again) and token for an upload or pull. The token is only returned for
+    /// the server it was saved with (M3); otherwise nil.
     func credentials() -> (ServerURL, String)? {
-        guard let u = try? URLPolicy.parse(serverURLText), let t = secrets.token() else { return nil }
-        return (u, t)
+        guard let u = try? URLPolicy.parse(serverURLText), let c = secrets.credential() else { return nil }
+        guard c.server == u.canonical else { refreshTokenState(); return nil }
+        return (u, c.token)
+    }
+
+    /// Why `credentials()` is nil.
+    func credentialsProblem() -> String {
+        refreshTokenState()
+        return tokenNeedsReentry
+            ? "The server address no longer matches the one the token was saved for. Enter the token again in Settings."
+            : "Set the server address and token in Settings first."
     }
 
     // MARK: Settings
@@ -94,7 +129,7 @@ public final class AppModel {
             switch self {
             case .badURL(let m): return m
             case .badToken: return "The token must be 32–512 printable characters without spaces."
-            case .tokenRequiredForNewHost: return "The server address changed to a different host; enter the token again."
+            case .tokenRequiredForNewHost: return "The server address is not the one the token was saved for; enter the token again."
             case .keychain: return "The token could not be saved in the Keychain."
             }
         }
@@ -108,17 +143,15 @@ public final class AppModel {
         if let t = token, !t.isEmpty {
             guard (32...512).contains(t.utf8.count), t.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) else { throw SettingsError.badToken }
         }
-        let oldHost = (try? URLPolicy.parse(serverURLText))?.host
-        let hostChanged = oldHost != parsed.host
-        if hostChanged && secrets.token() != nil && (token ?? "").isEmpty { throw SettingsError.tokenRequiredForNewHost }
+        // M3: the token belongs to scheme+host+port as saved. Any other address needs the token typed again.
+        let stored = secrets.credential()
+        if let stored, stored.server != parsed.canonical, (token ?? "").isEmpty { throw SettingsError.tokenRequiredForNewHost }
         if let t = token, !t.isEmpty {
-            do { try secrets.setToken(t) } catch { throw SettingsError.keychain }
-        } else if hostChanged {
-            secrets.deleteToken()
+            do { try secrets.setCredential(token: t, server: parsed.canonical) } catch { throw SettingsError.keychain }
         }
         serverURLText = parsed.canonical
         defaults.set(parsed.canonical, forKey: Self.urlKey)
-        tokenIsSet = secrets.token() != nil
+        refreshTokenState()
         if newVault != vaultPath {
             lock()
             vaultPath = newVault
@@ -352,7 +385,33 @@ public final class AppModel {
         }
     }
 
+    /// User input in the app resets the inactivity timer.
+    public func noteActivity() { lastActivity = Date() }
+
+    /// True while something that uses the passphrase or the network is running.
+    public var workRunning: Bool { pullRunning || busy || adding || exporting || creating || !sendQueue.isIdle }
+
+    /// Called every few seconds. Locks after `autoLockMinutes` without input, but not while work is running
+    /// (the lock then comes on the first tick after it finishes). Sleep, screen lock and session resign
+    /// do not wait: see `lockForSystemEvent`. Returns true if it locked.
+    @discardableResult
+    public func inactivityTick(now: Date = Date()) -> Bool {
+        guard lockState == .unlocked || lockState == .unlocking else { return false }
+        guard now.timeIntervalSince(lastActivity) >= Double(autoLockMinutes) * 60 else { return false }
+        guard !workRunning else { return false }
+        lock()
+        return true
+    }
+
+    /// Sleep, screen sleep/lock, screensaver, fast user switch: lock now and cancel whatever is running.
+    public func lockForSystemEvent() { lock() }
+
     public func lock() {
+        let wasActive = lockState == .unlocked || lockState == .unlocking
+        let hadPull = pullRunning
+        let hadVaultJob = adding || exporting
+        if wasActive { sendQueue.interrupt("Interrupted: the app was locked. Resume to continue sending.") }
+        lastActivity = Date()
         generation += 1
         box.set(nil)
         runner.terminateNow()
@@ -376,6 +435,9 @@ public final class AppModel {
         addNotes = []
         vaultMessage = nil
         if lockState != .noFolder { lockState = vaultPath.isEmpty ? .noFolder : .locked }
+        // Say what was cut off; the messages show after the next unlock.
+        if hadPull { pullMessage = "Interrupted: the app was locked during the pull. Files already ingested stay in the vault; the rest are still on the server." }
+        if hadVaultJob { vaultMessage = "Interrupted: the app was locked while files were being added or exported." }
     }
 
     public func rebuildListing() async {
@@ -438,7 +500,7 @@ public final class AppModel {
     public func pull() async {
         guard lockState == .unlocked, !pullRunning else { return }
         guard let (server, token) = credentials() else {
-            pullMessage = "Set the server address and token in Settings first."
+            pullMessage = credentialsProblem()
             return
         }
         guard routeGuard.allows(server) else {

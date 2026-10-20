@@ -5,9 +5,10 @@ import CryptoKit
 
 final class MemorySecrets: SecretStoring {
     var value: String?
-    func token() -> String? { value }
-    func setToken(_ token: String) throws { value = token }
-    func deleteToken() { value = nil }
+    var server: String?
+    func credential() -> StoredCredential? { value.map { StoredCredential(token: $0, server: server) } }
+    func setCredential(token: String, server: String) throws { value = token; self.server = server }
+    func deleteToken() { value = nil; server = nil }
 }
 
 struct ToolResult { var status: Int32; var out: Data; var err: Data }
@@ -105,6 +106,7 @@ final class Env {
         suite.set("http://127.0.0.1:\(port)", forKey: AppModel.urlKey)
         suite.set(vault, forKey: AppModel.vaultKey)
         secrets.value = goodToken
+        secrets.server = "http://127.0.0.1:\(port)"
         model = AppModel(defaults: suite, secrets: secrets, runner: runner, tempBase: tokenBase)
         if startServer { try startServerProcess(maxUploadBytes: maxUploadBytes) }
     }
@@ -150,6 +152,8 @@ final class FakeServer: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var requestLines: [String] = []
     private(set) var bytesWritten = 0
+    private(set) var lastHead = ""        // request headers of the latest request
+    private(set) var lastBodyPrefix = Data() // body bytes that arrived together with the headers
     private var stop = false
 
     /// `respond` gets the connected fd after the request headers were read.
@@ -179,6 +183,10 @@ final class FakeServer: @unchecked Sendable {
                     }
                     self.lock.lock()
                     self.requestLines.append(String(decoding: head.prefix(while: { $0 != 0x0D }), as: UTF8.self))
+                    if let r = head.range(of: Data("\r\n\r\n".utf8)) {
+                        self.lastHead = String(decoding: head[..<r.lowerBound], as: UTF8.self)
+                        self.lastBodyPrefix = Data(head[r.upperBound...])
+                    }
                     self.lock.unlock()
                     respond(c, self)
                     close(c)

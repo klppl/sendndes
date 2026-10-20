@@ -29,6 +29,8 @@ public enum URLPolicy {
         guard !raw.isEmpty, raw.utf8.count <= 300,
               raw.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f && $0 != 0x25 && $0 != 0x5c })
         else { throw URLPolicyError.invalid }
+        // URLComponents reads "host:" as "host"; Go rejects an empty port, so reject it here too (L12).
+        if let r = raw.range(of: "://"), raw[r.upperBound...].prefix(while: { $0 != "/" }).hasSuffix(":") { throw URLPolicyError.invalid }
         guard let c = URLComponents(string: raw),
               c.user == nil, c.password == nil, c.query == nil, c.fragment == nil,
               c.path.isEmpty || c.path == "/",
@@ -61,6 +63,10 @@ public enum URLPolicy {
     static func isTrustedLiteral(_ host: String) -> Bool {
         var v4 = in_addr()
         if inet_pton(AF_INET, host, &v4) == 1 {
+            // inet_pton reads "100.064.0.1" as decimal; Go's netip rejects leading zeros (L12). Require the
+            // canonical dotted-decimal spelling so both sides give the same answer.
+            var back = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            guard inet_ntop(AF_INET, &v4, &back, socklen_t(INET_ADDRSTRLEN)) != nil, String(cString: back) == host else { return false }
             let a = UInt32(bigEndian: v4.s_addr)
             let loopback = (a >> 24) == 127
             let tailscale = (a & 0xFFC0_0000) == 0x6440_0000 // 100.64.0.0/10

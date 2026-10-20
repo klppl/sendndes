@@ -24,3 +24,10 @@ defaults write se.klippel.sendndes tailscaleInterfaces -string "wg0,utun9"
 ```
 
 https is not checked. The recommended setup is https through `tailscale serve`; see `coordination/valvd-deploy.md` (§4.1b).
+
+## Auto-lock, token binding, signing
+
+- The app locks after 10 minutes without input (Settings: 1–120 minutes), and at once when the Mac sleeps, the screen locks or the screensaver starts, or you switch user. The inactivity timer never interrupts a running pull, add, export or send; the other triggers cancel it ("Interrupted…": a pull's helper is terminated and its token file deleted, a send goes back to waiting).
+- The token is saved in the Keychain together with the server address (scheme, host, port) it was saved for. If the configured address differs (for example someone edited the app's preferences), the token is not sent and Settings asks for it again.
+- The app and its helper are ad-hoc signed with the hardened runtime (`codesign --options runtime`, no entitlements), so `DYLD_INSERT_LIBRARIES` and similar are ignored.
+- Uploads stream from the file descriptor that was checked (no re-open by path) and exactly the checked size is sent; if the file changed by the end, the item fails and the partial copy is deleted from the server.

@@ -183,3 +183,70 @@ final class RouteGuardTests: XCTestCase {
         XCTAssertEqual(RouteGuard.systemLookup("127.0.0.1"), "lo0")
     }
 }
+
+final class MtimeConversionTests: XCTestCase {
+    func testNormalAndExtremeDates() {
+        XCTAssertEqual(ServerClient.mtimeNanos(sec: 1_700_000_000, nsec: 5), 1_700_000_000_000_000_005)
+        XCTAssertEqual(ServerClient.mtimeNanos(sec: 0, nsec: 0), 0)
+        XCTAssertEqual(ServerClient.mtimeNanos(sec: -1, nsec: 999_999_999), -1)
+        XCTAssertNil(ServerClient.mtimeNanos(sec: 9_223_372_037, nsec: 0))          // just past year 2262
+        XCTAssertNil(ServerClient.mtimeNanos(sec: -9_223_372_037, nsec: 0))
+        XCTAssertNil(ServerClient.mtimeNanos(sec: Int64.max, nsec: 0))
+        XCTAssertNil(ServerClient.mtimeNanos(sec: Int64.min, nsec: 0))
+        XCTAssertNil(ServerClient.mtimeNanos(sec: 0, nsec: -1))
+        XCTAssertNil(ServerClient.mtimeNanos(sec: 0, nsec: 1_000_000_000))
+        XCTAssertFalse(UploadFailure.dateOutOfRange.pausesQueue, "only that file fails")
+    }
+}
+
+/// L12: the Swift policy and the Go policy (`valv pull`) must accept and reject the same inputs.
+/// The list is shared with the Go test `TestURLPolicyCases`; when the helper is available every
+/// case also goes through the real `valv pull`.
+final class URLPolicyDifferentialTests: XCTestCase {
+    static func decode(_ s: String) -> [UInt8] {
+        var out = [UInt8](), b = Array(s.utf8), i = 0
+        while i < b.count {
+            if b[i] == 0x5c, i + 3 < b.count, b[i + 1] == 0x78, let v = UInt8(String(decoding: b[i + 2...i + 3], as: UTF8.self), radix: 16) {
+                out.append(v); i += 4
+            } else { out.append(b[i]); i += 1 }
+        }
+        return out
+    }
+
+    func cases() throws -> [(raw: [UInt8], want: String)] {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("url-policy-cases.tsv")
+        return try String(contentsOf: url, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: true)
+            .filter { !$0.hasPrefix("#") }
+            .map { line in
+                let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+                return (Self.decode(parts.count > 0 ? String(parts[0]) : ""), parts.count > 1 ? String(parts[1]) : "")
+            }
+    }
+
+    func testSwiftPolicyMatchesTheSharedList() throws {
+        let list = try cases()
+        XCTAssertGreaterThan(list.count, 80)
+        for c in list {
+            let text = String(decoding: c.raw, as: UTF8.self)
+            let got = try? URLPolicy.parse(text).canonical
+            if c.want == "REJECT" {
+                XCTAssertNil(got, "\(text.debugDescription) must be rejected, got \(got ?? "")")
+            } else {
+                XCTAssertEqual(got, c.want, text.debugDescription)
+            }
+        }
+    }
+
+    func testRealHelperAgreesWithSwift() throws {
+        guard let bin = ProcessInfo.processInfo.environment["VALV_TEST_BIN"] else { throw XCTSkip("VALV_TEST_BIN not set") }
+        for c in try cases() where !c.raw.contains(0) && !c.raw.isEmpty {
+            // Bytes that are not UTF-8 cannot be passed as a String argument; those cases are covered by the Go test.
+            guard let text = String(validatingUTF8: c.raw.map { CChar(bitPattern: $0) } + [0]) else { continue }
+            let r = runTool(bin + "/valv", ["pull", "--json", "--server=" + text, "--token-file=/nonexistent", "--vault=/nonexistent"])
+            let out = String(decoding: r.out, as: UTF8.self)
+            let helperRejects = out.contains("\"code\":\"server-url\"")
+            let swiftRejects = (try? URLPolicy.parse(text)) == nil
+            XCTAssertEqual(helperRejects, swiftRejects, "\(text.debugDescription): helper said \(out.debugDescription)")
+        }
+    }
+}
