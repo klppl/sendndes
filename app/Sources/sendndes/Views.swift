@@ -595,7 +595,6 @@ struct VaultView: View {
             .padding(24)
             .frame(maxWidth: .infinity, minHeight: 440)
         }
-        .onAppear { if model.touchIDEnabled && model.vaultMessage == nil { Task { await model.unlockWithTouchID() } } }
         .onChange(of: model.vaultMessage) { _, new in
             if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
         }
