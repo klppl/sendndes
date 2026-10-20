@@ -199,6 +199,7 @@ struct VaultView: View {
     let openSettings: () -> Void
     let openCreate: () -> Void
     @State private var passphrase = ""
+    @State private var selection = Set<FileEntry.ID>()
 
     var body: some View {
         switch model.lockState {
@@ -233,6 +234,8 @@ struct VaultView: View {
                     }
                     if model.listingStale { Text("List may be out of date after the pull.").foregroundStyle(.secondary) }
                     Spacer()
+                    Button("Open") { openSelected() }.disabled(selection.count != 1 || model.busy)
+                    Button("Export…") { exportSelected() }.disabled(selection.isEmpty || model.exporting)
                     Button("Add files…", action: addFiles).disabled(model.adding)
                     Button(model.busy ? "Working…" : "Rebuild listing") { Task { await model.rebuildListing() } }
                         .disabled(model.busy)
@@ -259,7 +262,14 @@ struct VaultView: View {
                 }
                 ForEach(model.addNotes, id: \.self) { Text(verbatim: $0).font(.caption).foregroundStyle(.secondary) }
                 if let m = model.vaultMessage { Text(verbatim: m).foregroundStyle(.red) }
-                Table(model.entries) {
+                if let m = model.openMessage { Text(verbatim: m).foregroundStyle(.orange) }
+                if let m = model.exportMessage {
+                    HStack {
+                        Text(verbatim: m)
+                        if let f = model.exportFolder { Button("Show in Finder") { NSWorkspace.shared.open(URL(fileURLWithPath: f)) } }
+                    }
+                }
+                Table(model.entries, selection: $selection) {
                     TableColumn("Name") { e in Text(verbatim: e.name) }
                     TableColumn("Folder") { e in Text(verbatim: e.dir) }
                     TableColumn("Size") { e in Text(verbatim: ByteCountFormatter.string(fromByteCount: e.size, countStyle: .file)) }
@@ -269,6 +279,14 @@ struct VaultView: View {
                     TableColumn("ID") { e in Text(verbatim: e.shortID).font(.system(.body, design: .monospaced)) }
                         .width(80)
                 }
+                .contextMenu(forSelectionType: FileEntry.ID.self) { ids in
+                    if ids.count == 1 { Button("Open") { selection = ids; openSelected() } }
+                    Button("Export…") { selection = ids; exportSelected() }
+                } primaryAction: { ids in
+                    if ids.count == 1 { selection = ids; openSelected() }
+                }
+                Text("Open and Export hand you a decrypted copy that the vault no longer protects. Opened copies are kept in a private temporary folder and deleted when you lock or quit, but the app you open them in may keep its own copy. Exported copies stay where you put them (watch out for synced or indexed folders).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding()
             .dropDestination(for: URL.self) { urls, _ in
@@ -276,6 +294,21 @@ struct VaultView: View {
                 return true
             }
         }
+    }
+
+    private func openSelected() {
+        guard selection.count == 1, let e = model.entries.first(where: { selection.contains($0.id) }) else { return }
+        Task { if let url = await model.prepareOpen(e) { NSWorkspace.shared.open(url) } }
+    }
+
+    private func exportSelected() {
+        let chosen = model.entries.filter { selection.contains($0.id) }
+        guard !chosen.isEmpty else { return }
+        let p = NSOpenPanel()
+        p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; p.allowsMultipleSelection = false
+        p.prompt = "Export here"
+        p.message = "Exported files are not encrypted. Choose a folder outside the vault; avoid synced or indexed folders."
+        if p.runModal() == .OK, let u = p.url { Task { await model.export(chosen, toFolder: u.path) } }
     }
 
     private func addFiles() {

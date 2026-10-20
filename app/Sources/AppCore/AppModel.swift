@@ -43,6 +43,12 @@ public final class AppModel {
     public private(set) var adding = false
     public private(set) var addNotes: [String] = []
 
+    // Export and open (decrypted copies leave the vault; see the notes in the UI)
+    public private(set) var exporting = false
+    public private(set) var exportMessage: String?
+    public private(set) var exportFolder: String?
+    public var openMessage: String?
+
     public let sendQueue: SendQueue
 
     private let defaults: UserDefaults
@@ -230,6 +236,90 @@ public final class AppModel {
         }
     }
 
+    // MARK: Export and open
+
+    /// A safe file name for a decrypted copy: display-cleaned, no path separators, never "." or "..",
+    /// at most about 200 bytes, and never an existing name in the folder.
+    static func exportFileName(for e: FileEntry, taken: Set<String>, folder: String) -> String {
+        var base = e.name.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        if base == "." || base == ".." || base == "(unnamed)" { base = "file" }
+        if base.utf8.count > 200 {
+            let ext = (base as NSString).pathExtension
+            let stem = String((base as NSString).deletingPathExtension.prefix(60))
+            base = ext.isEmpty || ext.utf8.count > 20 ? stem : stem + "." + ext
+        }
+        func free(_ n: String) -> Bool { !taken.contains(n) && lstatMissing(folder + "/" + n) }
+        if free(base) { return base }
+        let ext = (base as NSString).pathExtension
+        let stem = (base as NSString).deletingPathExtension
+        let alt = ext.isEmpty ? "\(stem) (\(e.shortID))" : "\(stem) (\(e.shortID)).\(ext)"
+        if free(alt) { return alt }
+        return "\(e.id)" + (ext.isEmpty ? "" : "." + ext)
+    }
+
+    private static func lstatMissing(_ p: String) -> Bool { var st = stat(); return lstat(p, &st) != 0 && errno == ENOENT }
+
+    private func get(_ e: FileEntry, to path: String) async -> String? {
+        do {
+            let o = try await runner.run(
+                args: ["get", "--passphrase-stdin", "--vault=\(vaultPath)", "-o=\(path)", "--", e.id],
+                passphrase: { [box] in box.get() }, onLine: { _ in true })
+            if o.exitStatus == 0 && !o.outputViolation && !o.killedByUs { return nil }
+            if o.killedByUs { return "Locked." }
+            let last = String(decoding: o.stderrTail, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
+            switch last {
+            case "valv: wrong passphrase or altered vault.json": return "Wrong passphrase."
+            case "valv: the output file already exists (use --force to replace it)": return "A file with that name already exists."
+            case "valv: refusing to write inside the vault directory; choose another output location with -o":
+                return "Choose a folder outside the vault."
+            default: return "The helper failed (exit \(o.exitStatus))."
+            }
+        } catch { return Self.message(for: error) }
+    }
+
+    /// Writes decrypted copies into `folder` (chosen by the user). Never replaces an existing file.
+    public func export(_ entries: [FileEntry], toFolder folder: String) async {
+        guard lockState == .unlocked, !exporting, !entries.isEmpty else { return }
+        let gen = generation
+        exporting = true
+        exportMessage = nil
+        exportFolder = folder
+        defer { if gen == generation { exporting = false } }
+        var ok = 0
+        var failures: [String] = []
+        var taken = Set<String>()
+        for e in entries {
+            let name = Self.exportFileName(for: e, taken: taken, folder: folder)
+            taken.insert(name)
+            let err = await get(e, to: folder + "/" + name)
+            guard gen == generation else { return }
+            if let err { failures.append(err) } else { ok += 1 }
+        }
+        var m = "\(ok) exported"
+        if !failures.isEmpty { m += ", \(failures.count) failed (\(failures[0]))" }
+        exportMessage = m + "."
+    }
+
+    /// Decrypts one file into a private temporary folder and returns its URL for the caller to open. The copy is
+    /// deleted on lock and quit. Only harmless file types are offered (see `OpenPolicy`).
+    public func prepareOpen(_ e: FileEntry) async -> URL? {
+        guard lockState == .unlocked, !busy else { return nil }
+        openMessage = nil
+        let name = Self.exportFileName(for: e, taken: [], folder: "/nonexistent")
+        guard OpenPolicy.canOpen(fileName: name) else {
+            openMessage = "This file type isn't opened automatically (it could run code). Use Export instead."
+            return nil
+        }
+        let gen = generation
+        let dir: PrivateDir
+        do { dir = try PrivateDir.create(base: tempBase) } catch { openMessage = "Could not create the temporary folder."; return nil }
+        let path = dir.path + "/" + name
+        let err = await get(e, to: path)
+        guard gen == generation else { dir.remove(); return nil }
+        if let err { openMessage = err; dir.remove(); return nil }
+        return URL(fileURLWithPath: path)
+    }
+
     // MARK: Lock / unlock
 
     public func unlock(passphrase: String) async {
@@ -265,6 +355,11 @@ public final class AppModel {
         runner.terminateNow()
         Task { await runner.terminateAll() }
         TokenFile.removeAll()
+        PrivateDir.removeAll()
+        exportMessage = nil
+        exportFolder = nil
+        exporting = false
+        openMessage = nil
         entries = []
         listingProblems = 0
         listingStale = false

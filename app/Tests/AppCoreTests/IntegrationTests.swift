@@ -85,6 +85,57 @@ final class IntegrationTests: XCTestCase {
         XCTAssertTrue(m.addItems.isEmpty)
     }
 
+    func testExportAndOpen() async throws {
+        env.stopServer()
+        await env.unlock()
+        let m = env.model
+        let one = env.writeSource("n.txt", Data("one".utf8))
+        let folder = env.tmp + "/src/F"
+        try FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        try Data("two".utf8).write(to: URL(fileURLWithPath: folder + "/n.txt"))
+        let cmd = env.writeSource("run.command", Data("#!/bin/sh\n".utf8))
+        m.addToVault(urls: [one, URL(fileURLWithPath: folder), cmd])
+        await m.waitForAdds()
+        XCTAssertEqual(m.entries.count, 3)
+
+        // Export all: same names don't overwrite each other or anything already there.
+        let out = env.tmp + "/exported"
+        try FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
+        try Data("precious".utf8).write(to: URL(fileURLWithPath: out + "/n.txt"))
+        await m.export(m.entries, toFolder: out)
+        XCTAssertEqual(m.exportMessage, "3 exported.")
+        XCTAssertEqual(try String(contentsOfFile: out + "/n.txt"), "precious")
+        let names = try FileManager.default.contentsOfDirectory(atPath: out).sorted()
+        XCTAssertEqual(names.count, 4, "\(names)")
+        let contents = Set(try names.map { try String(contentsOfFile: out + "/" + $0) })
+        XCTAssertTrue(contents.isSuperset(of: ["one", "two", "precious"]))
+
+        // Into the vault: refused by the helper, nothing written.
+        await m.export([m.entries[0]], toFolder: env.vault)
+        XCTAssertEqual(m.exportMessage, "0 exported, 1 failed (Choose a folder outside the vault.).")
+
+        // Open: a text file is decrypted into a private folder that disappears on lock.
+        let txt = try XCTUnwrap(m.entries.first { $0.name == "n.txt" && $0.dir == "" })
+        let opened = await m.prepareOpen(txt)
+        let url = try XCTUnwrap(opened)
+        XCTAssertEqual(try String(contentsOf: url), "one")
+        var st = stat()
+        XCTAssertEqual(stat(url.deletingLastPathComponent().path, &st), 0)
+        XCTAssertEqual(st.st_mode & 0o777, 0o700)
+        XCTAssertEqual(stat(url.path, &st), 0)
+        XCTAssertEqual(st.st_mode & 0o077, 0, "decrypted copy must not be readable by others")
+        // A script is never opened and nothing is decrypted for it.
+        let before = env.tokenDirs
+        let script = try XCTUnwrap(m.entries.first { $0.name == "run.command" })
+        let none = await m.prepareOpen(script)
+        XCTAssertNil(none)
+        XCTAssertTrue(m.openMessage?.contains("Use Export") == true)
+        XCTAssertEqual(env.tokenDirs, before)
+        m.lock()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(env.tokenDirs, [])
+    }
+
     func testNotAVault() async throws {
         let empty = env.tmp + "/empty"
         try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)

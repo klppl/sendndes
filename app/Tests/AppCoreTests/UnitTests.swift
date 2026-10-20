@@ -130,3 +130,15 @@ final class HelperOutputTests: XCTestCase {
 }
 
 final class Counter: @unchecked Sendable { var n = 0 }
+
+final class OpenPolicyTests: XCTestCase {
+    func testAllowedAndRefused() {
+        for ok in ["a.jpg", "a.PNG", "a.heic", "a.mp4", "a.mov", "a.mp3", "a.pdf", "a.txt", "a.rtf", "a.csv"] {
+            XCTAssertTrue(OpenPolicy.canOpen(fileName: ok), ok)
+        }
+        for bad in ["a.command", "a.sh", "a.py", "a.app", "a.pkg", "a.dmg", "a.html", "a.htm", "a.svg", "a.terminal", "a.webloc",
+                    "a.zip", "a.jar", "a.js", "a.pl", "a.rb", "a.workflow", "a.scpt", "a.inetloc", "a.docm", "noext", "a.zzzunknown", ".hidden", "a.xml"] {
+            XCTAssertFalse(OpenPolicy.canOpen(fileName: bad), bad)
+        }
+    }
+}
