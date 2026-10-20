@@ -284,3 +284,59 @@ func TestAdminBehindProxy(t *testing.T) {
 		t.Fatalf("direct public peer must still be refused, got %d", w.Code)
 	}
 }
+
+func TestAdminSetupDone(t *testing.T) {
+	e := newAdminEnv(t)
+	e.m.setPassword("correct horse battery")
+	if w := e.do("POST", "/api/setup/finish", "127.0.0.1:1", map[string]string{}, nil); w.Code != 401 {
+		t.Fatalf("finish without a session: %d", w.Code)
+	}
+	e.ok("POST", "/api/login", map[string]string{"password": "correct horse battery"})
+	var st struct {
+		Sync struct {
+			SetupDone bool `json:"setup_done"`
+		} `json:"sync"`
+	}
+	json.Unmarshal(e.ok("GET", "/api/status", nil).Body.Bytes(), &st)
+	if st.Sync.SetupDone {
+		t.Fatal("a fresh install must not start as set up")
+	}
+	e.ok("POST", "/api/keys", map[string]string{"text": randKeyText(t)})
+	e.ok("POST", "/api/setup/finish", map[string]string{})
+	json.Unmarshal(e.ok("GET", "/api/status", nil).Body.Bytes(), &st)
+	if !st.Sync.SetupDone {
+		t.Fatal("setup_done not reported after finish")
+	}
+
+	// A restart in the middle of the guided setup keeps it unfinished.
+	e.m.mu.Lock()
+	e.m.state.SetupDone = false
+	e.m.saveStateLocked()
+	e.m.mu.Unlock()
+	mid, err := newManager(e.dir, "127.0.0.1:8485", false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mid.status().SetupDone {
+		t.Fatal("restart mid-setup must not count as finished")
+	}
+	mid.dir.Close()
+
+	// An install linked before the guided setup existed counts as set up.
+	e.m.shutdown()
+	data, _ := os.ReadFile(e.m.path(stateFileName))
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	delete(raw, "setup_done")
+	data, _ = json.Marshal(raw)
+	os.WriteFile(e.m.path(stateFileName), data, 0o600)
+	e.m.dir.Close()
+	m2, err := newManager(e.dir, "127.0.0.1:8485", false, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m2.dir.Close()
+	if !m2.status().SetupDone {
+		t.Fatal("linked install without the field should load as set up")
+	}
+}

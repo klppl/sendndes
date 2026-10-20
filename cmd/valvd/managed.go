@@ -88,10 +88,13 @@ func (s syncSettings) validate() error {
 
 // adminState is the persistent admin.json.
 type adminState struct {
-	PassSalt string       `json:"pass_salt,omitempty"`
-	PassHash string       `json:"pass_hash,omitempty"`
-	Stopped  bool         `json:"stopped,omitempty"` // owner stopped the sync server on purpose
-	Sync     syncSettings `json:"sync"`
+	PassSalt string `json:"pass_salt,omitempty"`
+	PassHash string `json:"pass_hash,omitempty"`
+	Stopped  bool   `json:"stopped,omitempty"` // owner stopped the sync server on purpose
+	// SetupDone: the owner finished the guided setup in the web GUI (only steers which screen it shows).
+	// Always written, so a file without the key is one from before the guided setup existed.
+	SetupDone bool         `json:"setup_done"`
+	Sync      syncSettings `json:"sync"`
 }
 
 type manager struct {
@@ -129,6 +132,7 @@ func newManager(dataDir string, defaultListen string, ackDefault bool, stderr io
 	m := &manager{dataDir: dataDir, dir: dir, reg: newTempRegistry(), stderr: stderr}
 	m.state.Sync = defaultSyncSettings(defaultListen)
 	m.state.Sync.AckPlainHTTP = ackDefault
+	legacy := false
 	data, err := os.ReadFile(filepath.Join(dataDir, stateFileName))
 	switch {
 	case err == nil:
@@ -136,11 +140,28 @@ func newManager(dataDir string, defaultListen string, ackDefault bool, stderr io
 			dir.Close()
 			return nil, fmt.Errorf("%s: %w", stateFileName, err)
 		}
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(data, &keys) == nil {
+			_, hasSetupDone := keys["setup_done"]
+			legacy = !hasSetupDone
+		}
 	case !errors.Is(err, os.ErrNotExist):
 		dir.Close()
 		return nil, err
 	}
+	// Installs linked before the guided setup existed have nothing left to set up.
+	if legacy && m.configured() {
+		m.state.SetupDone = true
+	}
 	return m, nil
+}
+
+// finishSetup records that the owner went through the guided setup.
+func (m *manager) finishSetup() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state.SetupDone = true
+	return m.saveStateLocked()
 }
 
 func (m *manager) path(name string) string { return filepath.Join(m.dataDir, name) }
@@ -499,6 +520,7 @@ type syncStatus struct {
 	TLS         bool         `json:"tls"`
 	Error       string       `json:"error,omitempty"`
 	Fingerprint string       `json:"fingerprint,omitempty"`
+	SetupDone   bool         `json:"setup_done"`
 	Settings    syncSettings `json:"settings"`
 }
 
@@ -510,7 +532,7 @@ func (m *manager) status() syncStatus {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := syncStatus{Linked: linked, Stopped: m.state.Stopped, Error: m.lastErr, Fingerprint: fp, Settings: m.state.Sync}
+	st := syncStatus{Linked: linked, Stopped: m.state.Stopped, Error: m.lastErr, Fingerprint: fp, SetupDone: m.state.SetupDone, Settings: m.state.Sync}
 	if m.run != nil {
 		st.Running, st.Addr, st.TLS = true, m.run.addr, m.run.tls
 	}

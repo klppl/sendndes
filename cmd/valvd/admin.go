@@ -196,6 +196,12 @@ func (a *adminServer) routeAuthed(w http.ResponseWriter, r *http.Request, p, met
 		a.serverAction(w, a.m.stop)
 	case p == "/api/server/restart" && method == http.MethodPost:
 		a.serverAction(w, a.m.restart)
+	case p == "/api/setup/finish" && method == http.MethodPost:
+		if err := a.m.finishSetup(); err != nil {
+			apiErr(w, http.StatusInternalServerError, "could not save")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.m.status())
 	case p == "/api/password" && method == http.MethodPost:
 		a.handlePassword(w, r)
 	case strings.HasPrefix(p, "/api/inbox/") && method == http.MethodDelete:
