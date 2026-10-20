@@ -233,9 +233,31 @@ struct VaultView: View {
                     }
                     if model.listingStale { Text("List may be out of date after the pull.").foregroundStyle(.secondary) }
                     Spacer()
-                    Button(model.busy ? "Listing…" : "Rebuild listing") { Task { await model.rebuildListing() } }
+                    Button("Add files…", action: addFiles).disabled(model.adding)
+                    Button(model.busy ? "Working…" : "Rebuild listing") { Task { await model.rebuildListing() } }
                         .disabled(model.busy)
                 }
+                if !model.addItems.isEmpty {
+                    HStack {
+                        Text("Adding to the vault").font(.subheadline.bold())
+                        Spacer()
+                        if model.addItems.contains(where: { $0.state == .sent }) { Button("Clear finished") { model.clearAddFinished() } }
+                    }
+                    List(model.addItems) { item in
+                        HStack {
+                            Text(verbatim: item.displayName).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            switch item.state {
+                            case .waiting: Text("waiting").foregroundStyle(.secondary)
+                            case .sending: ProgressView().controlSize(.small); Text("encrypting")
+                            case .sent: Label("added", systemImage: "checkmark.circle").foregroundStyle(.green)
+                            case .failed(let m): Text(verbatim: m).foregroundStyle(.red).lineLimit(2)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 130)
+                }
+                ForEach(model.addNotes, id: \.self) { Text(verbatim: $0).font(.caption).foregroundStyle(.secondary) }
                 if let m = model.vaultMessage { Text(verbatim: m).foregroundStyle(.red) }
                 Table(model.entries) {
                     TableColumn("Name") { e in Text(verbatim: e.name) }
@@ -249,7 +271,18 @@ struct VaultView: View {
                 }
             }
             .padding()
+            .dropDestination(for: URL.self) { urls, _ in
+                model.addToVault(urls: urls.filter { $0.isFileURL })
+                return true
+            }
         }
+    }
+
+    private func addFiles() {
+        let p = NSOpenPanel()
+        p.canChooseFiles = true; p.canChooseDirectories = true; p.allowsMultipleSelection = true
+        p.prompt = "Add to vault"
+        if p.runModal() == .OK { model.addToVault(urls: p.urls) }
     }
 
     private func unlock() {

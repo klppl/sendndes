@@ -178,3 +178,25 @@ public final class InitAccumulator {
         return true
     }
 }
+
+/// Collects `valv add --json` output: the id counts only once `end` has been seen.
+public final class AddAccumulator {
+    public private(set) var addedID: String?
+    public private(set) var endSeen = false
+    public private(set) var errorCode: String?
+    private let lock = NSLock()
+    public init() {}
+    public var succeeded: Bool { addedID != nil && endSeen && errorCode == nil }
+
+    public func feed(_ line: Data) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let r = decodeRaw(line) else { return true }
+        switch r.type {
+        case "added": if let id = r.id, isValidID(id) { addedID = id }
+        case "end": endSeen = true
+        case "error": errorCode = r.code ?? "other"
+        default: break
+        }
+        return true
+    }
+}

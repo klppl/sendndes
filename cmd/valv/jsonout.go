@@ -75,6 +75,10 @@ func jsonErrCode(err error) string {
 		return "wrong-passphrase"
 	case errors.Is(err, errNotAVault), errors.Is(err, os.ErrNotExist):
 		return "not-a-vault"
+	case errors.Is(err, errSourceChanged):
+		return "file-changed"
+	case errors.Is(err, core.ErrMetadata):
+		return "bad-name"
 	case errors.Is(err, core.ErrMalformed), errors.Is(err, core.ErrUnsupported),
 		errors.Is(err, core.ErrInboxKeyMismatch):
 		return "vault-unreadable"

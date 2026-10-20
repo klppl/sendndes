@@ -38,6 +38,11 @@ public final class AppModel {
     public private(set) var recoveryKey: String?   // shown once, until the user confirms it is stored
     public var createMessage: String?
 
+    // Add to vault (encrypted locally by `valv add`; the server is not involved)
+    public private(set) var addItems: [SendItem] = []
+    public private(set) var adding = false
+    public private(set) var addNotes: [String] = []
+
     public let sendQueue: SendQueue
 
     private let defaults: UserDefaults
@@ -161,6 +166,70 @@ public final class AppModel {
         lockState = path.isEmpty ? .noFolder : .locked
     }
 
+    // MARK: Add files straight into the vault
+
+    /// Files and folders are encrypted one by one with `valv add`. Each run re-derives the key (about half a
+    /// second), so a large folder takes a while.
+    public func addToVault(urls: [URL]) {
+        guard lockState == .unlocked else { return }
+        let exp = InputExpander.expand(urls)
+        addNotes = []
+        if exp.tooMany { addNotes.append("More than \(InputExpander.maxFiles) files: nothing beyond the first \(InputExpander.maxFiles) was added.") }
+        if !exp.skipped.isEmpty {
+            addNotes.append("Skipped (not regular files): " + exp.skipped.prefix(5).joined(separator: ", ") + (exp.skipped.count > 5 ? " …" : ""))
+        }
+        for s in exp.specs {
+            addItems.append(SendItem(spec: s, displayName: DisplayName.sanitize(s.dir.isEmpty ? s.name : s.dir + "/" + s.name)))
+        }
+        guard !adding else { return }
+        let gen = generation
+        adding = true
+        busy = true
+        Task { await runAdds(gen) }
+    }
+
+    public func clearAddFinished() { addItems.removeAll { $0.state == .sent } }
+
+    /// Waits until no add is running (for tests).
+    public func waitForAdds() async {
+        while adding || busy { try? await Task.sleep(nanoseconds: 20_000_000) }
+    }
+
+    private func runAdds(_ gen: Int) async {
+        var any = false
+        while gen == generation, let i = addItems.firstIndex(where: { $0.state == .waiting }) {
+            addItems[i].state = .sending
+            let spec = addItems[i].spec
+            let acc = AddAccumulator()
+            var failure: String?
+            do {
+                let o = try await runner.run(
+                    args: ["add", "--json", "--passphrase-stdin", "--vault=\(vaultPath)",
+                           "--name=\(spec.name)", "--dir=\(spec.dir)", "--", spec.url.path],
+                    passphrase: { [box] in box.get() },
+                    onLine: { acc.feed($0) })
+                if o.outputViolation { failure = "The helper produced unexpected output." }
+                else if !acc.succeeded { failure = Self.message(forAddError: acc.errorCode) }
+            } catch { failure = Self.message(for: error) }
+            guard gen == generation else { return } // locked meanwhile: lock() reset the state
+            guard let j = addItems.firstIndex(where: { $0.id == addItems[i].id }) else { continue }
+            if let f = failure { addItems[j].state = .failed(f) } else { addItems[j].state = .sent; any = true }
+        }
+        guard gen == generation else { return }
+        adding = false
+        busy = false
+        if any { await rebuildListing() }
+    }
+
+    static func message(forAddError code: String?) -> String {
+        switch code {
+        case "bad-name": return "The name or folder isn't allowed in a vault."
+        case "file-changed": return "The file changed while it was being read; nothing was added."
+        case "wrong-passphrase": return "Wrong passphrase."
+        default: return "Could not add this file."
+        }
+    }
+
     // MARK: Lock / unlock
 
     public func unlock(passphrase: String) async {
@@ -204,6 +273,9 @@ public final class AppModel {
         pullMessage = nil
         pullRunning = false
         busy = false
+        adding = false
+        addItems = []
+        addNotes = []
         vaultMessage = nil
         if lockState != .noFolder { lockState = vaultPath.isEmpty ? .noFolder : .locked }
     }

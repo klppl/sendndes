@@ -229,3 +229,31 @@ func TestInitJSON(t *testing.T) {
 		t.Fatal("vault dir created")
 	}
 }
+
+func TestAddJSON(t *testing.T) {
+	pass := "correct-horse-battery"
+	vaultDir, _, _, _ := setupPullVault(t, pass)
+	src := filepath.Join(t.TempDir(), "s.txt")
+	writeFile(t, src, []byte("data"))
+	code, out, _ := runInProcess([]string{"add", "--json", "--vault=" + vaultDir, "--passphrase-stdin", "--name=we\nird.txt", "--dir=d", "--", src}, pass+"\n")
+	recs := parseJSONLines(t, out)
+	if code != 0 || len(recs) != 2 || recs[0]["type"] != "added" || len(recs[0]["id"].(string)) != 32 || recs[1]["type"] != "end" {
+		t.Fatalf("code=%d %q", code, out)
+	}
+	cases := []struct {
+		args []string
+		pass string
+		want string
+	}{
+		{[]string{"--name=a/b"}, pass, "bad-name"},
+		{[]string{"--name=x"}, "wrong-passphrase-x", "wrong-passphrase"},
+	}
+	for _, c := range cases {
+		args := append([]string{"add", "--json", "--vault=" + vaultDir, "--passphrase-stdin"}, c.args...)
+		code, out, _ = runInProcess(append(args, "--", src), c.pass+"\n")
+		recs = parseJSONLines(t, out)
+		if code == 0 || len(recs) != 1 || recs[0]["code"] != c.want {
+			t.Fatalf("%v: code=%d %q", c.args, code, out)
+		}
+	}
+}

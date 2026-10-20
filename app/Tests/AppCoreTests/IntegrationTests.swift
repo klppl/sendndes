@@ -58,6 +58,33 @@ final class IntegrationTests: XCTestCase {
         XCTAssertNil(m.recoveryKey)
     }
 
+    func testAddFilesDirectlyWithoutServer() async throws {
+        env.stopServer() // nothing may need the server
+        await env.unlock()
+        let payload = Data((0..<200_000).map { UInt8(truncatingIfNeeded: $0 &* 13) })
+        let a = env.writeSource("Direkt – ünï.bin", payload)
+        let folder = env.tmp + "/src/Pics"
+        try FileManager.default.createDirectory(atPath: folder + "/2026", withIntermediateDirectories: true)
+        try Data("nested".utf8).write(to: URL(fileURLWithPath: folder + "/2026/n.txt"))
+        let m = env.model
+        m.addToVault(urls: [a, URL(fileURLWithPath: folder)])
+        await m.waitForAdds()
+        XCTAssertTrue(m.addItems.allSatisfy { $0.state == .sent }, "\(m.addItems.map(\.state))")
+        XCTAssertEqual(m.addItems.count, 2)
+        XCTAssertEqual(m.entries.count, 2, "the listing is refreshed after adding")
+        let big = try XCTUnwrap(m.entries.first { $0.name.hasPrefix("Direkt") })
+        XCTAssertTrue(m.entries.contains { $0.name == "n.txt" && $0.dir == "Pics/2026" })
+        let out = env.tmp + "/direct.bin"
+        let r = runTool(env.helper, ["get", "--vault=\(env.vault)", "--passphrase-stdin", "-o=\(out)", "--", big.id], stdin: passphrase + "\n")
+        XCTAssertEqual(r.status, 0)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: out)), payload)
+        XCTAssertEqual(env.tokenDirs, [])
+        // Locked: adding does nothing.
+        m.lock()
+        m.addToVault(urls: [a])
+        XCTAssertTrue(m.addItems.isEmpty)
+    }
+
     func testNotAVault() async throws {
         let empty = env.tmp + "/empty"
         try FileManager.default.createDirectory(atPath: empty, withIntermediateDirectories: true)

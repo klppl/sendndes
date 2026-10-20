@@ -270,10 +270,16 @@ func configChecker(pass string, want *core.VaultKeys) func(*os.File) error {
 	}
 }
 
-func (a *app) cmdAdd(args []string) error {
+func (a *app) cmdAdd(args []string) (retErr error) {
 	fs := a.flags("add", true, false)
 	dirFlag := fs.String("dir", "", "folder inside the vault")
 	nameFlag := fs.String("name", "", "file name inside the vault")
+	jsonFlag := fs.Bool("json", false, "machine-readable output for the Mac app")
+	defer func() {
+		if *jsonFlag && retErr != nil {
+			jsonLines{a.stdout}.rec("error", "code", jsonErrCode(retErr))
+		}
+	}()
 	pos, err := parse(fs, args, 1, 1)
 	if err != nil {
 		return err
@@ -326,9 +332,17 @@ func (a *app) cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *jsonFlag {
+		js := jsonLines{a.stdout}
+		js.rec("added", "id", obj.ID().String())
+		js.rec("end")
+		return nil
+	}
 	_, err = fmt.Fprintln(a.stdout, obj.ID())
 	return err
 }
+
+var errSourceChanged = errors.New("the file changed while it was being read; nothing added")
 
 // encryptSource encrypts src into w and then checks that src did not change
 // while it was read (SPEC 5.4). This narrows the race; it cannot close it.
@@ -345,7 +359,7 @@ func encryptSource(w io.Writer, obj *core.NewObject, keys *core.VaultKeys, src *
 		return err
 	}
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
-		return errors.New("the file changed while it was being read; nothing added")
+		return errSourceChanged
 	}
 	return nil
 }
