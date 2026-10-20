@@ -10,3 +10,5 @@ Trust and secrets, in plain words:
 - The passphrase is kept in memory until you lock. A Swift String cannot be wiped, so it may stay in freed memory until overwritten.
 - Names in the list are cleaned of control and direction characters before display. Look-alike names are told apart by the short id.
 - With Google Drive "stream" or Dropbox online-only folders, listing opens every file and can make the sync client download them.
+
+Look and feel: `Theme.swift` (palette, sticker cards), `Mascot.swift` (Aster, the asterisk with moods), `Components.swift` (buttons, banners, pills). Motion stops under Reduce Motion; all file names still go through `Text(verbatim:)`.

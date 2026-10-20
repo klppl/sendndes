@@ -52,5 +52,6 @@ struct SendndesApp: App {
             ContentView(model: AppState.shared.model)
                 .frame(minWidth: 760, minHeight: 480)
         }
+        .defaultSize(width: 1000, height: 680)
     }
 }
