@@ -204,12 +204,12 @@ func TestValvdEndToEndAndEmptyUpload(t *testing.T) {
 	env := startTestServer(t, defaultServerOpts())
 
 	cases := []struct {
-		name    string
-		headers map[string][]string
-		plain   []byte
-		wantName string
-		wantDir  string
-		wantMIME string
+		name      string
+		headers   map[string][]string
+		plain     []byte
+		wantName  string
+		wantDir   string
+		wantMIME  string
 		wantMTime int64
 	}{
 		{
@@ -342,7 +342,7 @@ func TestHostileAuthAndRateLimit(t *testing.T) {
 		{"Bearer wrong-token-0123456789abcdef0123456789abcdef"},
 		{"Bearer " + testBearerToken[:len(testBearerToken)-1] + "X"},
 		{"Bearer " + testBearerToken + "extra"},
-		{"Bearer " + strings.Repeat("a", 513)}, // D-R2 #2: > 512 bytes rejected before SHA-256
+		{"Bearer " + strings.Repeat("a", 513)},                     // D-R2 #2: > 512 bytes rejected before SHA-256
 		{"Bearer " + testBearerToken, "Bearer " + testBearerToken}, // duplicate Authorization header
 	}
 
@@ -550,8 +550,8 @@ func TestHostilePathsAndFilesystem(t *testing.T) {
 	badPaths := []string{
 		"/inbox/../../etc/passwd",
 		"/inbox/.valv-0123456789abcdef.part",
-		"/inbox/0123456789ABCDEF0123456789ABCDEF", // uppercase hex
-		"/inbox/0123456789abcdef0123456789abcde",  // 31 chars
+		"/inbox/0123456789ABCDEF0123456789ABCDEF",  // uppercase hex
+		"/inbox/0123456789abcdef0123456789abcde",   // 31 chars
 		"/inbox/0123456789abcdef0123456789abcdef0", // 33 chars
 		"/inbox/0123456789abcdef0123456789abcdef/extra",
 		"/inbox?foo=bar",
@@ -812,7 +812,6 @@ func TestConcurrentUploadQuotaEnforcement(t *testing.T) {
 		t.Fatalf("expected exactly 2 inbox files on disk, got ids=%d activeFiles=%d", len(ids), activeFiles)
 	}
 }
-
 
 // L2: byte quota, free-space margin and ENOSPC mapping.
 func TestInboxByteQuotaAndSpace(t *testing.T) {

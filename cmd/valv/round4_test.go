@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/klppl/valv/core"
 )
@@ -245,5 +249,65 @@ func TestRound4UnverifiedRecoveryAdvice(t *testing.T) {
 	want := "Run `valv ls`. If every file fails with an authentication error, the key was probably wrong: run recover again with the right key and --force. If only some files fail, those objects may be damaged: run `valv verify`."
 	if !strings.Contains(r.stdout, want) {
 		t.Fatalf("stdout: %s", r.stdout)
+	}
+}
+
+// L1: `recover` must not keep a per-file buffer for every inbox file. A host can plant tens of
+// thousands of files; before the fix each one pinned a 131 KB slice.
+func TestRecoverMemoryStaysBoundedWithManyInboxFiles(t *testing.T) {
+	pass := "correct-horse-battery"
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "vault")
+	code, out, errOut := runInProcess([]string{"init", dir, "--passphrase-stdin", "--allow-weak-passphrase"}, pass+"\n")
+	if code != 0 {
+		t.Fatalf("init: %s", errOut)
+	}
+	rk := recoveryKeyRE.FindString(out)
+	const planted = 20000
+	junk := make([]byte, 100)
+	for i := 0; i < planted; i++ {
+		var id core.FileID
+		rand.Read(id[:])
+		if err := os.WriteFile(filepath.Join(dir, "inbox", core.InboxName(id)), junk, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.Remove(filepath.Join(dir, "vault.json"))
+
+	var peak atomic.Uint64
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var ms runtime.MemStats
+		for {
+			runtime.ReadMemStats(&ms)
+			if ms.HeapInuse > peak.Load() {
+				peak.Store(ms.HeapInuse)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}()
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	// All planted files are garbage, so the key is unverifiable: refused without --unverified-key,
+	// after every file has been looked at.
+	code, _, errOut = runInProcess([]string{"recover", "--passphrase-stdin", dir}, rk+"\nrecovered passphrase\n")
+	close(stop)
+	<-done
+	if code == 0 || !strings.Contains(errOut, "cannot be verified") {
+		t.Fatalf("code=%d stderr=%s", code, errOut)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	grown := int64(peak.Load()) - int64(before.HeapInuse)
+	t.Logf("planted %d files: peak heap growth %d KiB, total allocated %d MiB", planted, grown>>10, (after.TotalAlloc-before.TotalAlloc)>>20)
+	if grown > 100<<20 {
+		t.Fatalf("heap grew by %d MiB for %d tiny inbox files", grown>>20, planted)
 	}
 }

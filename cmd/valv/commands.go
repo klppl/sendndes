@@ -1007,11 +1007,41 @@ func recoverySamples(v *dirHandle, s *scan) core.RecoverySamples {
 		p, size := readPrefix(v, f.rel, 86)
 		out.Objects = append(out.Objects, core.ObjectSample{Prefix: p, Size: size, ID: f.id})
 	}
+	// L1: inbox files are the ones a host can plant by the thousand, so only their size is kept;
+	// the prefix is read into one shared buffer when the key is checked and dropped again.
 	for _, f := range s.inbox {
-		p, size := readPrefix(v, f.rel, core.InboxSamplePrefixMax)
-		out.Inbox = append(out.Inbox, core.InboxSample{Prefix: p, Size: size, ID: f.id})
+		size := fileSize(v, f.rel)
+		rel := f.rel
+		out.Inbox = append(out.Inbox, core.InboxSample{Size: size, ID: f.id, Load: func(buf []byte) []byte {
+			return readPrefixInto(v, rel, buf)
+		}})
 	}
 	return out
+}
+
+// fileSize is the size of a regular vault file, 0 if it cannot be opened.
+func fileSize(v *dirHandle, rel string) int64 {
+	r, size, err := v.openFileRel(rel)
+	if err != nil {
+		return 0
+	}
+	r.Close()
+	return size
+}
+
+// readPrefixInto fills buf with the start of a regular vault file and returns the filled
+// part, or nil if the file cannot be read. It allocates nothing that outlives the call.
+func readPrefixInto(v *dirHandle, rel string, buf []byte) []byte {
+	r, _, err := v.openFileRel(rel)
+	if err != nil {
+		return nil
+	}
+	defer r.Close()
+	k, err := io.ReadFull(r, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil
+	}
+	return buf[:k]
 }
 
 // readPrefix returns up to the first n bytes of a regular vault file and its
@@ -1022,7 +1052,7 @@ func readPrefix(v *dirHandle, rel string, n int) ([]byte, int64) {
 		return nil, 0
 	}
 	defer r.Close()
-	b := make([]byte, n)
+	b := make([]byte, min(int64(n), size)) // never more than the file has
 	k, err := io.ReadFull(r, b)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return nil, 0

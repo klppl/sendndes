@@ -33,11 +33,11 @@ const (
 	defaultMaxConcurrentReqs  = 32
 	defaultMaxInboxFiles      = 10000
 	defaultSlotWaitTimeout    = 5 * time.Second
-	defaultMaxInboxBytes      = int64(2) << 30      // 2 GiB of stored inbox files
-	defaultMinFreeBytes       = int64(256) << 20    // free space left alone on the file system
-	defaultMinUploadRate      = int64(64) << 10     // bytes per second, for the overall upload deadline
-	defaultMaxChunkedDuration = 10 * time.Minute    // hard cap when the upload length is not declared
-	uploadBaseTimeout         = 60 * time.Second    // fixed part of the overall upload deadline
+	defaultMaxInboxBytes      = int64(2) << 30   // 2 GiB of stored inbox files
+	defaultMinFreeBytes       = int64(256) << 20 // free space left alone on the file system
+	defaultMinUploadRate      = int64(64) << 10  // bytes per second, for the overall upload deadline
+	defaultMaxChunkedDuration = 10 * time.Minute // hard cap when the upload length is not declared
+	uploadBaseTimeout         = 60 * time.Second // fixed part of the overall upload deadline
 	authRateBurst             = 5
 	authRateRefillInterval    = time.Second
 	maxRateLimiterTrackedIPs  = 4096

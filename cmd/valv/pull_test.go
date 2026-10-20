@@ -175,6 +175,10 @@ func TestPullEndToEndAndIdempotency(t *testing.T) {
 	if err := os.WriteFile(stalePart, []byte("stale partial download"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(stalePart, old, old); err != nil { // L10: only old leftovers are removed
+		t.Fatal(err)
+	}
 
 	// Run valv pull.
 	code, stdout, stderr := runInProcess([]string{
@@ -759,5 +763,84 @@ func TestURLPolicyCases(t *testing.T) {
 	}
 	if n < 80 {
 		t.Fatalf("only %d cases", n)
+	}
+}
+
+// L4: the download client ignores HTTP_PROXY and friends.
+func TestPullTransportIgnoresProxyEnvironment(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("ALL_PROXY", "http://127.0.0.1:1")
+	tr := newPullTransport(time.Second)
+	if tr.Proxy != nil {
+		t.Fatal("pull transport has a proxy function")
+	}
+}
+
+// L10: stale-part cleanup removes only old, unlocked temp files, so two runs on the same inbox
+// cannot delete each other's work.
+func TestStaleCleanupSkipsLockedAndFreshParts(t *testing.T) {
+	dir := t.TempDir()
+	d, err := openDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	old := time.Now().Add(-time.Hour)
+	mk := func(name string, age time.Time) {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, age, age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk(".valv-aaaaaaaaaaaaaaaa.part", old)        // leftover: removed
+	mk(".valv-bbbbbbbbbbbbbbbb.part", time.Now()) // fresh: kept
+	cleanStaleInboxParts(d)
+	if _, err := os.Lstat(filepath.Join(dir, ".valv-aaaaaaaaaaaaaaaa.part")); err == nil {
+		t.Error("old unlocked part was not removed")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".valv-bbbbbbbbbbbbbbbb.part")); err != nil {
+		t.Error("fresh part was removed")
+	}
+
+	// Run A is in the middle of a write (temp file open and locked, even if its mtime looks old);
+	// run B starts and cleans up: A's file must survive and A must finish.
+	entered := make(chan string)
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- writeAt(d, "final.inb", writeOpts{}, func(w io.Writer) error {
+			entries, _ := d.list()
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), ".valv-") && e.Name() != ".valv-bbbbbbbbbbbbbbbb.part" {
+					p := filepath.Join(dir, e.Name())
+					os.Chtimes(p, old, old)
+					entered <- e.Name()
+				}
+			}
+			<-release
+			_, err := w.Write([]byte("payload"))
+			return err
+		})
+	}()
+	live := <-entered
+	d2, err := openDir(dir) // run B has its own handle
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d2.Close()
+	cleanStaleInboxParts(d2)
+	if _, err := os.Lstat(filepath.Join(dir, live)); err != nil {
+		t.Fatal("a locked temp file of a running write was deleted")
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("the running write failed: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "final.inb")); err != nil || string(b) != "payload" {
+		t.Fatalf("final file: %q %v", b, err)
 	}
 }

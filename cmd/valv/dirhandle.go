@@ -383,9 +383,40 @@ func createTempAt(d *dirHandle) (string, *os.File, error) {
 		if err != nil {
 			return "", nil, &fs.PathError{Op: "create", Path: filepath.Join(d.path, name), Err: err}
 		}
+		// L10: a live temp file is locked for as long as it is open, so a concurrent
+		// run's stale-file cleanup can tell it from a leftover.
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			unix.Close(fd)
+			d.unlink(name)
+			return "", nil, &fs.PathError{Op: "lock", Path: filepath.Join(d.path, name), Err: err}
+		}
 		return name, os.NewFile(uintptr(fd), filepath.Join(d.path, name)), nil
 	}
 	return "", nil, errors.New("could not create a temp file")
+}
+
+// staleTempAge is how old (by mtime) an unlocked .valv-*.part file must be before cleanup
+// removes it.
+const staleTempAge = 10 * time.Minute
+
+// removeIfStale deletes the temp file name in d only if it is a regular file, older than
+// staleTempAge, and nobody holds its advisory lock (a running valv process keeps its temp
+// file locked while it is open). It reports whether it deleted the file.
+func (d *dirHandle) removeIfStale(name string) bool {
+	fd, err := unix.Openat(d.fd(), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	f := os.NewFile(uintptr(fd), name)
+	defer f.Close() // also drops the lock
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || time.Since(st.ModTime()) < staleTempAge {
+		return false
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return false // somebody is writing it right now
+	}
+	return d.unlink(name) == nil
 }
 
 // moveNoReplaceAt moves tmp to name inside d unless name exists. A hard link

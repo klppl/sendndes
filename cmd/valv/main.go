@@ -16,6 +16,13 @@
 // Every command except init and recover finds the vault through --vault,
 // then $VALV_VAULT, then the current directory. Passphrases are read from the
 // terminal without echo, or one per line from stdin with --passphrase-stdin.
+//
+// Test seams in production code (package-level variables that only tests set; nothing in the
+// command line or the environment can reach them):
+//
+//	initTestHook          commands.go  runs inside init after vault.json is written (failure injection)
+//	pullTestTransport     pull.go      replaces the HTTP transport of `valv pull` with an in-process handler
+//	routeInterfaceLookup  route.go     replaces the OS route lookup of the Tailscale check (H1)
 package main
 
 import (

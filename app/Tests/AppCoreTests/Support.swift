@@ -36,11 +36,24 @@ func sha256Hex(of path: String) -> String {
     SHA256.hash(data: try! Data(contentsOf: URL(fileURLWithPath: path))).map { String(format: "%02x", $0) }.joined()
 }
 
+private let tempLock = NSLock()
+nonisolated(unsafe) private var tempPaths: [String] = []
+/// Removes every directory `realTemp()` made when the test process exits (Info: no sendndes-test-* leftovers).
+private let installExitCleanup: Void = {
+    atexit {
+        tempLock.lock()
+        for p in tempPaths { try? FileManager.default.removeItem(atPath: p) }
+        tempLock.unlock()
+    }
+}()
+
 func realTemp() -> String {
+    _ = installExitCleanup
     var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
     let base = NSTemporaryDirectory() + "sendndes-test-" + UUID().uuidString
     try! FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     precondition(realpath(base, &buf) != nil)
+    tempLock.lock(); tempPaths.append(String(cString: buf)); tempLock.unlock()
     return String(cString: buf)
 }
 

@@ -85,10 +85,17 @@ type ObjectSample struct {
 // Prefix holds up to the first InboxSamplePrefixMax bytes (enough for the
 // header and the first chunk), Size is the full file length and ID the
 // file_id from its name.
+//
+// A caller with many inbox files should not keep every prefix in memory (a hostile
+// host can plant tens of thousands): it sets Load instead of Prefix. Load fills buf
+// (InboxSamplePrefixMax bytes) with the start of the file and returns the filled part,
+// or nil if the file cannot be read; it is called while the key is checked, one file at
+// a time, and the returned slice is not kept.
 type InboxSample struct {
 	Prefix []byte
 	Size   int64
 	ID     FileID
+	Load   func(buf []byte) []byte
 }
 
 // InboxSamplePrefixMax is how many bytes of an inbox file an InboxSample needs.
@@ -148,8 +155,20 @@ func CheckRecoveryKey(recoveryKey string, s RecoverySamples) (RecoveryCheck, err
 		rc.How = VerifiedByObject
 		return rc, nil
 	}
-	for _, in := range s.Inbox {
-		if in.authenticates(keys) {
+	var scratch []byte
+	for i := range s.Inbox {
+		in := &s.Inbox[i]
+		if in.Load != nil {
+			if scratch == nil {
+				scratch = make([]byte, InboxSamplePrefixMax)
+			}
+			in.Prefix = in.Load(scratch)
+		}
+		ok := in.authenticates(keys)
+		if in.Load != nil {
+			in.Prefix = nil
+		}
+		if ok {
 			rc.How = VerifiedByInbox
 			return rc, nil
 		}

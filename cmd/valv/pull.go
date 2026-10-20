@@ -135,13 +135,7 @@ func (a *app) cmdPull(args []string) error {
 	}
 	defer keys.Wipe()
 
-	var rt http.RoundTripper = &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: opts.ioTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
+	var rt http.RoundTripper = newPullTransport(opts.ioTimeout)
 	if pullTestTransport != nil {
 		rt = pullTestTransport
 	}
@@ -270,6 +264,20 @@ func (a *app) cmdPull(args []string) error {
 	return nil
 }
 
+// newPullTransport never uses HTTP_PROXY/HTTPS_PROXY/ALL_PROXY (L4): the bearer token and the
+// sealed files go straight to the configured server, never through a proxy that the
+// environment names. (This also means a proxy cannot be used on purpose; the Mac app already
+// behaves the same way.)
+func newPullTransport(ioTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: ioTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+}
+
 func cleanStaleInboxParts(inboxD *dirHandle) {
 	entries, err := inboxD.list()
 	if err != nil {
@@ -277,7 +285,7 @@ func cleanStaleInboxParts(inboxD *dirHandle) {
 	}
 	for _, e := range entries {
 		if pullPartRE.MatchString(e.Name()) && e.Type().IsRegular() {
-			_ = inboxD.unlink(e.Name())
+			inboxD.removeIfStale(e.Name()) // only old, unlocked leftovers (L10)
 		}
 	}
 }
