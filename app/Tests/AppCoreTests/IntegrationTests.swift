@@ -466,3 +466,47 @@ final class UploadTOCTOUTests: XCTestCase {
         if case .failure(.fileChanged) = r1 {} else { XCTFail("expected fileChanged, got \(r1)") }
     }
 }
+
+/// L2: valvd's 507 bodies and the 400s that are not about names.
+final class StorageStatusTests: XCTestCase {
+    func upload(status: Int, body: String) async -> Result<String, UploadFailure> {
+        let s = FakeServer { fd, srv in
+            srv.write(fd, "HTTP/1.1 \(status) X\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)")
+        }
+        defer { s.shutdown() }
+        let dir = realTemp()
+        let f = URL(fileURLWithPath: dir + "/f.txt")
+        try! Data("payload".utf8).write(to: f)
+        return await ServerClient().upload(file: f, name: "f.txt", dir: "", server: try! URLPolicy.parse("http://127.0.0.1:\(s.port)"), token: goodToken)
+    }
+
+    func test507And400Bodies() async {
+        let a = await upload(status: 507, body: "server out of space\n")
+        XCTAssertEqual(a, .failure(.serverOutOfSpace))
+        let b = await upload(status: 507, body: "inbox byte limit reached\n")
+        XCTAssertEqual(b, .failure(.inboxFull))
+        let c = await upload(status: 507, body: "inbox file limit reached\n")
+        XCTAssertEqual(c, .failure(.inboxFull))
+        let d = await upload(status: 400, body: "invalid or missing file name header\n")
+        XCTAssertEqual(d, .failure(.badName))
+        let e = await upload(status: 400, body: "upload failed\n")
+        XCTAssertEqual(e, .failure(.uploadRejected))
+        XCTAssertEqual(UploadFailure.serverOutOfSpace.message, "The server is out of space.")
+        XCTAssertTrue(UploadFailure.serverOutOfSpace.pausesQueue)
+        XCTAssertFalse(UploadFailure.uploadRejected.pausesQueue)
+    }
+}
+
+/// The real valvd out of free space (margin larger than any disk): the app says so and pauses.
+@MainActor
+final class OutOfSpaceIntegrationTests: XCTestCase {
+    func testServerOutOfSpaceIsShown() async throws {
+        let env = try Env(serverArgs: ["--min-free-bytes", String(Int64(1) << 60)])
+        defer { env.teardown() }
+        let q = env.model.sendQueue
+        q.add(urls: [env.writeSource("a.txt", Data("a".utf8))])
+        await q.waitUntilIdle()
+        XCTAssertEqual(q.pausedReason, "The server is out of space.")
+        XCTAssertEqual(q.items[0].state, .waiting)
+    }
+}

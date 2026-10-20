@@ -27,6 +27,8 @@ var (
 	errNotRegular    = errors.New("not a regular file")
 	errQuotaExceeded = errors.New("inbox file limit reached")
 	errStorage       = errors.New("storage error")
+	errBytesQuota    = errors.New("inbox byte limit reached")
+	errNoSpace       = errors.New("server out of space")
 )
 
 var partFileRE = regexp.MustCompile(`^\.valv-[0-9a-f]{16}\.part$`)
@@ -81,6 +83,19 @@ func openInboxDir(p string, stderr io.Writer) (*dirHandle, error) {
 		return nil, err
 	}
 	d := &dirHandle{f: f, path: p}
+	// L9: the inbox holds sealed files, but nobody but the service user may add, replace or remove
+	// them (a group- or world-writable directory lets another local user plant or delete files).
+	st, err := f.Stat()
+	if err != nil {
+		d.Close()
+		return nil, err
+	}
+	if perm := st.Mode().Perm(); perm&0o022 != 0 {
+		d.Close()
+		return nil, fmt.Errorf("%s: permissions %04o let group or others write here (chmod 0700, owned by the service user)", display(p), perm)
+	} else if perm&0o055 != 0 && stderr != nil {
+		fmt.Fprintf(stderr, "valvd: warning: %s is readable by group or others (permissions %04o); chmod 0700 is recommended\n", display(p), perm)
+	}
 	entries, err := d.list()
 	if err != nil {
 		d.Close()
@@ -155,6 +170,38 @@ func (d *dirHandle) unlink(name string) error {
 	return unix.Unlinkat(d.fd(), name, 0)
 }
 
+// storedInboxBytes is the total size of the regular .inb files in d.
+func (d *dirHandle) storedInboxBytes() (int64, error) {
+	entries, err := d.list()
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, e := range entries {
+		if isJunk(e) || isPartFile(e) || !e.Type().IsRegular() {
+			continue
+		}
+		if _, err := core.ParseInboxName(e.Name()); err != nil {
+			continue
+		}
+		st, err := d.lstat(e.Name())
+		if err != nil {
+			continue // removed meanwhile
+		}
+		total += st.Size
+	}
+	return total, nil
+}
+
+// freeBytes is the space available to unprivileged writers on d's file system.
+func (d *dirHandle) freeBytes() (int64, error) {
+	var st unix.Statfs_t
+	if err := unix.Fstatfs(d.fd(), &st); err != nil {
+		return 0, err
+	}
+	return int64(st.Bavail) * int64(st.Bsize), nil
+}
+
 // listInboxIDs returns sorted hex file_ids of all valid regular .inb files in
 // d, and the total count of .inb + .part entries for quota checking.
 func (d *dirHandle) listInboxIDs() (ids []string, activeFiles int, err error) {
@@ -219,33 +266,98 @@ func moveNoReplaceAt(d *dirHandle, tmp, name string) error {
 	return unix.Renameat(d.fd(), tmp, d.fd(), name)
 }
 
-// writeInboxAt atomically checks the inbox file quota and creates a
-// .valv-<16 hex>.part temp file in d under quotaMu (VALV-REV2-03), writes the
-// sealed inbox stream, syncs and verifies it by reopening through d, then moves
-// it to <id>.inb without replacing an existing file.
-func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInboxFiles int, fill func(w io.Writer) (core.FileID, int64, error)) (id core.FileID, err error) {
+// byteQuota is the inbox byte budget (L2). reserved is the sum of the budgets of the uploads in
+// flight and is only touched under the quota mutex.
+type byteQuota struct {
+	max      int64 // total stored inbox bytes allowed
+	minFree  int64 // free space that must remain on the file system
+	reserved int64
+}
+
+// minChunkedBudget: an upload of unknown length needs at least this much room to be admitted.
+const minChunkedBudget = 1 << 20
+
+// sealedEstimate is an upper bound for the stored size of an inbox file whose plaintext has n
+// bytes: 16 bytes of tag per chunk plus at most ~70 KiB of header and metadata.
+func sealedEstimate(n int64) int64 {
+	return n + 16*((n+core.ChunkSize-1)/core.ChunkSize) + 70<<10
+}
+
+// writeInboxAt atomically checks the inbox file quota and the byte quota (admission under
+// quotaMu, VALV-REV2-03 and L2) and creates a .valv-<16 hex>.part temp file in d, writes the
+// sealed inbox stream, syncs and verifies it by reopening through d, then moves it to <id>.inb
+// without replacing an existing file. need is the estimated stored size, or -1 when the upload
+// length is unknown; fill is told how many bytes it may write.
+func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInboxFiles int, bq *byteQuota, need int64, fill func(w io.Writer, budget int64) (core.FileID, int64, error)) (id core.FileID, err error) {
 	if quotaMu != nil {
 		quotaMu.Lock()
+	}
+	var budget int64
+	admitted := false
+	unlock := func() {
+		if quotaMu != nil {
+			quotaMu.Unlock()
+		}
 	}
 	if maxInboxFiles > 0 {
 		_, activeFiles, lerr := d.listInboxIDs()
 		if lerr != nil {
-			if quotaMu != nil {
-				quotaMu.Unlock()
-			}
+			unlock()
 			return core.FileID{}, fmt.Errorf("%w: %w", errStorage, lerr)
 		}
 		if activeFiles >= maxInboxFiles {
-			if quotaMu != nil {
-				quotaMu.Unlock()
-			}
+			unlock()
 			return core.FileID{}, errQuotaExceeded
 		}
 	}
-	tmp, f, err := createTempAt(d)
-	if quotaMu != nil {
-		quotaMu.Unlock()
+	if bq != nil && bq.max > 0 {
+		used, lerr := d.storedInboxBytes()
+		if lerr != nil {
+			unlock()
+			return core.FileID{}, fmt.Errorf("%w: %w", errStorage, lerr)
+		}
+		remaining := bq.max - used - bq.reserved
+		free, ferr := d.freeBytes()
+		if ferr != nil {
+			unlock()
+			return core.FileID{}, fmt.Errorf("%w: %w", errStorage, ferr)
+		}
+		room := free - bq.minFree
+		if need >= 0 {
+			if need > remaining {
+				unlock()
+				return core.FileID{}, errBytesQuota
+			}
+			if need > room {
+				unlock()
+				return core.FileID{}, errNoSpace
+			}
+			budget = need
+		} else {
+			if remaining < minChunkedBudget {
+				unlock()
+				return core.FileID{}, errBytesQuota
+			}
+			if room < minChunkedBudget {
+				unlock()
+				return core.FileID{}, errNoSpace
+			}
+			budget = min(remaining, room)
+		}
+		bq.reserved += budget
+		admitted = true
 	}
+	if admitted {
+		defer func() {
+			if quotaMu != nil {
+				quotaMu.Lock()
+				defer quotaMu.Unlock()
+			}
+			bq.reserved -= budget
+		}()
+	}
+	tmp, f, err := createTempAt(d)
+	unlock()
 	if err != nil {
 		return core.FileID{}, err
 	}
@@ -259,7 +371,7 @@ func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInbox
 			_ = d.unlink(tmp)
 		}
 	}()
-	id, written, err := fill(f)
+	id, written, err := fill(f, budget)
 	if err != nil {
 		return core.FileID{}, err
 	}

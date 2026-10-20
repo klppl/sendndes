@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -812,3 +813,208 @@ func TestConcurrentUploadQuotaEnforcement(t *testing.T) {
 	}
 }
 
+
+// L2: byte quota, free-space margin and ENOSPC mapping.
+func TestInboxByteQuotaAndSpace(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxInboxBytes = 350 << 10
+	opts.minFreeBytes = 0
+	env := startTestServer(t, opts)
+	put := func(name string, n int) (*http.Response, string) {
+		resp, body := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {name}}, bytes.NewReader(make([]byte, n)), int64(n))
+		return resp, string(body)
+	}
+	// A 100 KiB file fits (its stored size is estimated as length plus about 70 KiB).
+	if resp, body := put("a.bin", 100<<10); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first upload: %d %s", resp.StatusCode, body)
+	}
+	// A declared length that cannot fit is refused at once, with the byte-limit body.
+	resp, body := put("huge.bin", 400<<10)
+	if resp.StatusCode != http.StatusInsufficientStorage || !strings.Contains(body, "inbox byte limit reached") {
+		t.Fatalf("oversized declared length: %d %q", resp.StatusCode, body)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+}
+
+func TestByteQuotaIsAtomicUnderConcurrency(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxInboxBytes = 3 * sealedEstimate(64<<10) // room for exactly three 64 KiB uploads
+	opts.minFreeBytes = 0
+	opts.maxConcurrentPUTs = 16
+	env := startTestServer(t, opts)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	counts := map[int]int{}
+	gate := make(chan struct{})
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-gate
+			resp, _ := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {fmt.Sprintf("f%d", i)}}, bytes.NewReader(make([]byte, 64<<10)), 64<<10)
+			mu.Lock()
+			counts[resp.StatusCode]++
+			mu.Unlock()
+		}(i)
+	}
+	close(gate)
+	wg.Wait()
+	if counts[http.StatusCreated] > 3 || counts[http.StatusCreated] == 0 || counts[http.StatusCreated]+counts[http.StatusInsufficientStorage] != 12 {
+		t.Fatalf("quota overshoot or odd statuses: %v", counts)
+	}
+	total, _ := env.dirH.storedInboxBytes()
+	if total > opts.maxInboxBytes {
+		t.Fatalf("stored %d bytes > quota %d", total, opts.maxInboxBytes)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+}
+
+func TestChunkedUploadStopsAtItsBudget(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxInboxBytes = 3 << 20 // a chunked upload gets what is left: 3 MiB
+	opts.minFreeBytes = 0
+	env := startTestServer(t, opts)
+	resp, body := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"c.bin"}}, io.LimitReader(zeroReader{}, 5<<20), -1)
+	if resp.StatusCode != http.StatusInsufficientStorage || !strings.Contains(string(body), "inbox byte limit reached") {
+		t.Fatalf("chunked overshoot: %d %q", resp.StatusCode, body)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+	if ids, _, _ := env.dirH.listInboxIDs(); len(ids) != 0 {
+		t.Fatalf("partial upload kept: %v", ids)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+func TestFreeSpaceMarginRefusesWithOutOfSpaceBody(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.minFreeBytes = 1 << 60 // more than any disk has
+	env := startTestServer(t, opts)
+	resp, body := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"x"}}, strings.NewReader("hello"), 5)
+	if resp.StatusCode != http.StatusInsufficientStorage || !strings.Contains(string(body), "server out of space") {
+		t.Fatalf("got %d %q", resp.StatusCode, body)
+	}
+}
+
+func TestPutErrorMapping(t *testing.T) {
+	enospc := &os.PathError{Op: "write", Path: "x", Err: syscall.ENOSPC}
+	cases := []struct {
+		err    error
+		status int
+		msg    string
+	}{
+		{fmt.Errorf("seal: %w", enospc), 507, "server out of space"},
+		{fmt.Errorf("%w", &os.PathError{Op: "write", Err: syscall.EDQUOT}), 507, "server out of space"},
+		{errNoSpace, 507, "server out of space"},
+		{errBytesQuota, 507, "inbox byte limit reached"},
+		{errQuotaExceeded, 507, "inbox file limit reached"},
+		{errUploadTooSlow, 408, "upload too slow"},
+		{errors.New("other"), 400, "upload failed"},
+	}
+	for _, c := range cases {
+		if st, msg := putErrorResponse(c.err); st != c.status || msg != c.msg {
+			t.Errorf("%v: got %d %q, want %d %q", c.err, st, msg, c.status, c.msg)
+		}
+	}
+}
+
+// L3: the whole upload has a deadline, so a slow drip loses its slot.
+func TestSlowDripUploadLosesItsSlot(t *testing.T) {
+	opts := defaultServerOpts()
+	opts.maxConcurrentPUTs = 1
+	opts.slotWaitTimeout = 100 * time.Millisecond
+	opts.ioTimeout = 30 * time.Second // each read is fine; only the overall deadline can stop this
+	opts.uploadBase = 500 * time.Millisecond
+	opts.minUploadRate = 1 << 20
+	opts.minFreeBytes = 0
+	env := startTestServer(t, opts)
+
+	pr, pw := io.Pipe()
+	done := make(chan int, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox", pr)
+		req.ContentLength = 100000
+		req.Header.Set("Authorization", "Bearer "+testBearerToken)
+		req.Header.Set("X-Valv-Name", "drip.bin")
+		res, err := env.client.Do(req)
+		if err != nil {
+			done <- 0
+			return
+		}
+		res.Body.Close()
+		done <- res.StatusCode
+	}()
+	go func() { // one byte every 100 ms: never idle for long, never finishing
+		for i := 0; i < 100; i++ {
+			if _, err := pw.Write([]byte{'x'}); err != nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		pw.Close()
+	}()
+	start := time.Now()
+	select {
+	case st := <-done:
+		if st != 0 && st != http.StatusRequestTimeout {
+			t.Fatalf("drip upload ended with %d, want 408 (or a closed connection)", st)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("slow drip kept its slot past the overall deadline")
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("took %v", time.Since(start))
+	}
+	// The slot is free again.
+	if resp, body := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Valv-Name": {"after.bin"}}, strings.NewReader("ok"), 2); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("slot not released: %d %s", resp.StatusCode, body)
+	}
+	assertNoPartFiles(t, env.inboxDir)
+}
+
+func TestUploadDeadlineFormula(t *testing.T) {
+	s := &inboxServer{opts: serverOpts{uploadBase: 10 * time.Second, minUploadRate: 1000, maxChunkedTime: time.Minute}}
+	now := time.Unix(0, 0)
+	if got := s.uploadDeadline(5000, now); got != now.Add(15*time.Second) {
+		t.Fatalf("known length: %v", got)
+	}
+	if got := s.uploadDeadline(-1, now); got != now.Add(time.Minute) {
+		t.Fatalf("unknown length: %v", got)
+	}
+}
+
+// L9: the inbox directory must not be writable by group or others.
+func TestInboxDirectoryPermissions(t *testing.T) {
+	mk := func(mode os.FileMode) string {
+		d := filepath.Join(t.TempDir(), "inbox")
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(d, mode); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	for _, m := range []os.FileMode{0o777, 0o770, 0o702, 0o722} {
+		if _, err := openInboxDir(mk(m), io.Discard); err == nil || !strings.Contains(err.Error(), "write") {
+			t.Errorf("mode %04o accepted: %v", m, err)
+		}
+	}
+	var warn bytes.Buffer
+	d, err := openInboxDir(mk(0o755), &warn)
+	if err != nil {
+		t.Fatalf("0755 refused: %v", err)
+	}
+	d.Close()
+	if !strings.Contains(warn.String(), "readable by group or others") {
+		t.Errorf("no warning for 0755: %q", warn.String())
+	}
+	warn.Reset()
+	d, err = openInboxDir(mk(0o700), &warn)
+	if err != nil || warn.Len() != 0 {
+		t.Fatalf("0700: %v %q", err, warn.String())
+	}
+	d.Close()
+}

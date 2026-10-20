@@ -3,12 +3,12 @@ import UniformTypeIdentifiers
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
-    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute, dateOutOfRange
+    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute, dateOutOfRange, serverOutOfSpace, uploadRejected
 
     /// Failures after which the next file would fail the same way: the queue pauses.
     public var pausesQueue: Bool {
         switch self {
-        case .tokenRejected, .rateLimited, .inboxFull, .unreachable, .timedOut, .notTailscaleRoute: return true
+        case .tokenRejected, .rateLimited, .inboxFull, .serverOutOfSpace, .unreachable, .timedOut, .notTailscaleRoute: return true
         default: return false
         }
     }
@@ -29,6 +29,8 @@ public enum UploadFailure: Error, Equatable {
         case .cantRead: return "Can't read this file."
         case .unexpectedResponse: return "The server's answer was not understood."
         case .notTailscaleRoute: return RouteGuard.routeMessage
+        case .serverOutOfSpace: return "The server is out of space."
+        case .uploadRejected: return "The server could not store this file."
         case .dateOutOfRange: return "This file's modification date is out of range (before 1677 or after 2262)."
         }
     }
@@ -90,8 +92,13 @@ public struct ServerClient {
             case 401, 403: return .failure(.tokenRejected)
             case 413: return .failure(.tooLarge)
             case 429: return .failure(.rateLimited)
-            case 507: return .failure(.inboxFull)
-            case 400: return .failure(.badName)
+            case 507:
+                // valvd: "server out of space" is the disk; the other 507 bodies are inbox limits (files or bytes).
+                return .failure(String(decoding: body, as: UTF8.self).contains("out of space") ? .serverOutOfSpace : .inboxFull)
+            case 400:
+                // Only "upload failed" and "incomplete upload stream" are not about the name or metadata.
+                let text = String(decoding: body, as: UTF8.self)
+                return .failure(text.contains("upload failed") || text.contains("incomplete upload") ? .uploadRejected : .badName)
             case 408, 500...599: return .failure(.serverError)
             default: return .failure(.unexpectedResponse)
             }

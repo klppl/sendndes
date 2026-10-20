@@ -82,7 +82,7 @@ final class Env {
     let model: AppModel
     let defaultsName = "sendndes-test-" + UUID().uuidString
 
-    init(maxUploadBytes: Int64 = 64 << 20, startServer: Bool = true) throws {
+    init(maxUploadBytes: Int64 = 64 << 20, startServer: Bool = true, serverArgs: [String] = []) throws {
         guard let bin = ProcessInfo.processInfo.environment["VALV_TEST_BIN"] else {
             throw XCTSkip("VALV_TEST_BIN not set; run scripts/test-app.sh")
         }
@@ -108,14 +108,14 @@ final class Env {
         secrets.value = goodToken
         secrets.server = "http://127.0.0.1:\(port)"
         model = AppModel(defaults: suite, secrets: secrets, runner: runner, tempBase: tokenBase)
-        if startServer { try startServerProcess(maxUploadBytes: maxUploadBytes) }
+        if startServer { try startServerProcess(maxUploadBytes: maxUploadBytes, extraArgs: serverArgs) }
     }
 
-    func startServerProcess(maxUploadBytes: Int64 = 64 << 20) throws {
+    func startServerProcess(maxUploadBytes: Int64 = 64 << 20, extraArgs: [String] = []) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binDir + "/valvd")
         p.arguments = ["--config", tmp + "/server.conf", "--token-file", tmp + "/valvd.token", "--inbox", inbox,
-                       "--listen", "127.0.0.1:\(port)", "--max-upload-bytes", String(maxUploadBytes)]
+                       "--listen", "127.0.0.1:\(port)", "--max-upload-bytes", String(maxUploadBytes)] + extraArgs
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try p.run()
         server = p

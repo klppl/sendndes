@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -32,6 +33,11 @@ const (
 	defaultMaxConcurrentReqs  = 32
 	defaultMaxInboxFiles      = 10000
 	defaultSlotWaitTimeout    = 5 * time.Second
+	defaultMaxInboxBytes      = int64(2) << 30      // 2 GiB of stored inbox files
+	defaultMinFreeBytes       = int64(256) << 20    // free space left alone on the file system
+	defaultMinUploadRate      = int64(64) << 10     // bytes per second, for the overall upload deadline
+	defaultMaxChunkedDuration = 10 * time.Minute    // hard cap when the upload length is not declared
+	uploadBaseTimeout         = 60 * time.Second    // fixed part of the overall upload deadline
 	authRateBurst             = 5
 	authRateRefillInterval    = time.Second
 	maxRateLimiterTrackedIPs  = 4096
@@ -45,6 +51,11 @@ type serverOpts struct {
 	maxConcurrentReqs int
 	maxInboxFiles     int
 	slotWaitTimeout   time.Duration
+	maxInboxBytes     int64         // sum of stored .inb bytes (L2)
+	minFreeBytes      int64         // 0 = no margin
+	minUploadRate     int64         // bytes/s: deadline = uploadBase + length/rate (L3)
+	uploadBase        time.Duration // fixed part of that deadline (default uploadBaseTimeout)
+	maxChunkedTime    time.Duration // total time cap when Content-Length is unknown (L3)
 }
 
 func defaultServerOpts() serverOpts {
@@ -56,6 +67,10 @@ func defaultServerOpts() serverOpts {
 		maxConcurrentReqs: defaultMaxConcurrentReqs,
 		maxInboxFiles:     defaultMaxInboxFiles,
 		slotWaitTimeout:   defaultSlotWaitTimeout,
+		maxInboxBytes:     defaultMaxInboxBytes,
+		minFreeBytes:      defaultMinFreeBytes,
+		minUploadRate:     defaultMinUploadRate,
+		maxChunkedTime:    defaultMaxChunkedDuration,
 	}
 }
 
@@ -73,6 +88,7 @@ type inboxServer struct {
 	putSem    chan struct{}
 	reqSem    chan struct{}
 	quotaMu   sync.Mutex
+	bytes     byteQuota // guarded by quotaMu
 	authRL    *ipRateLimiter
 	baseCtx   context.Context
 }
@@ -99,9 +115,25 @@ func newInboxServer(baseCtx context.Context, dir *dirHandle, reg *tempRegistry, 
 	if opts.slotWaitTimeout <= 0 {
 		opts.slotWaitTimeout = defaultSlotWaitTimeout
 	}
+	if opts.maxInboxBytes <= 0 {
+		opts.maxInboxBytes = defaultMaxInboxBytes
+	}
+	if opts.minFreeBytes < 0 {
+		opts.minFreeBytes = defaultMinFreeBytes
+	}
+	if opts.minUploadRate <= 0 {
+		opts.minUploadRate = defaultMinUploadRate
+	}
+	if opts.uploadBase <= 0 {
+		opts.uploadBase = uploadBaseTimeout
+	}
+	if opts.maxChunkedTime <= 0 {
+		opts.maxChunkedTime = defaultMaxChunkedDuration
+	}
 	tokCopy := make([]byte, len(cfg.Token))
 	copy(tokCopy, cfg.Token)
 	s := &inboxServer{
+		bytes:     byteQuota{max: opts.maxInboxBytes, minFree: opts.minFreeBytes},
 		dir:       dir,
 		reg:       reg,
 		inboxPub:  cfg.InboxPub,
@@ -370,10 +402,16 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 		contentLength: r.ContentLength,
 		reqCtx:        r.Context(),
 		srvCtx:        s.baseCtx,
+		deadline:      s.uploadDeadline(r.ContentLength, time.Now()),
 	}
 
-	id, err := writeInboxAt(s.dir, s.reg, &s.quotaMu, s.opts.maxInboxFiles, func(fileWriter io.Writer) (core.FileID, int64, error) {
-		cw := &countingWriter{w: fileWriter}
+	// L2: refuse at once what cannot fit (declared length vs the byte quota and the free space).
+	need := int64(-1)
+	if r.ContentLength >= 0 {
+		need = sealedEstimate(r.ContentLength)
+	}
+	id, err := writeInboxAt(s.dir, s.reg, &s.quotaMu, s.opts.maxInboxFiles, &s.bytes, need, func(fileWriter io.Writer, budget int64) (core.FileID, int64, error) {
+		cw := &countingWriter{w: &budgetWriter{w: fileWriter, left: budget, limited: budget > 0}}
 		bw := bufio.NewWriterSize(cw, core.StoredChunkSize)
 		sealedID, err := core.SealInbox(bw, s.inboxPub, s.kAuth, meta, bodyReader)
 		if err != nil {
@@ -388,21 +426,8 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 		return sealedID, cw.n, nil
 	})
 	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		switch {
-		case errors.Is(err, errQuotaExceeded):
-			httpError(w, http.StatusInsufficientStorage, "inbox file limit reached")
-		case errors.Is(err, errStorage):
-			httpError(w, http.StatusInternalServerError, "storage error")
-		case errors.As(err, &maxBytesErr):
-			httpError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size")
-		case errors.Is(err, errStreamTruncated) || errors.Is(err, io.ErrUnexpectedEOF):
-			httpError(w, http.StatusBadRequest, "incomplete upload stream")
-		case isTimeoutError(err):
-			httpError(w, http.StatusRequestTimeout, "upload timed out")
-		default:
-			httpError(w, http.StatusBadRequest, "upload failed")
-		}
+		status, msg := putErrorResponse(err)
+		httpError(w, status, msg)
 		return
 	}
 
@@ -411,6 +436,32 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusCreated)
 	_, _ = io.WriteString(w, `{"id":"`+id.String()+`"}`+"\n")
+}
+
+// putErrorResponse maps a failed upload to its HTTP status and (fixed) message. 507 has three
+// distinct bodies so clients can tell them apart: file limit, byte limit, out of space (L2).
+func putErrorResponse(err error) (int, string) {
+	var maxBytesErr *http.MaxBytesError
+	switch {
+	case errors.Is(err, errQuotaExceeded):
+		return http.StatusInsufficientStorage, "inbox file limit reached"
+	case errors.Is(err, errBytesQuota):
+		return http.StatusInsufficientStorage, "inbox byte limit reached"
+	case errors.Is(err, errNoSpace) || errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT):
+		return http.StatusInsufficientStorage, "server out of space"
+	case errors.Is(err, errStorage):
+		return http.StatusInternalServerError, "storage error"
+	case errors.As(err, &maxBytesErr):
+		return http.StatusRequestEntityTooLarge, "upload exceeds maximum size"
+	case errors.Is(err, errUploadTooSlow):
+		return http.StatusRequestTimeout, "upload too slow"
+	case errors.Is(err, errStreamTruncated) || errors.Is(err, io.ErrUnexpectedEOF):
+		return http.StatusBadRequest, "incomplete upload stream"
+	case isTimeoutError(err):
+		return http.StatusRequestTimeout, "upload timed out"
+	default:
+		return http.StatusBadRequest, "upload failed"
+	}
 }
 
 func (s *inboxServer) handleListInbox(w http.ResponseWriter, r *http.Request) {
@@ -499,6 +550,36 @@ func (s *inboxServer) handleDeleteInboxFile(w http.ResponseWriter, r *http.Reque
 }
 
 var errStreamTruncated = errors.New("stream ended before Content-Length")
+var errUploadTooSlow = errors.New("upload exceeded its overall deadline")
+
+// uploadDeadline (L3) bounds the whole upload, not just each read: a fixed base plus the declared
+// length at the minimum rate, or a hard cap when the length is not declared. A client that
+// drips one byte per read timeout still loses its slot.
+func (s *inboxServer) uploadDeadline(contentLength int64, now time.Time) time.Time {
+	if contentLength < 0 {
+		return now.Add(s.opts.maxChunkedTime)
+	}
+	secs := contentLength / s.opts.minUploadRate
+	if secs > 1<<31 {
+		secs = 1 << 31
+	}
+	return now.Add(s.opts.uploadBase + time.Duration(secs)*time.Second)
+}
+
+// budgetWriter fails once more than `left` bytes would be written (the admitted byte budget).
+type budgetWriter struct {
+	w       io.Writer
+	left    int64
+	limited bool
+}
+
+func (b *budgetWriter) Write(p []byte) (int, error) {
+	if b.limited && int64(len(p)) > b.left {
+		return 0, errBytesQuota
+	}
+	b.left -= int64(len(p))
+	return b.w.Write(p)
+}
 
 // streamBodyReader refreshes the per-read deadline via ResponseController and
 // enforces exact Content-Length matching so truncated uploads are rejected.
@@ -510,6 +591,7 @@ type streamBodyReader struct {
 	readBytes     int64
 	reqCtx        context.Context
 	srvCtx        context.Context
+	deadline      time.Time // overall deadline of the upload (zero = none)
 }
 
 func (b *streamBodyReader) Read(p []byte) (int, error) {
@@ -521,8 +603,21 @@ func (b *streamBodyReader) Read(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	_ = b.rc.SetReadDeadline(time.Now().Add(b.ioTimeout))
+	now := time.Now()
+	rd := now.Add(b.ioTimeout)
+	if !b.deadline.IsZero() {
+		if !now.Before(b.deadline) {
+			return 0, errUploadTooSlow
+		}
+		if b.deadline.Before(rd) {
+			rd = b.deadline
+		}
+	}
+	_ = b.rc.SetReadDeadline(rd)
 	n, err := b.r.Read(p)
+	if err != nil && !b.deadline.IsZero() && !time.Now().Before(b.deadline) && errors.Is(err, os.ErrDeadlineExceeded) {
+		err = errUploadTooSlow
+	}
 	b.readBytes += int64(n)
 	if b.contentLength >= 0 && b.readBytes > b.contentLength {
 		return n, errStreamTruncated

@@ -37,6 +37,13 @@ flags:
   --io-timeout <duration>          per-chunk streaming I/O timeout (default 30s)
   --max-concurrent-uploads <n>     maximum concurrent PUT /inbox uploads (default 4)
   --max-inbox-files <n>            maximum number of files in the inbox directory (default 10000)
+  --max-inbox-bytes <n>            maximum total size of stored inbox files (default 2147483648); uploads that
+                                   would not fit, by their declared Content-Length, get 507
+  --min-free-bytes <n>             free space to leave on the file system (default 268435456); an upload
+                                   that would eat into it gets 507 "server out of space"
+  --min-upload-rate <n>            slowest accepted upload in bytes/s (default 65536): an upload must finish
+                                   within 60s + Content-Length / rate
+  --max-chunked-duration <d>       longest total time for an upload without Content-Length (default 10m)
 `
 
 func main() {
@@ -63,6 +70,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		ioTimeout      time.Duration
 		maxPUTs        int
 		maxFiles       int
+		maxInboxBytes  int64
+		minFreeBytes   int64
+		minUploadRate  int64
+		maxChunkedTime time.Duration
 	)
 	fs.StringVar(&configPath, "config", "", "server config file")
 	fs.StringVar(&tokenFile, "token-file", "", "bearer token file")
@@ -75,6 +86,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.DurationVar(&ioTimeout, "io-timeout", defaultIOTimeout, "streaming I/O timeout")
 	fs.IntVar(&maxPUTs, "max-concurrent-uploads", defaultMaxConcurrentPUTs, "max concurrent uploads")
 	fs.IntVar(&maxFiles, "max-inbox-files", defaultMaxInboxFiles, "max inbox files")
+	fs.Int64Var(&maxInboxBytes, "max-inbox-bytes", defaultMaxInboxBytes, "max stored inbox bytes")
+	fs.Int64Var(&minFreeBytes, "min-free-bytes", defaultMinFreeBytes, "free space to keep")
+	fs.Int64Var(&minUploadRate, "min-upload-rate", defaultMinUploadRate, "minimum upload rate in bytes/s")
+	fs.DurationVar(&maxChunkedTime, "max-chunked-duration", defaultMaxChunkedDuration, "max duration of an upload without Content-Length")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -90,6 +105,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if configPath == "" || inboxPath == "" {
 		fmt.Fprintln(stderr, "valvd: --config and --inbox are required (see valvd --help)")
+		return 1
+	}
+	if maxInboxBytes <= 0 || minFreeBytes < 0 || minUploadRate <= 0 || maxChunkedTime <= 0 {
+		fmt.Fprintln(stderr, "valvd: --max-inbox-bytes, --min-upload-rate and --max-chunked-duration must be positive; --min-free-bytes must not be negative")
 		return 1
 	}
 	if (tlsCert == "") != (tlsKey == "") {
@@ -134,6 +153,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		maxConcurrentReqs: defaultMaxConcurrentReqs,
 		maxInboxFiles:     maxFiles,
 		slotWaitTimeout:   defaultSlotWaitTimeout,
+		maxInboxBytes:     maxInboxBytes,
+		minFreeBytes:      minFreeBytes,
+		minUploadRate:     minUploadRate,
+		maxChunkedTime:    maxChunkedTime,
 	}
 	srvHandler := newInboxServer(ctx, dir, reg, cfg, opts)
 	defer srvHandler.Wipe()
