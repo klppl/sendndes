@@ -39,7 +39,7 @@ Non-goals
 
 - **VK**: 32 random bytes, the vault master key. Generated once at `init`.
 - **KEK** = Argon2id(passphrase, salt, t=3, m=65536 KiB, p=1) -> 32 bytes. Its only job is to wrap VK (section 4.2).
-- **Passphrase encoding.** Reject a passphrase that is not valid UTF-8 as malformed, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest.
+- **Passphrase encoding.** Reject a passphrase that is not valid UTF-8 as malformed, normalize it to NFC, and pass its UTF-8 bytes to Argon2. No trimming, no case folding. The core library takes the passphrase as a string and does this itself, so callers cannot skip it. Unicode normalization can differ between Unicode versions, so a passphrase with unusual characters could normalize differently on another platform or OS version. A mostly ASCII or word-based passphrase is safest. Both implementations normalize with the Unicode data of their platform (Go: the pinned `golang.org/x/text` version; Swift: the operating system's), so a passphrase that contains characters added or changed in a newer Unicode version can fail to unlock on a device with older data, with no way to tell it from a wrong passphrase. The recovery key (below) does not depend on normalization and is the only fallback in that case; for a vault you cannot afford to lose, use an ASCII or word-based passphrase and keep the recovery key.
 - **Passphrase length.** Tools refuse to set a passphrase (`init`, `passwd`, `recover`) shorter than 12 Unicode code points, counted after NFC, unless the user passes an explicit override (`--allow-weak-passphrase`, meant for tests). Unlocking accepts any passphrase.
 - **HKDF salt.** Every HKDF derivation from VK or FK uses an empty salt. Per RFC 5869 an empty salt is the same as 32 zero bytes; both implementations must match the test vectors on this. The only HKDF call with a non-empty salt is the inbox FK derivation (section 6.2). Every derivation outputs L=32 bytes.
 - **Subkeys from VK**: `HKDF-SHA256(ikm=VK, salt=empty, info=LABEL, L=32)`
@@ -49,7 +49,7 @@ Non-goals
 - **inbox_pub** = X25519(inbox private key, base point 9). It is stored in vault.json and bound into the AAD of `wrapped_vk` (section 4.2).
 - **Inbox server configuration**: the server holds `inbox_pub` and K_auth, both supplied by the user (the CLI's `server-config` prints them after unlocking). It never reads vault.json and never holds VK or the inbox private key. K_auth is a secret; `inbox_pub` is not. Move K_auth straight into the server's secret store; do not leave it in shell history or terminal scrollback. Prefer redirecting `server-config` to a file: when its stdout is a regular file, the CLI sets that file's mode to 0600 before writing; otherwise it just prints. It always warns on stderr.
 - **FK**: per-file random 32-byte key. Subkeys: `HKDF(ikm=FK, salt=empty, info="valv/v1/content")` -> K_content, `HKDF(ikm=FK, salt=empty, info="valv/v1/meta")` -> K_meta.
-- **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("valv/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". If the passphrase is lost and there is no recovery key, the data is gone.
+- **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("valv/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". The checksum is 24 bits and exists only to catch typing and transcription errors; it is not a MAC and gives no protection against tampering (anyone who can edit the key can recompute it). What vouches for a key is the check against the vault in section 4.5. If the passphrase is lost and there is no recovery key, the data is gone.
 - Changing the passphrase only re-wraps VK (section 4.4).
 
 ## 4. Vault layout
@@ -282,6 +282,8 @@ On any ingest failure, discard our own temp file, keep the inbox file, and repor
 
 Idempotency: if `objects/.../<file_id>.obj` already exists, the already-ingested check applies only after the inbox file itself has been authenticated (its `meta_blob` in step 2 and its chunks during the comparison below); if authenticating the inbox file fails, ingest reports that error and keeps the inbox file even when a matching object already exists. Treat the inbox file as already ingested only if (1) the existing object's unwrapped FK equals the FK derived from the inbox file (constant-time compare), (2) the existing object's `meta_blob` decrypts under that FK and passes section 5.2, AND (3) its chunk bytes are byte-identical to the inbox file's, which are authenticated during the comparison. `meta_blob` may differ from the inbox file's (renames). If so, delete the inbox file. Otherwise report a conflict and delete nothing.
 
+A conflict is permanent. A server (one that holds K_auth) or any host that can write the inbox may seal a file whose file_id equals the id of an object that already exists. If that object is not the ingest result of this inbox file (its FK differs, its chunks differ, or it cannot be read), every ingest of the file reports a conflict: neither the object nor the inbox file is overwritten or deleted, and nothing changes on a retry. The user resolves it by hand, after deciding which of the two is genuine (for example by inspecting both with a copy of the vault, then removing the inbox file). The same holds for any file_id chosen by the sender. Both implementations behave this way.
+
 ## 7. Threat model
 
 Protects against: a cloud provider, sync service, or compromised server reading file contents, names, or folder structure. A compromised inbox server cannot read previously uploaded files. Any modification of a file is detected.
@@ -292,9 +294,9 @@ Inbox uploads:
 - K_auth cannot be rotated in v1. After a server compromise, treat any inbox the attacker can write to as untrusted: do not run ingest on it blindly; review what is there first.
 - An old valid inbox file can be replayed. While its object exists, the idempotency rule (section 6.3) absorbs it. After the object is deleted, a replay brings the file back; this is accepted in v1.
 
-Leaks: object count, approximate sizes (granularity of one chunk), and modification times and access patterns visible to the host.
+Leaks: object count, the exact plaintext length of every file, and modification times and access patterns visible to the host. The length is exact because it follows from the stored size: `ct_total` is the file length minus the header length (86 + `meta_len`, both visible), and the plaintext size is `ct_total - 16 * ceil(ct_total / 65552)` (section 5.3). The padded size of the encrypted metadata (`meta_len - 28`, a multiple of 512) is also visible, so the combined length of name, folder and MIME type is known to within a 512-byte step. There is no size padding in v1; padding the content would change the format and is listed in section 12 as a possible v2 item.
 
-Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates. A genuine object or inbox file that the host renames to a name on the OS junk list (section 8) is treated as a note, which is indistinguishable from deleting it; deletion is already accepted (no freshness guarantee).
+Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates. A genuine object or inbox file that the host renames to a name on the OS junk list (section 8), or to a name ending in `.part`, is treated as a note (junk or incomplete write) and skipped, which is indistinguishable from deleting it; deletion is already accepted (no freshness guarantee). The reader's rule "skip `*.part`" is a suffix test, so it applies to any name that ends in `.part`, not only to this tool's own temp files.
 
 ## 8. Storage backends and deployment
 
@@ -313,7 +315,7 @@ Rules that make this safe on dumb storage:
 
 Deployment (v1, "mode B", chosen first):
 - The server keeps the inbox on its own disk and holds no storage credentials.
-- Your devices pull from it (over Tailscale or HTTPS), ingest, and write the objects into the real vault (e.g. a Google Drive folder).
+- Your devices pull from it (over Tailscale or HTTPS), ingest, and write the objects into the real vault (e.g. a Google Drive folder). The CLI's `pull` downloads each inbox file into a private temporary directory outside the vault (mode 0700, on a local, non-synced path) and authenticates it there; only a file that authenticates is copied into the vault's `inbox/` and ingested. A download that fails authentication is reported as not authentic, removed from the temporary directory, and stays on the server; nothing unauthenticated is written into the vault or synced to the cloud. `DELETE /inbox/{id}` is sent only after a verified ingest (section 6.3). Files already in the vault's `inbox/` (put there by `pull` earlier, by hand or by mode A) are handled by `ingest` as section 6.3 says.
 - Minimal server API (all authenticated):
   - `PUT /inbox`: streaming upload. Metadata arrives in headers (name, dir, mtime, mime). Returns the file_id.
   - `GET /inbox`: list ids.
@@ -358,7 +360,7 @@ Do not start step N+1 until step N passes its tests. Not trustworthy with only-c
 ## 12. Open questions
 
 - Deletion semantics: tombstones vs plain delete, and what happens when sync resurrects a deleted file.
-- Optional padding to hide exact file sizes.
+- Optional padding to hide exact file sizes (the host currently learns the exact plaintext length, section 7). A possible v2 item: it changes the stored sizes and the structural check, so it is a format change under section 15.
 - Whether the Mac app uses loopback WebDAV or a File Provider (iOS needs a File Provider regardless).
 - Conflict policy when two devices rewrite the same file_id (use `rev`; probably keep both, surface to the user).
 - K_auth rotation (inbox epochs, section 3).
@@ -504,6 +506,13 @@ Sixth revision (round 4 re-verification):
 
 Freeze:
 - The v1 format is frozen at commit 68bb5d7 (tag format-v1-frozen). Documentation only: the status line now says the format is frozen, section 15 (freeze rules) is added, rule 10.8 points to it, and section 13 has a row for it. No behaviour, vector or code changed.
+
+Post-freeze clarifications (audit follow-up, documentation only; each statement was checked against the Go and Swift implementations and no behaviour changed):
+- Section 7: the host learns the exact plaintext length, not an approximate size (SP1); renaming an object to `*.part` or to a junk name hides it, equivalent to deletion (SP5).
+- Section 8: where `valv pull` stores downloads before authentication (SP2).
+- Section 6.3: a file_id that matches an existing object with different content is a permanent conflict that is resolved by hand (SP3).
+- Section 3: passphrase NFC depends on the platform's Unicode version, so the recovery key is the only fallback; the recovery-key checksum is 24 bits and detects typos only (SP4, SP6).
+- Section 12: size padding listed as a possible v2 item.
 
 Post-freeze clarifications (step 3 cross-implementation questions Q1–Q6, documentation only):
 - Section 3: invalid UTF-8 passphrase error class (`malformed`).
