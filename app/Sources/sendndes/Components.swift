@@ -132,7 +132,7 @@ struct Note: View {
         HStack(alignment: .top, spacing: 7) {
             Image(systemName: "info.circle").foregroundStyle(Theme.inkSoft).padding(.top, 1)
             Text(verbatim: text).font(.caption).foregroundStyle(Theme.inkSoft)
-                
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

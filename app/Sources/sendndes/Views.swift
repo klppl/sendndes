@@ -325,6 +325,7 @@ struct RecoveryReveal: View {
         VStack(alignment: .leading, spacing: 8) {
             if let key {
                 Text(verbatim: key).font(.system(.body, design: .monospaced).bold()).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.sun.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 Button("Hide") { hide() }.buttonStyle(.chunkySmall)
