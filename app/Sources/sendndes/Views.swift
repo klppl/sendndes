@@ -48,15 +48,17 @@ struct ContentView: View {
     @State private var pane: Pane = .vault
     @State private var showSettings = false
     @State private var showCreate = false
+    /// True while there is text in the passphrase field; Aster warms up as you type.
+    @State private var typing = false
 
     var body: some View {
         NavigationSplitView {
-            Sidebar(model: model, pane: $pane)
+            Sidebar(model: model, pane: $pane, typing: typing)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 270)
         } detail: {
             Group {
                 switch pane {
-                case .vault: VaultView(model: model, openSettings: { showSettings = true }, openCreate: { showCreate = true })
+                case .vault: VaultView(model: model, typing: $typing, openSettings: { showSettings = true }, openCreate: { showCreate = true })
                 case .send: SendView(model: model, queue: model.sendQueue, openSettings: { showSettings = true })
                 case .pull: PullView(model: model, openSettings: { showSettings = true }, goVault: { pane = .vault })
                 }
@@ -92,10 +94,11 @@ struct ContentView: View {
 struct Sidebar: View {
     let model: AppModel
     @Binding var pane: Pane
+    var typing = false
 
     private var mood: Aster.Mood {
         switch model.lockState {
-        case .locked: .asleep
+        case .locked: typing ? .flustered : .asleep
         case .unlocking: .flustered
         case .unlocked: .smitten
         case .noFolder: .happy
@@ -422,6 +425,7 @@ struct TransferList: View {
 
 struct VaultView: View {
     @Bindable var model: AppModel
+    @Binding var typing: Bool
     let openSettings: () -> Void
     let openCreate: () -> Void
     @State private var passphrase = ""
@@ -448,11 +452,12 @@ struct VaultView: View {
 
     private var lockedView: some View {
         let unlocking = model.lockState == .unlocking
-        let mood: Aster.Mood = unlocking ? .flustered : (model.vaultMessage != nil ? .oops : .asleep)
+        let warming = unlocking || !passphrase.isEmpty
+        let mood: Aster.Mood = warming ? .flustered : (model.vaultMessage != nil ? .oops : .asleep)
         return ScrollView {
             VStack(spacing: 14) {
                 Aster(mood: mood, size: 150, interactive: true)
-                Text(unlocking ? "Ooh… getting warmed up…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
+                Text(warming ? "Ooh… getting warmed up…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
                 Text("Whisper the passphrase to wake it up.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                 Text(verbatim: model.vaultPath).font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.inkSoft)
                     .lineLimit(1).truncationMode(.middle).frame(maxWidth: 380)
@@ -475,6 +480,8 @@ struct VaultView: View {
             .padding(24)
             .frame(maxWidth: .infinity, minHeight: 440)
         }
+        .onChange(of: passphrase) { _, new in typing = !new.isEmpty }
+        .onDisappear { typing = false }
         .onChange(of: model.vaultMessage) { _, new in
             if new != nil && model.lockState == .locked { withAnimation(.linear(duration: 0.45)) { shakes += 3 } }
         }
