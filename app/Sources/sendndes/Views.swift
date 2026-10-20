@@ -164,11 +164,11 @@ struct Sidebar: View {
 
 /// Title row shared by the sheets.
 private struct SheetHeader: View {
-    var mood: Aster.Mood = .happy
+    var mood: Eggy.Mood = .happy
     let title: String
     var body: some View {
         HStack(spacing: 12) {
-            Aster(mood: mood, size: 50, interactive: true)
+            Eggy(mood: mood, size: 50, interactive: true)
             Text(title).display(26).foregroundStyle(Theme.ink)
             Spacer()
         }
@@ -439,10 +439,10 @@ struct VaultView: View {
 
     private var lockedView: some View {
         let unlocking = model.lockState == .unlocking
-        let mood: Aster.Mood = unlocking ? .working : (model.vaultMessage != nil ? .oops : .asleep)
+        let mood: Eggy.Mood = unlocking ? .working : (model.vaultMessage != nil ? .oops : .asleep)
         return ScrollView {
             VStack(spacing: 14) {
-                Aster(mood: mood, size: 150, interactive: true)
+                Eggy(mood: mood, size: 150, interactive: true)
                 Text(unlocking ? "Peeking inside…" : "Shh. The vault is napping.").display(28).foregroundStyle(Theme.ink)
                 Text("Whisper the passphrase to wake it up.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                 Text(verbatim: model.vaultPath).font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.inkSoft)
@@ -572,7 +572,7 @@ struct VaultView: View {
         .overlay {
             if shown.isEmpty {
                 VStack(spacing: 8) {
-                    Aster(mood: model.entries.isEmpty ? .asleep : .oops, size: 84)
+                    Eggy(mood: model.entries.isEmpty ? .asleep : .oops, size: 84)
                     if model.entries.isEmpty {
                         Text("Nothing in here yet").display(20).foregroundStyle(Theme.ink)
                         Text("Drop files anywhere in this window, or hit Add files.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
@@ -677,7 +677,7 @@ struct SendView: View {
 
     private var dropZone: some View {
         VStack(spacing: 10) {
-            Aster(mood: targeted ? .wow : .happy, size: 124, interactive: true)
+            Eggy(mood: targeted ? .wow : .happy, size: 124, interactive: true)
             Text(targeted ? "Ooh. Let go!" : "Drop files here").display(28).foregroundStyle(Theme.ink)
             Text("Folders too. We don't judge.").label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
             Button("Choose files…", action: addFiles).buttonStyle(.chunky).padding(.top, 4)
@@ -723,7 +723,7 @@ struct PullView: View {
                 if let s = model.pullSummary { Banner(kind: .info, text: s) }
                 if model.pullItems.isEmpty {
                     VStack(spacing: 8) {
-                        Aster(mood: model.pullRunning ? .working : .asleep, size: 96)
+                        Eggy(mood: model.pullRunning ? .working : .asleep, size: 96)
                         Text("Nothing pulled yet").display(22).foregroundStyle(Theme.ink)
                         Text("Hit the button when you're expecting something.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
                     }

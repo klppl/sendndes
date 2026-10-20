@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Aster, the asterisk from "n*des", with a face. Purely decorative (hidden from VoiceOver); the words
-/// next to it always say the same thing. Idle motion stops when Reduce Motion is on.
-struct Aster: View {
+/// Eggy, the eggplant with an asterisk for a leafy cap. Purely decorative (hidden from VoiceOver); the
+/// words next to it always say the same thing. Idle motion stops when Reduce Motion is on.
+struct Eggy: View {
     enum Mood { case asleep, happy, wow, oops, working }
 
     var mood: Mood
@@ -16,24 +16,33 @@ struct Aster: View {
     @State private var hop: CGFloat = 0
     @State private var spin = false
 
-    private var outline: CGFloat { max(1.5, size * 0.035) }
-    private var line: CGFloat { max(1.2, size * 0.026) }
-    private var armLength: CGFloat { size * 0.94 }
-    private var armThickness: CGFloat { size * 0.235 }
+    private static let purple = Color(.sRGB, red: 0x7B / 255, green: 0x4F / 255, blue: 0xD6 / 255, opacity: 1)
+    private static let sheen = Color(.sRGB, red: 0xB7 / 255, green: 0x9B / 255, blue: 0xF2 / 255, opacity: 1)
+    private static let leaf = Color(.sRGB, red: 0x3D / 255, green: 0xBE / 255, blue: 0x7E / 255, opacity: 1)
+    private static let faceInk = Color(.sRGB, red: 0xFB / 255, green: 0xF3 / 255, blue: 0xE4 / 255, opacity: 1)
+
+    /// Everything is laid out in a 140-unit-tall design space and scaled by `u`.
+    private var u: CGFloat { size / 140 }
+    private var outline: CGFloat { max(1.5, size * 0.03) }
+    private var line: CGFloat { max(1.2, size * 0.024) }
+
+    /// Design-space point to an offset from the frame centre (the body's bounding box centre is (0, -2)).
+    private func at(_ x: CGFloat, _ y: CGFloat) -> CGSize { CGSize(width: x * u, height: (y + 2) * u) }
 
     var body: some View {
         ZStack {
-            ZStack {
-                arms(extra: outline * 2).foregroundStyle(Theme.ink)   // outline = the same shape, inked and fatter
-                arms(extra: 0).foregroundStyle(Theme.pink)
-            }
-            .rotationEffect(.degrees(spin ? 360 : 0))
+            EggBody().fill(Self.purple)
+                .overlay(EggBody().stroke(Theme.ink, style: StrokeStyle(lineWidth: outline, lineJoin: .round)))
+                .frame(width: 70 * u, height: 140 * u)
+            EggSheen().stroke(Self.sheen, style: StrokeStyle(lineWidth: max(2, 5 * u), lineCap: .round))
+                .frame(width: 70 * u, height: 140 * u)
+            calyx.offset(at(1, -52))
             face
             if mood == .asleep { zzz }
         }
         .frame(width: size, height: size)
-        .rotationEffect(.degrees(reduceMotion ? 0 : (bob ? 3 : -3)))
-        .scaleEffect(reduceMotion ? 1 : (bob ? 1.025 : 0.985))
+        .rotationEffect(.degrees(reduceMotion ? 8 : (bob ? 11 : 5)), anchor: .bottom)
+        .scaleEffect(reduceMotion ? 1 : (bob ? 1.02 : 0.99), anchor: .bottom)
         .offset(y: hop)
         .accessibilityHidden(true)
         .onTapGesture { if interactive { poke() } }
@@ -48,64 +57,53 @@ struct Aster: View {
 
     // MARK: Pieces
 
-    private func arms(extra: CGFloat) -> some View {
+    private var calyx: some View {
         ZStack {
-            ForEach([30.0, 90.0, 150.0], id: \.self) { deg in
-                Capsule().frame(width: armLength + extra, height: armThickness + extra).rotationEffect(.degrees(deg))
-            }
+            CalyxArms().stroke(Theme.ink, style: StrokeStyle(lineWidth: max(3, 13 * u), lineCap: .round))
+            CalyxArms().stroke(Self.leaf, style: StrokeStyle(lineWidth: max(1.8, 7 * u), lineCap: .round))
         }
-        .frame(width: armLength, height: armLength)
+        .frame(width: 40 * u, height: 36 * u)
+        .rotationEffect(.degrees(spin ? 360 : 0))
     }
 
     private var closedEyes: Bool { mood == .asleep }
 
     private var face: some View {
         ZStack {
-            HStack(spacing: size * 0.085) {
-                eye(closed: closedEyes)
-                eye(closed: closedEyes || winking, happyArc: winking && !closedEyes)
-            }
-            .offset(y: -size * 0.04)
-            HStack(spacing: size * 0.23) {
-                Circle().fill(Theme.tomato.opacity(0.45)).frame(width: size * 0.05, height: size * 0.05)
-                Circle().fill(Theme.tomato.opacity(0.45)).frame(width: size * 0.05, height: size * 0.05)
-            }
-            .offset(y: size * 0.045)
-            mouth.offset(y: size * 0.075)
+            eye(closed: closedEyes).offset(at(-8, 30))
+            eye(closed: closedEyes || winking, happyArc: winking && !closedEyes).offset(at(10, 30))
+            Circle().fill(Theme.pink.opacity(0.75)).frame(width: 9 * u, height: 9 * u).offset(at(-16, 40))
+            Circle().fill(Theme.pink.opacity(0.75)).frame(width: 9 * u, height: 9 * u).offset(at(18, 40))
+            mouth.offset(at(1, 43))
         }
-        .foregroundStyle(Theme.onAccentInk)
+        .foregroundStyle(Self.faceInk)
     }
 
     @ViewBuilder private func eye(closed: Bool, happyArc: Bool = false) -> some View {
-        let w = size * (mood == .wow ? 0.075 : 0.062), h = size * (mood == .wow ? 0.105 : 0.088)
+        let w = u * (mood == .wow ? 8 : 6.4), h = u * (mood == .wow ? 11 : 8.8)
         if closed {
             Curve(depth: happyArc ? -1 : 1)
                 .stroke(style: StrokeStyle(lineWidth: line, lineCap: .round))
                 .frame(width: w * 1.5, height: h * 0.45)
         } else {
             Ellipse().frame(width: w, height: h * (blink ? 0.1 : 1))
-                .overlay(alignment: .topLeading) {
-                    if size >= 56 && !blink {
-                        Circle().fill(.white).frame(width: w * 0.36, height: w * 0.36).offset(x: w * 0.18, y: h * 0.14)
-                    }
-                }
         }
     }
 
     @ViewBuilder private var mouth: some View {
         switch mood {
-        case .happy: Curve(depth: 1).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: size * 0.12, height: size * 0.055)
-        case .asleep: Curve(depth: 0.25).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: size * 0.06, height: size * 0.03)
-        case .wow: Ellipse().frame(width: size * 0.06, height: size * 0.08)
-        case .oops: Ellipse().stroke(lineWidth: line).frame(width: size * 0.05, height: size * 0.045)
-        case .working: Curve(depth: 0.5).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: size * 0.08, height: size * 0.04)
+        case .happy: Curve(depth: 1).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: 12 * u, height: 5.5 * u)
+        case .asleep: Curve(depth: 0.25).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: 6 * u, height: 3 * u)
+        case .wow: Ellipse().frame(width: 6 * u, height: 8 * u)
+        case .oops: Ellipse().stroke(lineWidth: line).frame(width: 5 * u, height: 4.5 * u)
+        case .working: Curve(depth: 0.5).stroke(style: StrokeStyle(lineWidth: line, lineCap: .round)).frame(width: 8 * u, height: 4 * u)
         }
     }
 
     private var zzz: some View {
         ZStack {
-            Text("z").font(.system(size: size * 0.15, weight: .heavy, design: .rounded)).offset(x: size * 0.40, y: -size * 0.30)
-            Text("z").font(.system(size: size * 0.10, weight: .heavy, design: .rounded)).offset(x: size * 0.50, y: -size * 0.42)
+            Text("z").font(.system(size: size * 0.15, weight: .heavy, design: .rounded)).offset(x: size * 0.30, y: -size * 0.30)
+            Text("z").font(.system(size: size * 0.10, weight: .heavy, design: .rounded)).offset(x: size * 0.40, y: -size * 0.42)
         }
         .foregroundStyle(Theme.inkSoft)
         .opacity(reduceMotion ? 1 : (bob ? 1 : 0.35))
@@ -145,9 +143,45 @@ struct Aster: View {
     }
 }
 
-extension Theme {
-    /// Face ink: always the dark ink, because the face sits on the pink arms in both appearances.
-    static let onAccentInk = Theme.onAccent
+/// Body outline in a 70 x 140 box (design space shifted by (35, 72)).
+private struct EggBody: Shape {
+    func path(in r: CGRect) -> Path {
+        let k = r.width / 70
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + (x + 35) * k, y: r.minY + (y + 72) * k) }
+        var path = Path()
+        path.move(to: p(-6, -52))
+        path.addCurve(to: p(-24, 26), control1: p(-6, -24), control2: p(-26, -6))
+        path.addCurve(to: p(4, 66), control1: p(-23, 52), control2: p(-10, 66))
+        path.addCurve(to: p(22, 26), control1: p(20, 64), control2: p(26, 48))
+        path.addCurve(to: p(8, -52), control1: p(18, 2), control2: p(8, -24))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct EggSheen: Shape {
+    func path(in r: CGRect) -> Path {
+        let k = r.width / 70
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + (x + 35) * k, y: r.minY + (y + 72) * k) }
+        var path = Path()
+        path.move(to: p(-14, 0))
+        path.addCurve(to: p(-10, 48), control1: p(-18, 16), control2: p(-17, 34))
+        return path
+    }
+}
+
+/// Three leafy prongs from one point (the asterisk cap), in a 40 x 36 box with the root at its centre.
+private struct CalyxArms: Shape {
+    func path(in r: CGRect) -> Path {
+        let root = CGPoint(x: r.midX, y: r.midY)
+        let k = r.width / 40
+        var path = Path()
+        for (dx, dy) in [(0.0, -12.0), (-14.0, 8.0), (14.0, 8.0)] {
+            path.move(to: root)
+            path.addLine(to: CGPoint(x: root.x + dx * k, y: root.y + dy * k))
+        }
+        return path
+    }
 }
 
 /// A quadratic arc across the top edge of its rect: `depth` 1 dips to the bottom (a smile or a closed
