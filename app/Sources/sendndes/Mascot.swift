@@ -37,7 +37,7 @@ struct Aster: View {
             if mood == .asleep { zzz }
         }
         .frame(width: size, height: size)
-        .rotationEffect(.degrees(reduceMotion || still ? 0 : (bob ? 3 : -3) + (mood == .flustered ? (shiver ? 2.5 : -2.5) : 0)))
+        .rotationEffect(.degrees(reduceMotion || still ? 0 : (bob ? 3 : -3) + (mood == .flustered ? (shiver ? 2 : -2) : 0)))
         .scaleEffect(reduceMotion || still ? 1 : (bob ? 1.025 : 0.985))
         .scaleEffect(throbScale)
         .offset(y: hop)
@@ -45,7 +45,7 @@ struct Aster: View {
         .onTapGesture { if interactive { poke() } }
         .onAppear {
             guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: mood == .asleep ? 2.8 : 1.9).repeatForever(autoreverses: true)) { bob = true }
+            withAnimation(.easeInOut(duration: mood == .asleep ? 2.8 : (hot ? 3.6 : 1.9)).repeatForever(autoreverses: true)) { bob = true }
             updateMotion()
         }
         .onChange(of: mood) { _, _ in updateMotion() }
@@ -65,7 +65,7 @@ struct Aster: View {
 
     private var closedEyes: Bool { mood == .asleep }
     private var hot: Bool { mood == .flustered || mood == .smitten }
-    private var throbScale: CGFloat { reduceMotion || still ? 1 : (hot && pulse ? 1.045 : 1) }
+    private var throbScale: CGFloat { reduceMotion || still ? 1 : (hot && pulse ? 1.06 : 1) }
 
     private var face: some View {
         ZStack {
@@ -164,7 +164,7 @@ struct Aster: View {
     }
 
     private func floatingHeart(_ i: Int, _ t: Double) -> some View {
-        let p = CGFloat(phase(t, i, speed: 0.45))
+        let p = CGFloat(phase(t, i, speed: 0.11))
         let grow: CGFloat = 0.6 + 0.5 * p
         let sway: CGFloat = 0.1 * CGFloat(sin(Double(p) * 6 + Double(i) * 2.1))
         let spread: CGFloat = (CGFloat(i) - 1) * 0.12
@@ -179,7 +179,7 @@ struct Aster: View {
     }
 
     private func puff(_ i: Int, _ t: Double) -> some View {
-        let p = CGFloat(phase(t, i, speed: 0.7))
+        let p = CGFloat(phase(t, i, speed: 0.2))
         let d: CGFloat = size * (0.03 + 0.05 * p)
         let x: CGFloat = size * (0.14 + 0.3 * p)
         let y: CGFloat = size * (0.1 - 0.14 * p)
@@ -192,7 +192,7 @@ struct Aster: View {
     }
 
     private func sweat(_ t: Double) -> some View {
-        let p = CGFloat((t * 0.5).truncatingRemainder(dividingBy: 1))
+        let p = CGFloat((t * 0.14).truncatingRemainder(dividingBy: 1))
         let y: CGFloat = -size * (0.3 - 0.2 * p)
         let edge: CGFloat = max(0.8, size * 0.01)
         return Drop().fill(Color(red: 0.56, green: 0.83, blue: 1.0))
@@ -208,9 +208,9 @@ struct Aster: View {
         updateSpin()
         if hot && !reduceMotion && !still {
             pulse = false; shiver = false
-            withAnimation(.easeInOut(duration: mood == .flustered ? 0.4 : 0.75).repeatForever(autoreverses: true)) { pulse = true }
+            withAnimation(.easeInOut(duration: mood == .flustered ? 1.8 : 2.8).repeatForever(autoreverses: true)) { pulse = true }
             if mood == .flustered {
-                withAnimation(.easeInOut(duration: 0.08).repeatForever(autoreverses: true)) { shiver = true }
+                withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) { shiver = true }
             }
         } else {
             withAnimation(.easeOut(duration: 0.2)) { pulse = false; shiver = false }
