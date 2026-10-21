@@ -148,9 +148,9 @@ The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HT
 **Not protected:** malware on an unlocked device, a weak passphrase, a lost passphrase *and* recovery key (the data is gone), and a host deleting files or rolling them back to an older version.
 
 **Good to know**
-- In this version the inbox server briefly sees a sent file's contents and name while it seals them. Keep that traffic on Tailscale or HTTPS; sealing on the device is planned.
+- Client-sealed upload: the Mac app seals files locally with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. `K_auth` lives in your macOS login keychain (never iCloud-synced). Server-side sealing (`PUT /inbox`) remains available for scripts and curl.
 - The server's upload secret can't be rotated in v1. Give it only to your own server.
-- The Mac app keeps the server token in your login keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
+- The Mac app keeps the server token and client-sealing keys in your login keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
 
 Full threat model: [SPEC.md §7](SPEC.md). App details: [app/README.md](app/README.md).
 

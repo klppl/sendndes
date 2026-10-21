@@ -101,7 +101,7 @@ public final class AppModel {
         let defs = defaults
         routeGuard = RouteGuard(extraInterfaces: { RouteGuard.parseInterfaceList(defs.string(forKey: RouteGuard.defaultsKey) ?? "") })
         sendQueue = SendQueue(client: ServerClient(route: routeGuard), credentials: { nil })
-        sendQueue.credentials = { [weak self] in self?.credentials() }
+        sendQueue.credentials = { [weak self] in self?.sendCredentials() }
         sendQueue.credentialsProblem = { [weak self] in self?.credentialsProblem() ?? "Set the server address and token in Settings first." }
         refreshTokenState()
         refreshTouchID()
@@ -120,6 +120,17 @@ public final class AppModel {
         guard let u = try? URLPolicy.parse(serverURLText), let c = secrets.credential() else { return nil }
         guard c.server == u.canonical else { refreshTokenState(); return nil }
         return (u, c.token)
+    }
+
+    /// The credentials for SendQueue: server URL, bearer token, and optional client-sealing ServerKeys.
+    func sendCredentials() -> (ServerURL, String, ServerKeys?)? {
+        guard let u = try? URLPolicy.parse(serverURLText), let c = secrets.credential() else { return nil }
+        guard c.server == u.canonical else { refreshTokenState(); return nil }
+        return (u, c.token, c.serverKeys)
+    }
+
+    public var hasServerKeys: Bool {
+        secrets.credential()?.serverKeys != nil
     }
 
     /// Why `credentials()` is nil.
@@ -145,7 +156,7 @@ public final class AppModel {
     }
 
     /// `token` nil keeps the stored one. A different host needs the token typed again.
-    public func saveSettings(serverURL: String, token: String?, vaultPath newVault: String) throws {
+    public func saveSettings(serverURL: String, token: String?, serverKeys: ServerKeys? = nil, vaultPath newVault: String) throws {
         let trimmed = serverURL.trimmingCharacters(in: .whitespaces)
         let parsed: ServerURL
         do { parsed = try URLPolicy.parse(trimmed) } catch let e as URLPolicyError { throw SettingsError.badURL(e.message) }
@@ -155,8 +166,10 @@ public final class AppModel {
         // M3: the token belongs to scheme+host+port as saved. Any other address needs the token typed again.
         let stored = secrets.credential()
         if let stored, stored.server != parsed.canonical, (token ?? "").isEmpty { throw SettingsError.tokenRequiredForNewHost }
-        if let t = token, !t.isEmpty {
-            do { try secrets.setCredential(token: t, server: parsed.canonical) } catch { throw SettingsError.keychain }
+        let effectiveToken = (token != nil && !token!.isEmpty) ? token! : stored?.token
+        let effectiveKeys = serverKeys ?? (stored?.server == parsed.canonical ? stored?.serverKeys : nil)
+        if let t = effectiveToken {
+            do { try secrets.setCredential(token: t, server: parsed.canonical, serverKeys: effectiveKeys) } catch { throw SettingsError.keychain }
         }
         serverURLText = parsed.canonical
         defaults.set(parsed.canonical, forKey: Self.urlKey)
@@ -168,6 +181,10 @@ public final class AppModel {
             lockState = newVault.isEmpty ? .noFolder : .locked
             refreshTouchID()
         }
+    }
+
+    public func saveSettings(serverURL: String, token: String?, vaultPath newVault: String) throws {
+        try saveSettings(serverURL: serverURL, token: token, serverKeys: nil, vaultPath: newVault)
     }
 
     // MARK: Create a vault
@@ -456,6 +473,7 @@ public final class AppModel {
         case .success(let res) where res.endSeen && res.errorCode == nil:
             apply(res)
             lockState = .unlocked
+            Task { await self.updateServerKeysFromVault() }
         case .success(let res):
             box.set(nil)
             lockState = .locked
@@ -573,6 +591,15 @@ public final class AppModel {
             guard !o.outputViolation, o.exitStatus == 0 else { return nil }
             return ServerKeys(lines: lines.values)
         } catch { return nil }
+    }
+
+    /// Automatically stores the vault's server keys into the Keychain if a server token is configured.
+    func updateServerKeysFromVault() async {
+        guard lockState == .unlocked, let cred = secrets.credential(), let s = cred.server else { return }
+        if cred.serverKeys != nil { return }
+        if let keys = await serverKeys() {
+            try? secrets.setCredential(token: cred.token, server: s, serverKeys: keys)
+        }
     }
 
     static func message(for error: Error) -> String {

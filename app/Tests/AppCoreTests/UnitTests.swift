@@ -266,10 +266,32 @@ final class ServerKeysTests: XCTestCase {
         XCTAssertEqual(k.fingerprint, "630D-CD29")
     }
 
+    func testInitWithInboxPubAndKAuth() throws {
+        let k = try XCTUnwrap(ServerKeys(inboxPub: pub, kAuth: auth))
+        XCTAssertEqual(k.inboxPub, pub)
+        XCTAssertEqual(k.kAuth, auth)
+    }
+
+    func testInitWithTextPasted() throws {
+        let text = "  inbox_pub: \(pub)\n\n  k_auth: \(auth)  \n"
+        let k = try XCTUnwrap(ServerKeys(text: text))
+        XCTAssertEqual(k.inboxPub, pub)
+        XCTAssertEqual(k.kAuth, auth)
+    }
+
+    func testMakeSealer() throws {
+        let k = try XCTUnwrap(ServerKeys(inboxPub: pub, kAuth: auth))
+        let sealer = try k.makeSealer()
+        XCTAssertNotNil(sealer)
+    }
+
     func testRejectsMalformed() {
         XCTAssertNil(ServerKeys(lines: ["inbox_pub: \(pub)"]))
         XCTAssertNil(ServerKeys(lines: ["k_auth: \(auth)", "inbox_pub: \(pub)"]))
         XCTAssertNil(ServerKeys(lines: ["inbox_pub: AAAA", "k_auth: \(auth)"]))
         XCTAssertNil(ServerKeys(lines: ["inbox_pub: \(pub)", "k_auth: \(auth)x"]))
+        XCTAssertNil(ServerKeys(inboxPub: "short", kAuth: auth))
+        XCTAssertNil(ServerKeys(inboxPub: pub, kAuth: "short"))
+        XCTAssertNil(ServerKeys(text: "just random garbage"))
     }
 }

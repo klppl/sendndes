@@ -6,9 +6,10 @@ import CryptoKit
 final class MemorySecrets: SecretStoring {
     var value: String?
     var server: String?
-    func credential() -> StoredCredential? { value.map { StoredCredential(token: $0, server: server) } }
-    func setCredential(token: String, server: String) throws { value = token; self.server = server }
-    func deleteToken() { value = nil; server = nil }
+    var keys: ServerKeys?
+    func credential() -> StoredCredential? { value.map { StoredCredential(token: $0, server: server, serverKeys: keys) } }
+    func setCredential(token: String, server: String, serverKeys: ServerKeys?) throws { value = token; self.server = server; self.keys = serverKeys }
+    func deleteToken() { value = nil; server = nil; keys = nil }
 }
 
 final class MemoryBiometric: BiometricUnlocking {

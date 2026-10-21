@@ -438,7 +438,7 @@ final class HostileServerTests: XCTestCase {
 
 /// L5: the body comes from the descriptor that was checked, not from the path.
 final class UploadTOCTOUTests: XCTestCase {
-    final class Captured: @unchecked Sendable { var body = Data(); var head = "" }
+    final class Captured: @unchecked Sendable { var body = Data(); var head = ""; var id = "" }
 
     func capturingServer(_ cap: Captured) -> FakeServer {
         FakeServer { fd, srv in
@@ -543,5 +543,107 @@ final class OutOfSpaceIntegrationTests: XCTestCase {
         await q.waitUntilIdle()
         XCTAssertEqual(q.pausedReason, "The server is out of space.")
         XCTAssertEqual(q.items[0].state, .waiting)
+    }
+}
+
+final class ClientSealedUploadTests: XCTestCase {
+    private let pub = Data((0..<32).map { UInt8($0) }).base64EncodedString()
+    private let auth = Data(repeating: 0xAB, count: 32).base64EncodedString()
+
+    func testClientSealedUploadSendsSealedInboxFileWithoutMetadataHeaders() async throws {
+        let keys = try XCTUnwrap(ServerKeys(inboxPub: pub, kAuth: auth))
+        let cap = UploadTOCTOUTests.Captured()
+        let srv = FakeServer { fd, s in
+            let head = s.lastHead
+            if head.hasPrefix("PUT /inbox/") {
+                cap.head = head
+                let line = head.components(separatedBy: "\r\n").first ?? ""
+                let path = line.split(separator: " ")[1]
+                let receivedID = String(path.dropFirst("/inbox/".count))
+                cap.id = receivedID
+                let len = head.lowercased().components(separatedBy: "\r\n")
+                    .first { $0.hasPrefix("content-length:") }.flatMap { Int($0.dropFirst(15).trimmingCharacters(in: .whitespaces)) } ?? -1
+                var body = s.lastBodyPrefix
+                var buf = [UInt8](repeating: 0, count: 65536)
+                while len >= 0 && body.count < len {
+                    let n = read(fd, &buf, buf.count)
+                    if n <= 0 { break }
+                    body.append(contentsOf: buf[0..<n])
+                }
+                cap.body = body
+                s.write(fd, "HTTP/1.1 201 Created\r\nContent-Length: 41\r\nConnection: close\r\n\r\n{\"id\":\"\(receivedID)\"}")
+            }
+        }
+        defer { srv.shutdown() }
+
+        let dir = realTemp()
+        let fileURL = URL(fileURLWithPath: dir + "/secret.txt")
+        let plaintext = Data("super confidential secret bytes".utf8)
+        try plaintext.write(to: fileURL)
+
+        let serverURL = try URLPolicy.parse("http://127.0.0.1:\(srv.port)")
+        let client = ServerClient()
+        let result = await client.upload(file: fileURL, name: "secret.txt", dir: "my/subfolder", server: serverURL, token: goodToken, keys: keys)
+
+        guard case .success(let uploadedID) = result else {
+            XCTFail("upload failed: \(result)")
+            return
+        }
+        XCTAssertEqual(uploadedID, cap.id)
+
+        // Verify headers: Bearer token and Content-Length are present; NO X-Valv-* headers!
+        let lowerHead = cap.head.lowercased()
+        XCTAssertTrue(lowerHead.contains("authorization: bearer \(goodToken)"), "bearer token present")
+        XCTAssertFalse(lowerHead.contains("x-valv-name"), "no plaintext file name header")
+        XCTAssertFalse(lowerHead.contains("x-valv-dir"), "no plaintext dir header")
+        XCTAssertFalse(lowerHead.contains("x-valv-mtime"), "no plaintext mtime header")
+        XCTAssertFalse(lowerHead.contains("x-valv-mime"), "no plaintext mime header")
+
+        // Verify body: it is a valid inbox file starting with VALV\x01\x02 and the 16-byte fileID matches receivedID
+        XCTAssertGreaterThan(cap.body.count, 58)
+        XCTAssertEqual(Array(cap.body.prefix(4)), Array("VALV".utf8))
+        XCTAssertEqual(cap.body[4], 1) // version
+        XCTAssertEqual(cap.body[5], 2) // KindInbox
+        let idHex = cap.body[6..<22].map { String(format: "%02x", $0) }.joined()
+        XCTAssertEqual(idHex, cap.id)
+    }
+
+    func testClientSealedUploadIdempotentResponse200Accepted() async throws {
+        let keys = try XCTUnwrap(ServerKeys(inboxPub: pub, kAuth: auth))
+        let srv = FakeServer { fd, s in
+            let line = s.lastHead.components(separatedBy: "\r\n").first ?? ""
+            let path = line.split(separator: " ")[1]
+            let id = String(path.dropFirst("/inbox/".count))
+            s.write(fd, "HTTP/1.1 200 OK\r\nContent-Length: 41\r\nConnection: close\r\n\r\n{\"id\":\"\(id)\"}")
+        }
+        defer { srv.shutdown() }
+
+        let dir = realTemp()
+        let fileURL = URL(fileURLWithPath: dir + "/retry.txt")
+        try Data("payload".utf8).write(to: fileURL)
+
+        let serverURL = try URLPolicy.parse("http://127.0.0.1:\(srv.port)")
+        let r = await ServerClient().upload(file: fileURL, name: "retry.txt", dir: "", server: serverURL, token: goodToken, keys: keys)
+        guard case .success(let id) = r else {
+            XCTFail("200 OK retry was not treated as success: \(r)")
+            return
+        }
+        XCTAssertEqual(id.count, 32)
+    }
+
+    func testClientSealedUploadConflict409Rejected() async throws {
+        let keys = try XCTUnwrap(ServerKeys(inboxPub: pub, kAuth: auth))
+        let srv = FakeServer { fd, s in
+            s.write(fd, "HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        }
+        defer { srv.shutdown() }
+
+        let dir = realTemp()
+        let fileURL = URL(fileURLWithPath: dir + "/conflict.txt")
+        try Data("payload".utf8).write(to: fileURL)
+
+        let serverURL = try URLPolicy.parse("http://127.0.0.1:\(srv.port)")
+        let r = await ServerClient().upload(file: fileURL, name: "conflict.txt", dir: "", server: serverURL, token: goodToken, keys: keys)
+        XCTAssertEqual(r, .failure(.uploadRejected))
     }
 }

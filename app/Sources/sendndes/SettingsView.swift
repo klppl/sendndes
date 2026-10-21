@@ -97,6 +97,9 @@ private struct ServerTab: View {
             pb.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
             let count = pb.changeCount
             keysNote = "Copied. Check value \(keys.fingerprint); the admin page should show the same."
+            if model.tokenIsSet && !model.tokenNeedsReentry {
+                try? model.saveSettings(serverURL: model.serverURLText, token: nil, serverKeys: keys, vaultPath: model.vaultPath)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 60) {
                 if NSPasteboard.general.changeCount == count { NSPasteboard.general.clearContents() }
             }

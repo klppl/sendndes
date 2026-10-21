@@ -24,15 +24,19 @@ public final class SendQueue {
     public private(set) var running = false
 
     private let client: ServerClient
-    public var credentials: () -> (ServerURL, String)?
+    public var credentials: () -> (ServerURL, String, ServerKeys?)?
     public var credentialsProblem: () -> String = { "Set the server address and token in Settings first." }
     private var activity: NSObjectProtocol?
     private var loopTask: Task<Void, Never>?
     private var interruptReason: String?
 
-    public init(client: ServerClient = ServerClient(), credentials: @escaping () -> (ServerURL, String)?) {
+    public init(client: ServerClient = ServerClient(), credentials: @escaping () -> (ServerURL, String, ServerKeys?)?) {
         self.client = client
         self.credentials = credentials
+    }
+
+    public convenience init(client: ServerClient = ServerClient(), legacyCredentials: @escaping () -> (ServerURL, String)?) {
+        self.init(client: client, credentials: { legacyCredentials().map { ($0.0, $0.1, nil) } })
     }
 
     public var isIdle: Bool { !running }
@@ -93,13 +97,13 @@ public final class SendQueue {
         }
         while pausedReason == nil, let i = items.firstIndex(where: { $0.state == .waiting }) {
             if let r = interruptReason { interruptReason = nil; pausedReason = r; return }
-            guard let (server, token) = credentials() else {
+            guard let (server, token, keys) = credentials() else {
                 pausedReason = credentialsProblem()
                 return
             }
             items[i].state = .sending
             let spec = items[i].spec
-            let result = await client.upload(file: spec.url, name: spec.name, dir: spec.dir, server: server, token: token)
+            let result = await client.upload(file: spec.url, name: spec.name, dir: spec.dir, server: server, token: token, keys: keys)
             guard let j = items.firstIndex(where: { $0.spec == spec && $0.state == .sending }) else { continue }
             let interrupted = interruptReason
             switch result {

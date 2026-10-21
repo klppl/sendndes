@@ -60,11 +60,19 @@ struct SendView: View {
                 TransferList(items: queue.items, activeText: "sending…", doneText: "sent!") { queue.retry($0) }
             }
             HStack(spacing: 6) {
-                Image(systemName: "eye").foregroundStyle(Theme.inkSoft)
-                Text("In this version the server briefly sees each file and its name while it seals it.")
-                    .font(.caption).foregroundStyle(Theme.inkSoft)
-                HelpTip(title: "How sending works",
-                        text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server seals each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox.")
+                if model.hasServerKeys {
+                    Image(systemName: "lock.shield").foregroundStyle(Theme.mintText)
+                    Text("Client-sealed: files are sealed on your Mac before upload. The server never sees plaintext or names.")
+                        .font(.caption).foregroundStyle(Theme.inkSoft)
+                    HelpTip(title: "How client-sealed sending works",
+                            text: "Files are sealed on your Mac using the vault's inbox public key and upload authentication key. The server stores only the sealed .inb file and never sees contents, names or directories.")
+                } else {
+                    Image(systemName: "eye").foregroundStyle(Theme.inkSoft)
+                    Text("In this version the server briefly sees each file and its name while it seals it.")
+                        .font(.caption).foregroundStyle(Theme.inkSoft)
+                    HelpTip(title: "How sending works",
+                            text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server seals each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox.")
+                }
             }
         }
         .padding(20)
@@ -95,11 +103,14 @@ struct ServerForm: View {
     var compact = true
     @State private var url = ""
     @State private var token = ""
+    @State private var keysText = ""
     @State private var error: String?
     @State private var saved = false
 
     private var tokenSaved: Bool { model.tokenIsSet && !model.tokenNeedsReentry }
-    private var changed: Bool { url.trimmingCharacters(in: .whitespaces) != model.serverURLText || !token.isEmpty }
+    private var changed: Bool {
+        url.trimmingCharacters(in: .whitespaces) != model.serverURLText || !token.isEmpty || !keysText.isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -112,6 +123,12 @@ struct ServerForm: View {
                 SecureField("Access token", text: $token,
                             prompt: Text(tokenSaved ? "Saved in your Keychain · type to replace" : "Paste the token from the server's admin page"))
                     .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
+                    .onSubmit(save)
+            }
+            FieldLabel(title: "Client-sealing keys (optional)") {
+                SecureField("Server keys", text: $keysText,
+                            prompt: Text(model.hasServerKeys ? "Saved in your Keychain · paste to replace" : "Paste inbox_pub and k_auth to seal files on this Mac"))
+                    .textFieldStyle(StickerFieldStyle(icon: "lock.shield")).labelsHidden()
                     .onSubmit(save)
             }
             if model.tokenNeedsReentry {
@@ -136,9 +153,17 @@ struct ServerForm: View {
 
     private func save() {
         guard changed, !url.isEmpty else { return }
+        var parsedKeys: ServerKeys? = nil
+        if !keysText.isEmpty {
+            guard let k = ServerKeys(text: keysText) else {
+                error = "Invalid server keys. Paste the two lines from valv server-config."
+                return
+            }
+            parsedKeys = k
+        }
         do {
-            try model.saveSettings(serverURL: url, token: token.isEmpty ? nil : token, vaultPath: model.vaultPath)
-            token = ""; error = nil; saved = true
+            try model.saveSettings(serverURL: url, token: token.isEmpty ? nil : token, serverKeys: parsedKeys, vaultPath: model.vaultPath)
+            token = ""; keysText = ""; error = nil; saved = true
             url = model.serverURLText
         } catch let e as AppModel.SettingsError { error = e.message } catch { self.error = "Could not save." }
     }

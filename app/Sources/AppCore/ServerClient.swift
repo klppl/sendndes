@@ -1,5 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
+import ValvCore
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
@@ -44,7 +45,7 @@ public struct ServerClient {
     /// Test seam: runs after the file was opened and checked, before the body is sent.
     var beforeBody: (() -> Void)?
 
-    public func upload(file: URL, name: String, dir: String, server: ServerURL, token: String) async -> Result<String, UploadFailure> {
+    public func upload(file: URL, name: String, dir: String, server: ServerURL, token: String, keys: ServerKeys? = nil) async -> Result<String, UploadFailure> {
         // H1: checked again for every file (the route can change after sleep); never falls back.
         guard route.allows(server) else { return .failure(.notTailscaleRoute) }
         let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
@@ -52,18 +53,99 @@ public struct ServerClient {
         defer { close(fd) }
         var before = stat()
         guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG else { return .failure(.cantRead) }
+        guard let ns = Self.mtimeNanos(sec: Int64(before.st_mtimespec.tv_sec), nsec: Int64(before.st_mtimespec.tv_nsec)) else {
+            return .failure(.dateOutOfRange)
+        }
+        let mime = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType
+
+        if let keys {
+            let pdir: PrivateDir
+            do {
+                pdir = try PrivateDir.create()
+            } catch {
+                return .failure(.cantRead)
+            }
+            defer { pdir.remove() }
+
+            let meta: Metadata
+            do {
+                meta = try Metadata(name: name, dir: dir, mtime: ns, mime: mime ?? "", rev: 1)
+            } catch {
+                return .failure(.badName)
+            }
+
+            let sealer: InboxSealer
+            do {
+                sealer = try keys.makeSealer()
+            } catch {
+                return .failure(.uploadRejected)
+            }
+
+            let sealedPath = pdir.path + "/sealed.inb"
+            let outFD = open(sealedPath, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+            guard outFD >= 0 else { return .failure(.cantRead) }
+            defer { close(outFD) }
+
+            let fileID: FileID
+            do {
+                let inHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+                let outHandle = FileHandle(fileDescriptor: outFD, closeOnDealloc: false)
+                fileID = try sealer.seal(plaintext: FileInput(inHandle), metadata: meta, to: FileOutput(outHandle))
+            } catch {
+                return .failure(.uploadRejected)
+            }
+
+            var after = stat()
+            let changed = fstat(fd, &after) != 0 || after.st_size != before.st_size || after.st_ino != before.st_ino
+                || after.st_dev != before.st_dev
+                || after.st_mtimespec.tv_sec != before.st_mtimespec.tv_sec || after.st_mtimespec.tv_nsec != before.st_mtimespec.tv_nsec
+            if changed {
+                return .failure(.fileChanged(deleted: false))
+            }
+
+            var sealedStat = stat()
+            guard fstat(outFD, &sealedStat) == 0 else { return .failure(.cantRead) }
+            let sealedSize = Int64(sealedStat.st_size)
+
+            var req = URLRequest(url: URL(string: server.canonical + "/inbox/" + fileID.hex)!)
+            req.httpMethod = "PUT"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue(String(sealedSize), forHTTPHeaderField: "Content-Length")
+            req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+
+            beforeBody?()
+            let outcome = await Transfer.run(request: req, body: FDBody(fd: outFD, length: sealedSize))
+
+            switch outcome {
+            case .failure(let f):
+                return .failure(f)
+            case .success(let (status, body)):
+                switch status {
+                case 200, 201:
+                    guard let id = Self.parseID(body), id == fileID.hex else { return .failure(.unexpectedResponse) }
+                    return .success(id)
+                case 401, 403: return .failure(.tokenRejected)
+                case 409: return .failure(.uploadRejected)
+                case 413: return .failure(.tooLarge)
+                case 429: return .failure(.rateLimited)
+                case 507:
+                    return .failure(String(decoding: body, as: UTF8.self).contains("out of space") ? .serverOutOfSpace : .inboxFull)
+                case 400:
+                    let text = String(decoding: body, as: UTF8.self)
+                    return .failure(text.contains("upload failed") || text.contains("incomplete upload") || text.contains("malformed") ? .uploadRejected : .badName)
+                case 408, 500...599: return .failure(.serverError)
+                default: return .failure(.unexpectedResponse)
+                }
+            }
+        }
 
         var req = URLRequest(url: URL(string: server.canonical + "/inbox")!)
         req.httpMethod = "PUT"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(Data(name.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Name-B64")
         if !dir.isEmpty { req.setValue(Data(dir.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Dir-B64") }
-        guard let ns = Self.mtimeNanos(sec: Int64(before.st_mtimespec.tv_sec), nsec: Int64(before.st_mtimespec.tv_nsec)) else {
-            return .failure(.dateOutOfRange)
-        }
         req.setValue(String(ns), forHTTPHeaderField: "X-Valv-Mtime")
-        if let mime = UTType(filenameExtension: file.pathExtension)?.preferredMIMEType,
-           mime.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) {
+        if let mime, mime.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) {
             req.setValue(mime, forHTTPHeaderField: "X-Valv-Mime")
         }
 

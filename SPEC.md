@@ -317,7 +317,8 @@ Deployment (v1, "mode B", chosen first):
 - The server keeps the inbox on its own disk and holds no storage credentials.
 - Your devices pull from it (over Tailscale or HTTPS), ingest, and write the objects into the real vault (e.g. a Google Drive folder). The CLI's `pull` downloads each inbox file into a private temporary directory outside the vault (mode 0700, on a local, non-synced path) and authenticates it there; only a file that authenticates is copied into the vault's `inbox/` and ingested. A download that fails authentication is reported as not authentic, removed from the temporary directory, and stays on the server; nothing unauthenticated is written into the vault or synced to the cloud. `DELETE /inbox/{id}` is sent only after a verified ingest (section 6.3). Files already in the vault's `inbox/` (put there by `pull` earlier, by hand or by mode A) are handled by `ingest` as section 6.3 says.
 - Minimal server API (all authenticated):
-  - `PUT /inbox`: streaming upload. Metadata arrives in headers (name, dir, mtime, mime). Returns the file_id.
+  - `PUT /inbox`: streaming upload (server-sealed). Metadata arrives in headers (name, dir, mtime, mime). Returns the file_id.
+  - `PUT /inbox/{id}`: client-sealed upload. The client seals the file itself with `inbox_pub` and `K_auth` into a finished `.inb` file and uploads it. The server never sees plaintext, filenames, or folders. The server checks the inbox file prefix and chunk structure, and verifies that the file_id in the header matches `{id}`. Idempotent: re-uploading identical bytes for an existing `{id}` returns 200 OK; different bytes return 409 Conflict.
   - `GET /inbox`: list ids.
   - `GET /inbox/{id}`: download the sealed file.
   - `DELETE /inbox/{id}`: called by the client after a successful ingest.
