@@ -736,7 +736,7 @@
       ],
       "sources": [
         "app/Sources/sendndes/Mascot.swift",
-        "cmd/valvd/web/app.js",
+        "cmd/ndesd/web/app.js",
         "docs/site.js"
       ]
     }
@@ -779,7 +779,7 @@
       "kind": "input",
       "refersTo": "field",
       "description": "Paper-inset text field with ink outline and grape focus ring.",
-      "html": "<label class=\"ds-field\"><span class=\"ds-fl\">Server name</span><input class=\"ds-input\" placeholder=\"valvd.tailnet.ts.net\"></label>",
+      "html": "<label class=\"ds-field\"><span class=\"ds-fl\">Server name</span><input class=\"ds-input\" placeholder=\"ndesd.tailnet.ts.net\"></label>",
       "css": ":host{--paper:#FBF3E4;--card:#FFFCF5;--ink:#241B2F;--ink-soft:#5C5266;--on-accent:#241B2F;--pink:#FF5C8A;--pink-text:#C2185B;--mint:#2FC594;--mint-text:#0B6B4C;--mint-tint:#E3F8EF;--grape:#8466FF;--grape-text:#5B3FD6;--grape-tint:#ECE7FF;--sun:#FFC93C;--sun-tint:#FFF1C9;--amber:#F2A31F;--amber-text:#8A5200;--tomato:#E0334F;--tomato-text:#B3162F;--round:\"Nunito\",ui-rounded,\"SF Pro Rounded\",system-ui,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;} .ds-field{display:block;max-width:320px;} .ds-fl{display:block;font:800 .72rem/1 var(--round);text-transform:uppercase;letter-spacing:.07em;color:var(--ink-soft);margin-bottom:6px;} .ds-input{width:100%;box-sizing:border-box;font:600 1rem/1.3 var(--round);color:var(--ink);background:var(--paper);border:2px solid var(--ink);border-radius:11px;padding:10px 12px;} .ds-input:focus-visible{outline:3px solid var(--grape);outline-offset:2px;}"
     },
     {
@@ -825,7 +825,7 @@
   ],
   "narrative": {
     "northStar": "The Sticker Sheet",
-    "overview": "Every surface is a sticker peeled off a sheet and pressed onto warm paper: a cream card, a firm ink outline, and a solid ink shadow offset down and to the right, as if the sticker is lifted a few millimetres off the page. The world is the same in three places (the Mac app in SwiftUI, the valvd admin page, the GitHub Pages site) and the tokens agree across all three; the Mac app's `Theme.swift` is the origin and both web stylesheets mirror it.\n\nThe tone is a cheeky hook delivered in heavy rounded type, then plain facts. Colour is mostly paper and ink; one hot pink carries the action and the asterisk, and four role colours (mint, grape, sun, tomato) tint stops, states and badges. Aster, a pink asterisk with a face, is the one character and appears as wordmark companion, empty-state host and status mood. Density differs by surface: the app and admin page use the light hand (2px outlines, 3-5px shadows); the marketing site uses the heavy hand (3px outlines, 5-9px shadows, slight rotations).",
+    "overview": "Every surface is a sticker peeled off a sheet and pressed onto warm paper: a cream card, a firm ink outline, and a solid ink shadow offset down and to the right, as if the sticker is lifted a few millimetres off the page. The world is the same in three places (the Mac app in SwiftUI, the ndesd admin page, the GitHub Pages site) and the tokens agree across all three; the Mac app's `Theme.swift` is the origin and both web stylesheets mirror it.\n\nThe tone is a cheeky hook delivered in heavy rounded type, then plain facts. Colour is mostly paper and ink; one hot pink carries the action and the asterisk, and four role colours (mint, grape, sun, tomato) tint stops, states and badges. Aster, a pink asterisk with a face, is the one character and appears as wordmark companion, empty-state host and status mood. Density differs by surface: the app and admin page use the light hand (2px outlines, 3-5px shadows); the marketing site uses the heavy hand (3px outlines, 5-9px shadows, slight rotations).",
     "keyCharacteristics": [
       "Warm paper ground with cream cards; dark mode is aubergine paper with cream ink, never pure black.",
       "Ink outlines on every raised surface: 2px in product UI, 3px on the site.",

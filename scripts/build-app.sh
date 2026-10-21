@@ -24,10 +24,10 @@ sh scripts/build-linux.sh >/dev/null
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-cp dist/valv-darwin-arm64 "$APP/Contents/Helpers/valv"
-chmod 755 "$APP/Contents/Helpers/valv"
-codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/valv"
-HASH=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
+cp dist/ndes-darwin-arm64 "$APP/Contents/Helpers/ndes"
+chmod 755 "$APP/Contents/Helpers/ndes"
+codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/ndes"
+HASH=$(shasum -a 256 "$APP/Contents/Helpers/ndes" | cut -d' ' -f1)
 
 mkdir -p "$SRC"
 rsync -a --delete --exclude .build app/ "$SRC/"
@@ -58,7 +58,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP"
-AFTER=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
+AFTER=$(shasum -a 256 "$APP/Contents/Helpers/ndes" | cut -d' ' -f1)
 if [ "$HASH" != "$AFTER" ]; then
 	echo "error: helper changed while signing the app" >&2
 	exit 1

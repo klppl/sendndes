@@ -2,7 +2,7 @@ import Foundation
 
 /// D-A7: https, or plain http only to loopback or a Tailscale address
 /// (100.64.0.0/10), written as an IP literal. Produces the one canonical string
-/// used both for URLSession and for `valv pull --server=`.
+/// used both for URLSession and for `ndes pull --server=`.
 public struct ServerURL: Equatable {
     public let canonical: String
     public let host: String

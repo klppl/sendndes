@@ -9,10 +9,10 @@ let package = Package(
         .executable(name: "sendndes", targets: ["sendndes"]),
     ],
     dependencies: [
-        .package(path: "../swift/ValvCore"),
+        .package(path: "../swift/NdesCore"),
     ],
     targets: [
-        .target(name: "AppCore", dependencies: ["ValvCore"]),
+        .target(name: "AppCore", dependencies: ["NdesCore"]),
         .executableTarget(name: "sendndes", dependencies: ["AppCore"]),
         .testTarget(name: "AppCoreTests", dependencies: ["AppCore"]),
     ]

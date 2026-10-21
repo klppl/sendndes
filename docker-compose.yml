@@ -1,15 +1,15 @@
-# Valv sync server. Start with:  docker compose up -d
-# Setup code for the web GUI:     docker compose logs valvd
+# ndes sync server. Start with:  docker compose up -d
+# Setup code for the web GUI:     docker compose logs ndesd
 services:
-  valvd:
+  ndesd:
     build: .
     restart: unless-stopped
     # Only if the GUI is behind a Cloudflare Tunnel / reverse proxy. Protect the
-    # hostname with a Cloudflare Access policy too (see coordination/valvd-deploy.md).
+    # hostname with a Cloudflare Access policy too (see coordination/ndesd-deploy.md).
     # environment:
-    #   VALVD_ADMIN_BEHIND_PROXY: "1"
+    #   NDESD_ADMIN_BEHIND_PROXY: "1"
     volumes:
-      - valvd-data:/data
+      - ndesd-data:/data
     ports:
       # Admin web GUI: bound to this machine only. Reach it from elsewhere over
       # an SSH tunnel or Tailscale (use "<tailscale-ip>:8080:8080").
@@ -18,4 +18,4 @@ services:
       # ("<tailscale-ip>:8485:8485") or behind an HTTPS reverse proxy.
       - "8485:8485"
 volumes:
-  valvd-data:
+  ndesd-data:

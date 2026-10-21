@@ -1,8 +1,8 @@
 dist/
 build/
 .build/
-/valv
-/valvd
+/ndes
+/ndesd
 *.test
 
 # design-tool scratch (sketches, review captures); keep config.json, design.json, surfaces/

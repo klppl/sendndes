@@ -23,7 +23,7 @@ Plain `http://` is accepted only for loopback or a Tailscale address (100.64.0.0
 defaults write se.klippel.sendndes tailscaleInterfaces -string "wg0,utun9"
 ```
 
-https is not checked. The recommended setup is https through `tailscale serve`; see `coordination/valvd-deploy.md` (§4.1b).
+https is not checked. The recommended setup is https through `tailscale serve`; see `coordination/ndesd-deploy.md` (§4.1b).
 
 ## Auto-lock, token binding, signing
 

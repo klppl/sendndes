@@ -1,7 +1,7 @@
 import XCTest
 @testable import AppCore
 
-/// AppCore against a temp vault, the real `valv` helper and a loopback `valvd`.
+/// AppCore against a temp vault, the real `ndes` helper and a loopback `ndesd`.
 @MainActor
 final class IntegrationTests: XCTestCase {
     var env: Env!
@@ -77,7 +77,7 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(m.vaultPath, folder)
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder + "/vault.json"))
         XCTAssertEqual(env.tokenDirs, [])
-        // The recovery key opens it: `valv recover` into a copy of the vault without vault.json.
+        // The recovery key opens it: `ndes recover` into a copy of the vault without vault.json.
         let copy = env.tmp + "/copy"
         try FileManager.default.copyItem(atPath: folder, toPath: copy)
         try FileManager.default.removeItem(atPath: copy + "/vault.json")
@@ -177,7 +177,7 @@ final class IntegrationTests: XCTestCase {
         try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: nil, vaultPath: empty)
         await env.unlock()
         XCTAssertEqual(env.model.lockState, .locked)
-        XCTAssertTrue(env.model.vaultMessage?.contains("valv init") == true, env.model.vaultMessage ?? "nil")
+        XCTAssertTrue(env.model.vaultMessage?.contains("ndes init") == true, env.model.vaultMessage ?? "nil")
     }
 
     func testSendPullListThenExportMatches() async throws {
@@ -312,7 +312,7 @@ final class IntegrationTests: XCTestCase {
             XCTAssertFalse(ps.contains(passphrase), "passphrase in argv/env")
             XCTAssertFalse(ps.contains(goodToken), "token in argv/env")
             XCTAssertTrue(ps.contains("PATH=/usr/bin:/bin"), ps)
-            for k in ["HOME=", "USER=", "TMPDIR=", "SSH_AUTH_SOCK=", "VALV_"] { XCTAssertFalse(ps.contains(k), "\(k) leaked: \(ps)") }
+            for k in ["HOME=", "USER=", "TMPDIR=", "SSH_AUTH_SOCK=", "NDES_"] { XCTAssertFalse(ps.contains(k), "\(k) leaked: \(ps)") }
             // No inherited descriptors: besides stdin/out/err, the helper may hold only what it opened itself
             // (the vault folder and its subfolders).
             var fd = "", type = ""
@@ -340,7 +340,7 @@ final class IntegrationTests: XCTestCase {
         catch { XCTAssertEqual(error as? HelperError, .refused("no build hash")) }
         // Symlinked ancestor
         symlink(env.tmp + "/helper", env.tmp + "/linkdir")
-        let viaLink = HelperRunner(helperPath: env.tmp + "/linkdir/valv", expectedSHA256: sha256Hex(of: env.helper))
+        let viaLink = HelperRunner(helperPath: env.tmp + "/linkdir/ndes", expectedSHA256: sha256Hex(of: env.helper))
         do { _ = try await viaLink.run(args: ["help"], passphrase: { "x" }, onLine: { _ in true }); XCTFail() }
         catch { guard case HelperError.refused? = error as? HelperError else { return XCTFail("\(error)") } }
         // Group-writable helper
@@ -502,7 +502,7 @@ final class UploadTOCTOUTests: XCTestCase {
     }
 }
 
-/// L2: valvd's 507 bodies and the 400s that are not about names.
+/// L2: ndesd's 507 bodies and the 400s that are not about names.
 final class StorageStatusTests: XCTestCase {
     func upload(status: Int, body: String) async -> Result<String, UploadFailure> {
         let s = FakeServer { fd, srv in
@@ -532,7 +532,7 @@ final class StorageStatusTests: XCTestCase {
     }
 }
 
-/// The real valvd out of free space (margin larger than any disk): the app says so and pauses.
+/// The real ndesd out of free space (margin larger than any disk): the app says so and pauses.
 @MainActor
 final class OutOfSpaceIntegrationTests: XCTestCase {
     func testServerOutOfSpaceIsShown() async throws {
@@ -591,17 +591,17 @@ final class ClientSealedUploadTests: XCTestCase {
         }
         XCTAssertEqual(uploadedID, cap.id)
 
-        // Verify headers: Bearer token and Content-Length are present; NO X-Valv-* headers!
+        // Verify headers: Bearer token and Content-Length are present; NO X-Ndes-* headers!
         let lowerHead = cap.head.lowercased()
         XCTAssertTrue(lowerHead.contains("authorization: bearer \(goodToken)"), "bearer token present")
-        XCTAssertFalse(lowerHead.contains("x-valv-name"), "no plaintext file name header")
-        XCTAssertFalse(lowerHead.contains("x-valv-dir"), "no plaintext dir header")
-        XCTAssertFalse(lowerHead.contains("x-valv-mtime"), "no plaintext mtime header")
-        XCTAssertFalse(lowerHead.contains("x-valv-mime"), "no plaintext mime header")
+        XCTAssertFalse(lowerHead.contains("x-ndes-name"), "no plaintext file name header")
+        XCTAssertFalse(lowerHead.contains("x-ndes-dir"), "no plaintext dir header")
+        XCTAssertFalse(lowerHead.contains("x-ndes-mtime"), "no plaintext mtime header")
+        XCTAssertFalse(lowerHead.contains("x-ndes-mime"), "no plaintext mime header")
 
-        // Verify body: it is a valid inbox file starting with VALV\x01\x02 and the 16-byte fileID matches receivedID
+        // Verify body: it is a valid inbox file starting with NDES\x01\x02 and the 16-byte fileID matches receivedID
         XCTAssertGreaterThan(cap.body.count, 58)
-        XCTAssertEqual(Array(cap.body.prefix(4)), Array("VALV".utf8))
+        XCTAssertEqual(Array(cap.body.prefix(4)), Array("NDES".utf8))
         XCTAssertEqual(cap.body[4], 1) // version
         XCTAssertEqual(cap.body[5], 2) // KindInbox
         let idHex = cap.body[6..<22].map { String(format: "%02x", $0) }.joined()

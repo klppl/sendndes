@@ -31,7 +31,7 @@ private final class Running: @unchecked Sendable {
     }
 }
 
-/// Runs the bundled `valv`, one invocation at a time.
+/// Runs the bundled `ndes`, one invocation at a time.
 public actor HelperRunner {
     public static let maxLine = 1 << 20
     public static let maxTotal = 256 << 20

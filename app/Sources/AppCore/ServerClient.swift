@@ -1,6 +1,6 @@
 import Foundation
 import UniformTypeIdentifiers
-import ValvCore
+import NdesCore
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
@@ -142,11 +142,11 @@ public struct ServerClient {
         var req = URLRequest(url: URL(string: server.canonical + "/inbox")!)
         req.httpMethod = "PUT"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue(Data(name.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Name-B64")
-        if !dir.isEmpty { req.setValue(Data(dir.utf8).base64EncodedString(), forHTTPHeaderField: "X-Valv-Dir-B64") }
-        req.setValue(String(ns), forHTTPHeaderField: "X-Valv-Mtime")
+        req.setValue(Data(name.utf8).base64EncodedString(), forHTTPHeaderField: "X-Ndes-Name-B64")
+        if !dir.isEmpty { req.setValue(Data(dir.utf8).base64EncodedString(), forHTTPHeaderField: "X-Ndes-Dir-B64") }
+        req.setValue(String(ns), forHTTPHeaderField: "X-Ndes-Mtime")
         if let mime, mime.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) {
-            req.setValue(mime, forHTTPHeaderField: "X-Valv-Mime")
+            req.setValue(mime, forHTTPHeaderField: "X-Ndes-Mime")
         }
 
         // L5: the body is streamed from this open descriptor (pread on a dup), never re-opened by path, so a
@@ -175,7 +175,7 @@ public struct ServerClient {
             case 413: return .failure(.tooLarge)
             case 429: return .failure(.rateLimited)
             case 507:
-                // valvd: "server out of space" is the disk; the other 507 bodies are inbox limits (files or bytes).
+                // ndesd: "server out of space" is the disk; the other 507 bodies are inbox limits (files or bytes).
                 return .failure(String(decoding: body, as: UTF8.self).contains("out of space") ? .serverOutOfSpace : .inboxFull)
             case 400:
                 // Only "upload failed" and "incomplete upload stream" are not about the name or metadata.

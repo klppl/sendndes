@@ -17,13 +17,13 @@
 |---|---|
 | **Vault** | A folder of sealed files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
 | **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
-| **Inbox server** (`valvd`) | A write-only drop box your devices send to, with a web admin page. It seals each file for your vault and can never read the vault. |
-| **CLI** (`valv`) | Everything the app does, plus verify, recover and change the passphrase. |
+| **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It seals each file for your vault and can never read the vault. |
+| **CLI** (`ndes`) | Everything the app does, plus verify, recover and change the passphrase. |
 
 ```
- Mac / phone ──send──> valvd inbox (seals each file for the vault)
+ Mac / phone ──send──> ndesd inbox (seals each file for the vault)
                               │
- Mac app or valv ──pull───────┘──> vault folder (local, NAS, Drive, Dropbox…)
+ Mac app or ndes ──pull───────┘──> vault folder (local, NAS, Drive, Dropbox…)
 ```
 
 Runs on macOS and Linux (not Windows). The format has two independent implementations, Go and Swift, that agree byte for byte ([SPEC.md](SPEC.md)).
@@ -58,7 +58,7 @@ Runs on macOS and Linux (not Windows). The format has two independent implementa
 
 <table>
   <tr>
-    <td width="68%"><img src="docs/screenshots/web-dashboard.png" alt="valvd admin dashboard: inbox open, three files waiting, connect details"></td>
+    <td width="68%"><img src="docs/screenshots/web-dashboard.png" alt="ndesd admin dashboard: inbox open, three files waiting, connect details"></td>
     <td width="32%"><img src="docs/screenshots/web-phone.png" alt="The same dashboard on a phone, light mode"></td>
   </tr>
   <tr>
@@ -77,9 +77,9 @@ You need Go 1.26+ (and Swift for the Mac app).
 ### 1. Build
 
 ```bash
-go build -o valv ./cmd/valv          # CLI
+go build -o ndes ./cmd/ndes          # CLI
 scripts/build-app.sh                 # Mac app -> build/sendndes.app
-scripts/build-linux.sh               # release binaries into dist/ (valvd for Linux, valv for Mac)
+scripts/build-linux.sh               # release binaries into dist/ (ndesd for Linux, ndes for Mac)
 ```
 
 For a code signature that stays stable between builds (so the Keychain keeps trusting the app), set `SIGN_IDENTITY="Apple Development: Name (TEAMID)"`.
@@ -89,11 +89,11 @@ For a code signature that stays stable between builds (so the Keychain keeps tru
 Open `build/sendndes.app` and choose **Create a vault**, or use the CLI:
 
 ```bash
-./valv init ~/MyVault                # prints the recovery key: write it down
-export VALV_VAULT=~/MyVault          # or pass --vault after the command
-./valv add photo.jpg
-./valv ls
-./valv get <id> -o photo.jpg
+./ndes init ~/MyVault                # prints the recovery key: write it down
+export NDES_VAULT=~/MyVault          # or pass --vault after the command
+./ndes add photo.jpg
+./ndes ls
+./ndes get <id> -o photo.jpg
 ```
 
 ### 3. Run the inbox server (optional)
@@ -102,42 +102,42 @@ With Docker, on the machine that will receive files:
 
 ```bash
 docker compose up -d
-docker compose logs valvd            # shows the one-time setup code
+docker compose logs ndesd            # shows the one-time setup code
 ```
 
 Open <http://127.0.0.1:8080> and follow the setup. To pull from the command line instead of the Mac app:
 
 ```bash
-./valv pull --server http://<tailscale-ip>:8485 --token-file token.txt
+./ndes pull --server http://<tailscale-ip>:8485 --token-file token.txt
 ```
 
 #### Prebuilt image
 
-Run the **Docker image** workflow from the repo's Actions tab (it publishes `ghcr.io/klppl/valv`). If the package is private, make it public or `docker login ghcr.io` on the server. Then save this as `docker-compose.yml` on the server:
+Run the **Docker image** workflow from the repo's Actions tab (it publishes `ghcr.io/klppl/sendndes`). If the package is private, make it public or `docker login ghcr.io` on the server. Then save this as `docker-compose.yml` on the server:
 
 ```yaml
 services:
-  valvd:
-    image: ghcr.io/klppl/valv:latest
+  ndesd:
+    image: ghcr.io/klppl/sendndes:latest
     restart: unless-stopped
     # Only if the admin page is behind a Cloudflare Tunnel / reverse proxy. Protect the
-    # hostname with a Cloudflare Access policy too (see coordination/valvd-deploy.md).
+    # hostname with a Cloudflare Access policy too (see coordination/ndesd-deploy.md).
     # environment:
-    #   VALVD_ADMIN_BEHIND_PROXY: "1"
+    #   NDESD_ADMIN_BEHIND_PROXY: "1"
     volumes:
-      - valvd-data:/data
+      - ndesd-data:/data
     ports:
       - "127.0.0.1:8080:8080"   # admin page, this machine only
       - "8485:8485"             # sync port: put on Tailscale or behind HTTPS
 volumes:
-  valvd-data:
+  ndesd-data:
 ```
 
 ```bash
 docker compose pull && docker compose up -d
 ```
 
-The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HTTPS in front of it. The admin page only answers this machine, the local network and Tailscale; reach it remotely over an SSH tunnel or Tailscale. More options (systemd, Cloudflare Tunnel, limits): [coordination/valvd-deploy.md](coordination/valvd-deploy.md).
+The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HTTPS in front of it. The admin page only answers this machine, the local network and Tailscale; reach it remotely over an SSH tunnel or Tailscale. More options (systemd, Cloudflare Tunnel, limits): [coordination/ndesd-deploy.md](coordination/ndesd-deploy.md).
 
 ## Security in short
 
@@ -157,20 +157,20 @@ Full threat model: [SPEC.md §7](SPEC.md). App details: [app/README.md](app/READ
 ## CLI reference
 
 ```
-valv init <vault-dir>                       create a new vault
-valv add <file> [--dir <path>] [--name <n>] encrypt a file into the vault
-valv ls [--dir <path>]                      list files
-valv get <id-or-path> [-o <out>]            decrypt a file
-valv pull --server <url> --token-file <f>   pull sealed files from a valvd server
-valv ingest [--inbox <dir>]                 move sealed inbox files into the vault
-valv verify                                 authenticate every file in the vault
-valv passwd                                 change the passphrase
-valv recover <vault-dir>                    rebuild vault.json from the recovery key
-valv recovery-key                           print the recovery key
-valv server-config                          print the inbox server's keys
+ndes init <vault-dir>                       create a new vault
+ndes add <file> [--dir <path>] [--name <n>] encrypt a file into the vault
+ndes ls [--dir <path>]                      list files
+ndes get <id-or-path> [-o <out>]            decrypt a file
+ndes pull --server <url> --token-file <f>   pull sealed files from a ndesd server
+ndes ingest [--inbox <dir>]                 move sealed inbox files into the vault
+ndes verify                                 authenticate every file in the vault
+ndes passwd                                 change the passphrase
+ndes recover <vault-dir>                    rebuild vault.json from the recovery key
+ndes recovery-key                           print the recovery key
+ndes server-config                          print the inbox server's keys
 ```
 
-Common flags: `--vault <dir>` (default `$VALV_VAULT`, then `.`), `--passphrase-stdin`. Run `valv --help` for the rest.
+Common flags: `--vault <dir>` (default `$NDES_VAULT`, then `.`), `--passphrase-stdin`. Run `ndes --help` for the rest.
 
 ## Development
 
@@ -182,9 +182,9 @@ scripts/test-app.sh          # Mac app core tests (builds a real helper and serv
 | Path | What's there |
 |---|---|
 | `core/` | Go reference implementation of the format |
-| `cmd/valv`, `cmd/valvd` | CLI and inbox server (admin page in `cmd/valvd/web`) |
-| `app/` | Mac app (SwiftUI); it runs the bundled `valv` as a checked helper |
-| `swift/ValvCore` | Swift implementation of the format |
+| `cmd/ndes`, `cmd/ndesd` | CLI and inbox server (admin page in `cmd/ndesd/web`) |
+| `app/` | Mac app (SwiftUI); it runs the bundled `ndes` as a checked helper |
+| `swift/NdesCore` | Swift implementation of the format |
 | `testvectors/` | Shared vectors both implementations must match |
 | `coordination/` | Design notes, reviews and decisions, including the UX write-ups for the [app](coordination/app-ux-v1.md) and the [server](coordination/valvd-ux-v1.md) |
 

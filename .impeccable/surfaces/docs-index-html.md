@@ -7,7 +7,7 @@ related_targets: []
 
 # Surface: project site (docs/index.html, GitHub Pages)
 
-Scope: public landing page at klppl.github.io/Valv. Mode: Persuade.
+Scope: public landing page at klppl.github.io/sendndes. Mode: Persuade.
 Audience: self-hosters (Docker, Tailscale at home). Action: View on GitHub (repo + README quick start). Tone: cheeky hook, then plain credible facts.
 Proof on hand: docs/screenshots (Mac app with demo vault; admin page with example data). No users, audits, downloads or license; invent none.
 

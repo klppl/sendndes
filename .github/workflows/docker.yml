@@ -1,5 +1,5 @@
 # Manual run: Actions tab -> "Docker image" -> Run workflow.
-# Publishes ghcr.io/<owner>/valv (amd64) with the tag you give.
+# Publishes ghcr.io/<owner>/sendndes (amd64) with the tag you give.
 name: Docker image
 
 on:

@@ -89,7 +89,7 @@ func portOpen(_ port: Int) -> Bool {
 let passphrase = "correct-horse-battery"
 let goodToken = "0123456789abcdef0123456789abcdef-test-token"
 
-/// A throwaway vault, a loopback valvd, the real helper copied next to it, and an AppModel wired to them.
+/// A throwaway vault, a loopback ndesd, the real helper copied next to it, and an AppModel wired to them.
 @MainActor
 final class Env {
     let tmp = realTemp()
@@ -107,13 +107,13 @@ final class Env {
     let defaultsName = "sendndes-test-" + UUID().uuidString
 
     init(maxUploadBytes: Int64 = 64 << 20, startServer: Bool = true, serverArgs: [String] = []) throws {
-        guard let bin = ProcessInfo.processInfo.environment["VALV_TEST_BIN"] else {
-            throw XCTSkip("VALV_TEST_BIN not set; run scripts/test-app.sh")
+        guard let bin = ProcessInfo.processInfo.environment["NDES_TEST_BIN"] else {
+            throw XCTSkip("NDES_TEST_BIN not set; run scripts/test-app.sh")
         }
         binDir = bin
         try FileManager.default.createDirectory(atPath: tmp + "/helper", withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
-        helper = tmp + "/helper/valv"
-        try FileManager.default.copyItem(atPath: bin + "/valv", toPath: helper)
+        helper = tmp + "/helper/ndes"
+        try FileManager.default.copyItem(atPath: bin + "/ndes", toPath: helper)
         chmod(helper, 0o755)
         vault = tmp + "/vault"
         inbox = tmp + "/inbox"
@@ -124,7 +124,7 @@ final class Env {
         let cfg = runTool(helper, ["server-config", "--vault=\(vault)", "--passphrase-stdin"], stdin: passphrase + "\n")
         XCTAssertEqual(cfg.status, 0)
         FileManager.default.createFile(atPath: tmp + "/server.conf", contents: cfg.out, attributes: [.posixPermissions: 0o600])
-        FileManager.default.createFile(atPath: tmp + "/valvd.token", contents: Data((goodToken + "\n").utf8), attributes: [.posixPermissions: 0o600])
+        FileManager.default.createFile(atPath: tmp + "/ndesd.token", contents: Data((goodToken + "\n").utf8), attributes: [.posixPermissions: 0o600])
         runner = HelperRunner(helperPath: helper, expectedSHA256: sha256Hex(of: helper))
         let suite = UserDefaults(suiteName: defaultsName)!
         suite.set("http://127.0.0.1:\(port)", forKey: AppModel.urlKey)
@@ -137,14 +137,14 @@ final class Env {
 
     func startServerProcess(maxUploadBytes: Int64 = 64 << 20, extraArgs: [String] = []) throws {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: binDir + "/valvd")
-        p.arguments = ["--config", tmp + "/server.conf", "--token-file", tmp + "/valvd.token", "--inbox", inbox,
+        p.executableURL = URL(fileURLWithPath: binDir + "/ndesd")
+        p.arguments = ["--config", tmp + "/server.conf", "--token-file", tmp + "/ndesd.token", "--inbox", inbox,
                        "--listen", "127.0.0.1:\(port)", "--max-upload-bytes", String(maxUploadBytes)] + extraArgs
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try p.run()
         server = p
         for _ in 0..<100 { if portOpen(port) { return }; Thread.sleep(forTimeInterval: 0.05) }
-        XCTFail("valvd did not start")
+        XCTFail("ndesd did not start")
     }
 
     func stopServer() { server?.terminate(); server?.waitUntilExit(); server = nil }

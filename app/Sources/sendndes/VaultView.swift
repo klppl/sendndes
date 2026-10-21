@@ -133,7 +133,7 @@ struct VaultBrowser: View {
     @ViewBuilder private var banners: some View {
         inboxBanner
         if model.listingProblems > 0 {
-            Banner(kind: .warn, text: "\(model.listingProblems) \(plural(model.listingProblems, "file has a problem", "files have problems")). Run `valv verify` in Terminal for details.")
+            Banner(kind: .warn, text: "\(model.listingProblems) \(plural(model.listingProblems, "file has a problem", "files have problems")). Run `ndes verify` in Terminal for details.")
         }
         if model.listingStale { Banner(kind: .info, text: "The list may be out of date.", actionTitle: "Refresh") { Task { await model.rebuildListing() } } }
         ForEach(model.addNotes, id: \.self) { Banner(kind: .info, text: $0) }

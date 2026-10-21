@@ -21,7 +21,7 @@ struct SendView: View {
                     Aster(mood: .oops, size: 100, interactive: true)
                     VStack(spacing: 4) {
                         Text("Where should files go?").display(26).foregroundStyle(Theme.ink)
-                        Text("Connect your inbox server (valvd). Files sent there wait until your vault pulls them in.")
+                        Text("Connect your inbox server (ndesd). Files sent there wait until your vault pulls them in.")
                             .label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                             .multilineTextAlignment(.center).frame(maxWidth: 420)
                     }
@@ -156,7 +156,7 @@ struct ServerForm: View {
         var parsedKeys: ServerKeys? = nil
         if !keysText.isEmpty {
             guard let k = ServerKeys(text: keysText) else {
-                error = "Invalid server keys. Paste the two lines from valv server-config."
+                error = "Invalid server keys. Paste the two lines from ndes server-config."
                 return
             }
             parsedKeys = k

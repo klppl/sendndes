@@ -42,7 +42,7 @@ public final class AppModel {
     public var createMessage: String?
     public var recoveryMessage: String?
 
-    // Add to vault (encrypted locally by `valv add`; the server is not involved)
+    // Add to vault (encrypted locally by `ndes add`; the server is not involved)
     public private(set) var addItems: [SendItem] = []
     public private(set) var adding = false
     public private(set) var addNotes: [String] = []
@@ -191,7 +191,7 @@ public final class AppModel {
 
     public static let minPassphraseCharacters = 12
 
-    /// Runs `valv init` in an empty (or new) folder, then unlocks the new vault. The recovery key is kept in
+    /// Runs `ndes init` in an empty (or new) folder, then unlocks the new vault. The recovery key is kept in
     /// `recoveryKey` until `acknowledgeRecoveryKey()`; the vault already exists at that point.
     public func createVault(at folder: String, passphrase: String, repeated: String) async {
         guard lockState == .noFolder || lockState == .locked, !creating, recoveryKey == nil else { return }
@@ -260,7 +260,7 @@ public final class AppModel {
     }
 
     /// Unlocks with the saved passphrase after a Touch ID check. A saved passphrase that no longer works
-    /// (changed with `valv passwd`) is forgotten.
+    /// (changed with `ndes passwd`) is forgotten.
     public func unlockWithTouchID() async {
         guard lockState == .locked, touchIDEnabled, let b = biometric else { return }
         guard let p = await b.load(vault: vaultPath, reason: "unlock your vault") else { return }
@@ -309,7 +309,7 @@ public final class AppModel {
 
     // MARK: Add files straight into the vault
 
-    /// Files and folders are encrypted one by one with `valv add`. Each run re-derives the key (about half a
+    /// Files and folders are encrypted one by one with `ndes add`. Each run re-derives the key (about half a
     /// second), so a large folder takes a while.
     public func addToVault(urls: [URL]) {
         guard lockState == .unlocked else { return }
@@ -403,9 +403,9 @@ public final class AppModel {
             if o.killedByUs { return "Locked." }
             let last = String(decoding: o.stderrTail, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
             switch last {
-            case "valv: wrong passphrase or altered vault.json": return "Wrong passphrase."
-            case "valv: the output file already exists (use --force to replace it)": return "A file with that name already exists."
-            case "valv: refusing to write inside the vault directory; choose another output location with -o":
+            case "ndes: wrong passphrase or altered vault.json": return "Wrong passphrase."
+            case "ndes: the output file already exists (use --force to replace it)": return "A file with that name already exists."
+            case "ndes: refusing to write inside the vault directory; choose another output location with -o":
                 return "Choose a folder outside the vault."
             default: return "The helper failed (exit \(o.exitStatus))."
             }
@@ -613,7 +613,7 @@ public final class AppModel {
     static func message(forListingError code: String?) -> String {
         switch code {
         case "wrong-passphrase": return "Wrong passphrase."
-        case "not-a-vault": return "This folder is not a vault. Create one in Terminal with `valv init`."
+        case "not-a-vault": return "This folder is not a vault. Create one in Terminal with `ndes init`."
         case "vault-unreadable": return "The vault could not be read (damaged or unsupported)."
         default: return "The helper failed."
         }
@@ -680,7 +680,7 @@ public final class AppModel {
     static func message(forPullError code: String) -> String {
         switch code {
         case "wrong-passphrase": return "Wrong passphrase."
-        case "not-a-vault": return "This folder is not a vault. Create one in Terminal with `valv init`."
+        case "not-a-vault": return "This folder is not a vault. Create one in Terminal with `ndes init`."
         case "vault-unreadable": return "The vault could not be read (damaged or unsupported)."
         case "token-file": return "The helper could not read the temporary token file."
         case "server-url": return "The helper refused the server address."

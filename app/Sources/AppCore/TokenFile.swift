@@ -1,6 +1,6 @@
 import Foundation
 
-/// The token handed to `valv pull --token-file`: a 0600 file in a private 0700
+/// The token handed to `ndes pull --token-file`: a 0600 file in a private 0700
 /// directory `<T>/sendndes-<pid>-<128-bit hex>/` that is deleted as soon as the
 /// helper says it has read it.
 public final class TokenFile {

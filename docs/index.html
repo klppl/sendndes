@@ -8,7 +8,7 @@
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="send n*des">
 <meta property="og:description" content="Your own encrypted vault and self-hosted inbox. Nobody in between can look.">
-<meta property="og:image" content="https://klppl.github.io/Valv/screenshots/mac-vault.png">
+<meta property="og:image" content="https://klppl.github.io/sendndes/screenshots/mac-vault.png">
 <link rel="preload" href="fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="site.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-6 -6 112 112'%3E%3Cg fill='%23241B2F'%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(30 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(90 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(150 50 50)'/%3E%3C/g%3E%3Cg fill='%23FF5C8A'%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(30 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(90 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(150 50 50)'/%3E%3C/g%3E%3C/svg%3E">
@@ -36,7 +36,7 @@
     <a href="#security">Security</a>
     <a href="#selfhost">Self-host</a>
   </nav>
-  <a class="btn small" href="https://github.com/klppl/Valv">GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+  <a class="btn small" href="https://github.com/klppl/sendndes">GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
 </header>
 
 <main id="top">
@@ -45,7 +45,7 @@
       <h1>Send <span class="pk">n*des</span>.<br>Nobody in between can look.</h1>
       <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. The server seals every file for you, your cloud stores ciphertext, and only your Mac can read the names again.</p>
       <div class="actions">
-        <a class="btn primary" href="https://github.com/klppl/Valv">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+        <a class="btn primary" href="https://github.com/klppl/sendndes">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
         <a class="quiet-link" href="#trip">Follow the file <svg class="ic"><use href="#i-down"/></svg></a>
       </div>
       <ul class="chips" aria-label="What's included">
@@ -95,7 +95,7 @@
           <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox seals it, then forgets it.</h3></div>
           <p>The inbox server holds your vault's <em>public</em> key and an upload secret. It seals each file the moment it arrives and keeps only the sealed copy. Nothing it holds can open that copy again: not today's uploads, not last year's, not your vault.</p>
           <p class="aside">Honest bit: in this version the server sees a file in the clear while it seals it. Keep it on Tailscale or behind HTTPS. Sealing on the device itself is planned.</p>
-          <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The valvd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
+          <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
         </article>
 
         <article class="leg" data-name="7755bb95…7e0f.obj" data-where="In your synced vault folder" data-server="no">
@@ -152,7 +152,7 @@
           <li><b>Guided setup</b>: claim it, paste your vault's keys, pick how devices reach it, send a test file.</li>
           <li><b>Made for Tailscale</b>, and happy behind tailscale serve, Caddy or a Cloudflare Tunnel.</li>
           <li><b>Can't read your vault.</b> It holds a public key and an upload secret, never your passphrase.</li>
-          <li><b>One Docker image</b>: <code>ghcr.io/klppl/valv</code>. The admin page only answers your own network.</li>
+          <li><b>One Docker image</b>: <code>ghcr.io/klppl/sendndes</code>. The admin page only answers your own network.</li>
           <li><b>Works on your phone</b>, light or dark.</li>
         </ul>
       </div>
@@ -196,7 +196,7 @@
       </div>
       <div class="receipt-foot">
         <span>Argon2id · ChaCha20-Poly1305 · X25519 · HKDF-SHA256</span>
-        <a href="https://github.com/klppl/Valv/blob/main/SPEC.md">Read the spec <svg class="ic"><use href="#i-arrow"/></svg></a>
+        <a href="https://github.com/klppl/sendndes/blob/main/SPEC.md">Read the spec <svg class="ic"><use href="#i-arrow"/></svg></a>
       </div>
     </div>
     <p class="warning"><b>Experimental.</b> The format is frozen and has two independent implementations that agree byte for byte, but it has only had model-assisted review, no external audit. Keep plaintext backups of anything you can't lose.</p>
@@ -206,13 +206,13 @@
     <div class="selfhost-copy">
       <h2>Up in three commands.</h2>
       <p>Run the inbox on any Linux box with Docker. Open its admin page on that machine (or over an SSH tunnel) and it walks you through the rest, then tells you when your first file arrives.</p>
-      <p class="small">Build the Mac app from the same repo with <code>scripts/build-app.sh</code> (macOS 14+, Apple silicon). Full guide in the <a href="https://github.com/klppl/Valv#quick-start">README</a>.</p>
+      <p class="small">Build the Mac app from the same repo with <code>scripts/build-app.sh</code> (macOS 14+, Apple silicon). Full guide in the <a href="https://github.com/klppl/sendndes#quick-start">README</a>.</p>
     </div>
     <div class="terminal">
       <div class="terminal-bar"><span></span><span></span><span></span><button class="copy" type="button" data-copy="terminal-text"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
-<pre id="terminal-text"><code><span class="pr">$</span> git clone https://github.com/klppl/Valv && cd Valv
+<pre id="terminal-text"><code><span class="pr">$</span> git clone https://github.com/klppl/sendndes && cd sendndes
 <span class="pr">$</span> docker compose up -d
-<span class="pr">$</span> docker compose logs valvd   <span class="cm"># your one-time setup code</span>
+<span class="pr">$</span> docker compose logs ndesd   <span class="cm"># your one-time setup code</span>
 <span class="cm"># then browse to http://127.0.0.1:8080 on that machine (or over an SSH tunnel)</span></code></pre>
     </div>
   </section>
@@ -220,14 +220,14 @@
   <section class="close">
     <span data-aster="smitten" data-size="128"></span>
     <h2>Your files. Your folder. Your server.</h2>
-    <a class="btn primary big" href="https://github.com/klppl/Valv">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+    <a class="btn primary big" href="https://github.com/klppl/sendndes">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
   </section>
 </main>
 
 <footer class="foot">
   <span class="wordmark small">send n<span class="ast">*</span>des</span>
   <span>Open format · Go and Swift · macOS and Linux</span>
-  <a href="https://github.com/klppl/Valv">github.com/klppl/Valv</a>
+  <a href="https://github.com/klppl/sendndes">github.com/klppl/sendndes</a>
 </footer>
 
 <script src="site.js" defer></script>

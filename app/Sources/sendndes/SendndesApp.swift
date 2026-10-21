@@ -38,7 +38,7 @@ final class AppState {
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
         let bundle = Bundle.main.bundleURL.path
         guard realpath(bundle, &buf) != nil else { return "/nonexistent" }
-        return String(cString: buf) + "/Contents/Helpers/valv"
+        return String(cString: buf) + "/Contents/Helpers/ndes"
     }
 }
 

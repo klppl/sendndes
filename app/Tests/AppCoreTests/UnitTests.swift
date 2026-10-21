@@ -199,9 +199,9 @@ final class MtimeConversionTests: XCTestCase {
     }
 }
 
-/// L12: the Swift policy and the Go policy (`valv pull`) must accept and reject the same inputs.
+/// L12: the Swift policy and the Go policy (`ndes pull`) must accept and reject the same inputs.
 /// The list is shared with the Go test `TestURLPolicyCases`; when the helper is available every
-/// case also goes through the real `valv pull`.
+/// case also goes through the real `ndes pull`.
 final class URLPolicyDifferentialTests: XCTestCase {
     static func decode(_ s: String) -> [UInt8] {
         var out = [UInt8](), b = Array(s.utf8), i = 0
@@ -238,11 +238,11 @@ final class URLPolicyDifferentialTests: XCTestCase {
     }
 
     func testRealHelperAgreesWithSwift() throws {
-        guard let bin = ProcessInfo.processInfo.environment["VALV_TEST_BIN"] else { throw XCTSkip("VALV_TEST_BIN not set") }
+        guard let bin = ProcessInfo.processInfo.environment["NDES_TEST_BIN"] else { throw XCTSkip("NDES_TEST_BIN not set") }
         for c in try cases() where !c.raw.contains(0) && !c.raw.isEmpty {
             // Bytes that are not UTF-8 cannot be passed as a String argument; those cases are covered by the Go test.
             guard let text = String(validatingUTF8: c.raw.map { CChar(bitPattern: $0) } + [0]) else { continue }
-            let r = runTool(bin + "/valv", ["pull", "--json", "--server=" + text, "--token-file=/nonexistent", "--vault=/nonexistent"])
+            let r = runTool(bin + "/ndes", ["pull", "--json", "--server=" + text, "--token-file=/nonexistent", "--vault=/nonexistent"])
             let out = String(decoding: r.out, as: UTF8.self)
             let helperRejects = out.contains("\"code\":\"server-url\"")
             let swiftRejects = (try? URLPolicy.parse(text)) == nil

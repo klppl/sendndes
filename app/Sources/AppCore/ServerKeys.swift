@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
-import ValvCore
+import NdesCore
 
-/// The two lines `valv server-config` prints and the valvd admin GUI asks the owner to paste.
+/// The two lines `ndes server-config` prints and the ndesd admin GUI asks the owner to paste.
 public struct ServerKeys: Equatable, Sendable {
     public let inboxPub: String
     public let kAuth: String
@@ -42,10 +42,10 @@ public struct ServerKeys: Equatable, Sendable {
         try InboxSealer(inboxPubBase64: inboxPub, kAuthBase64: kAuth)
     }
 
-    /// Exactly what `valv server-config` writes to stdout.
+    /// Exactly what `ndes server-config` writes to stdout.
     public var clipboardText: String { "inbox_pub: \(inboxPub)\nk_auth: \(kAuth)\n" }
 
-    /// Non-secret check value shown by the valvd GUI: first 4 bytes of SHA-256(inbox_pub), uppercase hex, XXXX-XXXX.
+    /// Non-secret check value shown by the ndesd GUI: first 4 bytes of SHA-256(inbox_pub), uppercase hex, XXXX-XXXX.
     public var fingerprint: String {
         let raw = Data(base64Encoded: inboxPub) ?? Data()
         let h = SHA256.hash(data: raw).prefix(4).map { String(format: "%02X", $0) }.joined()

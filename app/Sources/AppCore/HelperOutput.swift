@@ -6,7 +6,7 @@ func isValidID(_ s: String) -> Bool {
     idPattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
 }
 
-/// One line of `valv ... --json`. Unknown keys are ignored; wrong types make the
+/// One line of `ndes ... --json`. Unknown keys are ignored; wrong types make the
 /// whole line invalid.
 struct RawRecord: Decodable {
     var type: String
@@ -49,7 +49,7 @@ public struct ListingResult {
     public var complete: Bool { endSeen && errorCode == nil && invalidRecords == 0 }
 }
 
-/// Collects `valv ls --json` output. `feed` returns false to stop the helper.
+/// Collects `ndes ls --json` output. `feed` returns false to stop the helper.
 public final class ListingAccumulator {
     public static let maxFiles = 200_000
     public private(set) var result = ListingResult()
@@ -102,7 +102,7 @@ public struct PullResult {
     public var complete: Bool { started && endSeen && errorCode == nil && invalidRecords == 0 }
 }
 
-/// Collects `valv pull --json` output. `onStarted` runs on the helper's `started` record
+/// Collects `ndes pull --json` output. `onStarted` runs on the helper's `started` record
 /// (the token file has been read; the caller deletes it).
 public final class PullAccumulator {
     public static let maxItems = 200_000
@@ -154,7 +154,7 @@ public final class PullAccumulator {
     }
 }
 
-/// Collects `valv init --json` output: the recovery key is only trusted once `end` has been seen.
+/// Collects `ndes init --json` output: the recovery key is only trusted once `end` has been seen.
 public final class InitAccumulator {
     public private(set) var recoveryKey: String?
     public private(set) var endSeen = false
@@ -179,7 +179,7 @@ public final class InitAccumulator {
     }
 }
 
-/// Collects `valv add --json` output: the id counts only once `end` has been seen.
+/// Collects `ndes add --json` output: the id counts only once `end` has been seen.
 public final class AddAccumulator {
     public private(set) var addedID: String?
     public private(set) var endSeen = false

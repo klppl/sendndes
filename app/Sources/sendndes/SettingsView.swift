@@ -74,7 +74,7 @@ private struct ServerTab: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Server keys")
-                        Text(model.lockState == .unlocked ? "Paste into the valvd admin page, step 1." : "Unlock the vault first.")
+                        Text(model.lockState == .unlocked ? "Paste into the ndesd admin page, step 1." : "Unlock the vault first.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }

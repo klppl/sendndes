@@ -154,7 +154,7 @@ components:
 
 **Creative North Star: "The Sticker Sheet"**
 
-Every surface is a sticker peeled off a sheet and pressed onto warm paper: a cream card, a firm ink outline, and a solid ink shadow offset down and to the right, as if the sticker is lifted a few millimetres off the page. The world is the same in three places (the Mac app in SwiftUI, the valvd admin page, the GitHub Pages site) and the tokens agree across all three; the Mac app's `Theme.swift` is the origin and both web stylesheets mirror it.
+Every surface is a sticker peeled off a sheet and pressed onto warm paper: a cream card, a firm ink outline, and a solid ink shadow offset down and to the right, as if the sticker is lifted a few millimetres off the page. The world is the same in three places (the Mac app in SwiftUI, the ndesd admin page, the GitHub Pages site) and the tokens agree across all three; the Mac app's `Theme.swift` is the origin and both web stylesheets mirror it.
 
 The tone is a cheeky hook delivered in heavy rounded type, then plain facts. Colour is mostly paper and ink; one hot pink carries the action and the asterisk, and four role colours (mint, grape, sun, tomato) tint stops, states and badges. Aster, a pink asterisk with a face, is the one character and appears as wordmark companion, empty-state host and status mood. Density differs by surface: the app and admin page use the light hand (2px outlines, 3-5px shadows); the marketing site uses the heavy hand (3px outlines, 5-9px shadows, slight rotations).
 

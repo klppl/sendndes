@@ -1,6 +1,6 @@
 # Server-address policy cases shared by the Swift tests (URLPolicyDifferentialTests) and the Go tests (TestURLPolicyCases).
 # <input>TAB<canonical URL or REJECT>. \xNN is a raw byte. Both implementations must give the same answer; with the
-# valv helper present the Swift test also runs every case through `valv pull` (accept/reject only).
+# ndes helper present the Swift test also runs every case through `ndes pull` (accept/reject only).
 https://example.com	https://example.com
 HTTPS://Example.COM/	https://example.com
 https://EXAMPLE.com:8443	https://example.com:8443
