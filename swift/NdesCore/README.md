@@ -1,6 +1,6 @@
 # NdesCore (Swift)
 
-The Swift core library for Valv, SPEC.md section 11 step 3. It is an
+The Swift core library for ndes, SPEC.md section 11 step 3. It is an
 independent implementation written from SPEC.md and `testvectors/` only, and
 it must agree with the Go implementation byte for byte.
 
@@ -92,12 +92,12 @@ that a normal build of the tool rejects them.
 file to `objects/<xx>/<id>.obj` or `inbox/<id>.inb`. `seal-inbox` exists for
 check (c) below.
 
-`../interop/run.sh` builds the Go CLI from `cmd/valv` and this tool, creates a
-temp vault with `valv init --passphrase-stdin`, and checks with files of 0, 1,
-65536 and 200000 bytes: (a) `valv add` output decrypts in Swift to identical
-bytes; (b) Swift objects pass `valv verify` and come back identical from
-`valv get`; (c) Swift-sealed inbox files ingest with `valv ingest` and come
-back identical from `valv get` and from Swift; (d) one vault.json unlocks in
+`../interop/run.sh` builds the Go CLI from `cmd/ndes` and this tool, creates a
+temp vault with `ndes init --passphrase-stdin`, and checks with files of 0, 1,
+65536 and 200000 bytes: (a) `ndes add` output decrypts in Swift to identical
+bytes; (b) Swift objects pass `ndes verify` and come back identical from
+`ndes get`; (c) Swift-sealed inbox files ingest with `ndes ingest` and come
+back identical from `ndes get` and from Swift; (d) one vault.json unlocks in
 both and `inbox_pub`, `k_auth` and the recovery key agree; (e) vaults created
 by either side are accepted by the other; (f) names with å, é and Hangul
 round-trip and NFD input is stored as NFC. The passphrase is random, kept in a

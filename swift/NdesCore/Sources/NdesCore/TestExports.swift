@@ -4,7 +4,7 @@
 // verifies that.
 
 public enum TestExports {
-    /// The same lines as `valv server-config`: `inbox_pub: <b64>` and
+    /// The same lines as `ndes server-config`: `inbox_pub: <b64>` and
     /// `k_auth: <b64>`, then `recovery_key: <grouped>` and `vk: <hex>`.
     public static func keyReport(_ vault: Vault) -> String {
         var kAuth = keyBytes(vault.kAuth)

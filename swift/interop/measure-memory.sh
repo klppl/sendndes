@@ -1,11 +1,11 @@
 #!/bin/sh
-# Peak memory of valv-swift-tool (release build) for encrypt and decrypt at
+# Peak memory of ndes-swift-tool (release build) for encrypt and decrypt at
 # 50 MB and 500 MB, and of unlock alone. Uses /usr/bin/time -l and reports
 # "maximum resident set size" and "peak memory footprint".
 #
 # Two ways to open the vault:
 #   passphrase  normal tool: Argon2id (64 MiB) runs first, as in the main app
-#   vk          test build (--traits VALV_TESTVECTORS) with --vk-stdin:
+#   vk          test build (--traits NDES_TESTVECTORS) with --vk-stdin:
 #               Vault(vk:), no Argon2, as in a File Provider extension
 #
 # Random input files live in a temp directory that is deleted on exit.
@@ -13,17 +13,17 @@
 set -eu
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-pkg="$repo/swift/ValvCore"
-work=$(mktemp -d "${TMPDIR:-/tmp}/valv-mem.XXXXXX")
+pkg="$repo/swift/NdesCore"
+work=$(mktemp -d "${TMPDIR:-/tmp}/ndes-mem.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM HUP
 umask 077
 
-swift build -c release --package-path "$pkg" --product valv-swift-tool >/dev/null 2>&1
-tool="$(swift build -c release --package-path "$pkg" --show-bin-path)/valv-swift-tool"
+swift build -c release --package-path "$pkg" --product ndes-swift-tool >/dev/null 2>&1
+tool="$(swift build -c release --package-path "$pkg" --show-bin-path)/ndes-swift-tool"
 swift build -c release --package-path "$pkg" --build-path "$pkg/.build/interop-keys" \
-    --traits VALV_TESTVECTORS --product valv-swift-tool >/dev/null 2>&1
+    --traits NDES_TESTVECTORS --product ndes-swift-tool >/dev/null 2>&1
 keytool="$(swift build -c release --package-path "$pkg" --build-path "$pkg/.build/interop-keys" \
-    --traits VALV_TESTVECTORS --show-bin-path)/valv-swift-tool"
+    --traits NDES_TESTVECTORS --show-bin-path)/ndes-swift-tool"
 
 pass="$work/passphrase"
 head -c 24 /dev/urandom | base64 | tr -d '\n=' > "$pass"
