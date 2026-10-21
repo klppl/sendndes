@@ -284,7 +284,7 @@ func sealedEstimate(n int64) int64 {
 }
 
 // writeInboxAt atomically checks the inbox file quota and the byte quota (admission under
-// quotaMu, VALV-REV2-03 and L2) and creates a .ndes-<16 hex>.part temp file in d, writes the
+// quotaMu, REV2-03 and L2) and creates a .ndes-<16 hex>.part temp file in d, writes the
 // sealed inbox stream, syncs and verifies it by reopening through d, then moves it to <id>.inb
 // without replacing an existing file. need is the estimated stored size, or -1 when the upload
 // length is unknown; fill is told how many bytes it may write.

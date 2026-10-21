@@ -713,7 +713,7 @@ func TestZeroLogging(t *testing.T) {
 	}
 }
 
-// TestConcurrentUploadQuotaEnforcement verifies VALV-REV2-03: when maxInboxFiles
+// TestConcurrentUploadQuotaEnforcement verifies REV2-03: when maxInboxFiles
 // is 2 and 1 .inb file already exists, 4 concurrent uploads launched at the same
 // time must result in at most 1 allowed upload (201 Created) and 3 rejected
 // uploads (507 Insufficient Storage), never overshooting maxInboxFiles.

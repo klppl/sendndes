@@ -186,7 +186,7 @@ scripts/test-app.sh          # Mac app core tests (builds a real helper and serv
 | `app/` | Mac app (SwiftUI); it runs the bundled `ndes` as a checked helper |
 | `swift/NdesCore` | Swift implementation of the format |
 | `testvectors/` | Shared vectors both implementations must match |
-| `coordination/` | Design notes, reviews and decisions, including the UX write-ups for the [app](coordination/app-ux-v1.md) and the [server](coordination/valvd-ux-v1.md) |
+| `coordination/` | Design notes, reviews and decisions, including the UX write-ups for the [app](coordination/app-ux-v1.md) and the [server](coordination/ndesd-ux-v1.md) |
 
 ## License
 

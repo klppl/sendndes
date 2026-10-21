@@ -376,7 +376,7 @@ func fetchInboxIDs(client *http.Client, baseURL, token string, opts pullOpts) ([
 
 // pullProgressReader wraps a download response body with a per-Read watchdog
 // timer so a stalling server cancels the request context and closes the body
-// after opts.ioTimeout of inactivity (VALV-REV2-02).
+// after opts.ioTimeout of inactivity (REV2-02).
 type pullProgressReader struct {
 	r       io.ReadCloser
 	timeout time.Duration

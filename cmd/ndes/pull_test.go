@@ -363,9 +363,9 @@ func TestPullTransportAndTokenGuards(t *testing.T) {
 	}
 }
 
-// TestPullOversizedAndStallingDownloads verifies VALV-REV2-01 (rejecting
+// TestPullOversizedAndStallingDownloads verifies REV2-01 (rejecting
 // oversized downloads both with known Content-Length and with chunked
-// ContentLength == -1) and VALV-REV2-02 (aborting downloads whose body stalls
+// ContentLength == -1) and REV2-02 (aborting downloads whose body stalls
 // past --io-timeout), ensuring no leftover .part or .inb files remain and
 // DELETE is never called.
 func TestPullOversizedAndStallingDownloads(t *testing.T) {
@@ -393,7 +393,7 @@ func TestPullOversizedAndStallingDownloads(t *testing.T) {
 		}
 	}
 
-	// 1. VALV-REV2-01 (known Content-Length > --max-download-bytes).
+	// 1. REV2-01 (known Content-Length > --max-download-bytes).
 	t.Run("oversized known Content-Length", func(t *testing.T) {
 		deleteCalls := 0
 		prev := pullTestTransport
@@ -442,7 +442,7 @@ func TestPullOversizedAndStallingDownloads(t *testing.T) {
 		assertInboxEmpty(t)
 	})
 
-	// 2. VALV-REV2-01 (chunked stream with ContentLength == -1 exceeding --max-download-bytes).
+	// 2. REV2-01 (chunked stream with ContentLength == -1 exceeding --max-download-bytes).
 	t.Run("oversized chunked stream (ContentLength -1)", func(t *testing.T) {
 		deleteCalls := 0
 		prev := pullTestTransport
@@ -491,7 +491,7 @@ func TestPullOversizedAndStallingDownloads(t *testing.T) {
 		assertInboxEmpty(t)
 	})
 
-	// 3. VALV-REV2-02 (hostile server sends 200 OK, writes 64 bytes, then stalls past --io-timeout).
+	// 3. REV2-02 (hostile server sends 200 OK, writes 64 bytes, then stalls past --io-timeout).
 	t.Run("stalling download body past io-timeout", func(t *testing.T) {
 		deleteCalls := 0
 		pr, pw := io.Pipe()
