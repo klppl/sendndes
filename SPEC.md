@@ -1,7 +1,7 @@
-# Valv: Format and Architecture Spec, v1 (DRAFT)
+# Ndes: Format and Architecture Spec, v1 (DRAFT)
 
 Personal, single-user, open-source encrypted vault. Own format, not compatible with anything else.
-Status: v1 FORMAT FROZEN at tag format-v1-frozen. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
+Status: v1 format re-baselined (Valv renamed to ndes; owner decision R1). Freeze rules apply again from the new tag. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
 
 You (the AI implementing this) are building a tool for exactly one user. Prefer simple and correct over flexible. Anything not specified here is a question for the human, not a decision for you.
 
@@ -43,13 +43,13 @@ Non-goals
 - **Passphrase length.** Tools refuse to set a passphrase (`init`, `passwd`, `recover`) shorter than 12 Unicode code points, counted after NFC, unless the user passes an explicit override (`--allow-weak-passphrase`, meant for tests). Unlocking accepts any passphrase.
 - **HKDF salt.** Every HKDF derivation from VK or FK uses an empty salt. Per RFC 5869 an empty salt is the same as 32 zero bytes; both implementations must match the test vectors on this. The only HKDF call with a non-empty salt is the inbox FK derivation (section 6.2). Every derivation outputs L=32 bytes.
 - **Subkeys from VK**: `HKDF-SHA256(ikm=VK, salt=empty, info=LABEL, L=32)`
-  - `"valv/v1/wrap"` -> K_wrap (wraps per-file keys)
-  - `"valv/v1/inbox-x25519"` -> inbox X25519 private key. Clamp per RFC 7748 (`b[0] &= 248; b[31] &= 127; b[31] |= 64`) and use the clamped bytes as the private key.
-  - `"valv/v1/inbox-auth"` -> K_auth, the upload-authentication secret (section 6.2). This label defines inbox epoch 0. A future version may add an epoch field to vault.json (bound in `config_aad`) and a rotate command; epoch-0 inbox files keep deriving their keys exactly as here.
+  - `"ndes/v1/wrap"` -> K_wrap (wraps per-file keys)
+  - `"ndes/v1/inbox-x25519"` -> inbox X25519 private key. Clamp per RFC 7748 (`b[0] &= 248; b[31] &= 127; b[31] |= 64`) and use the clamped bytes as the private key.
+  - `"ndes/v1/inbox-auth"` -> K_auth, the upload-authentication secret (section 6.2). This label defines inbox epoch 0. A future version may add an epoch field to vault.json (bound in `config_aad`) and a rotate command; epoch-0 inbox files keep deriving their keys exactly as here.
 - **inbox_pub** = X25519(inbox private key, base point 9). It is stored in vault.json and bound into the AAD of `wrapped_vk` (section 4.2).
 - **Inbox server configuration**: the server holds `inbox_pub` and K_auth, both supplied by the user (the CLI's `server-config` prints them after unlocking). It never reads vault.json and never holds VK or the inbox private key. K_auth is a secret; `inbox_pub` is not. Move K_auth straight into the server's secret store; do not leave it in shell history or terminal scrollback. Prefer redirecting `server-config` to a file: when its stdout is a regular file, the CLI sets that file's mode to 0600 before writing; otherwise it just prints. It always warns on stderr.
-- **FK**: per-file random 32-byte key. Subkeys: `HKDF(ikm=FK, salt=empty, info="valv/v1/content")` -> K_content, `HKDF(ikm=FK, salt=empty, info="valv/v1/meta")` -> K_meta.
-- **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("valv/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". The checksum is 24 bits and exists only to catch typing and transcription errors; it is not a MAC and gives no protection against tampering (anyone who can edit the key can recompute it). What vouches for a key is the check against the vault in section 4.5. If the passphrase is lost and there is no recovery key, the data is gone.
+- **FK**: per-file random 32-byte key. Subkeys: `HKDF(ikm=FK, salt=empty, info="ndes/v1/content")` -> K_content, `HKDF(ikm=FK, salt=empty, info="ndes/v1/meta")` -> K_meta.
+- **Recovery key**: the 35 bytes `VK | checksum`, where checksum is the first 3 bytes of `SHA-256("ndes/v1/recovery-checksum" | VK)`, encoded as RFC 4648 base32 (alphabet `A-Z2-7`), uppercase, no padding: exactly 56 characters, written as 14 groups of 4 separated by `-`. Shown once at init, to be stored offline (section 4.3). On input, spaces and hyphens are ignored and ASCII letters are uppercased (no other case mapping); what remains must be exactly 56 base32 characters, and the checksum must match (compared in constant time). A wrong checksum is reported as "recovery key has a typo". The checksum is 24 bits and exists only to catch typing and transcription errors; it is not a MAC and gives no protection against tampering (anyone who can edit the key can recompute it). What vouches for a key is the check against the vault in section 4.5. If the passphrase is lost and there is no recovery key, the data is gone.
 - Changing the passphrase only re-wraps VK (section 4.4).
 
 ## 4. Vault layout
@@ -97,7 +97,7 @@ Writers produce exactly these bytes: LF line endings, two-space indent, the `kdf
 `wrapped_vk` = ChaCha20-Poly1305 under KEK with a random nonce, plaintext VK, AAD = `config_aad`:
 
 ```
-"valv-config-v1"   14 ASCII bytes
+"ndes-config-v1"   14 ASCII bytes
 u8 len(alg)         = 8
 alg                 "argon2id"
 salt                16 raw bytes
@@ -119,7 +119,7 @@ Passphrase unlock:
 `init`:
 1. Generate VK, salt and nonce, and build vault.json in memory.
 2. Show the recovery key and check that writing it out succeeded. Interactively, the user must retype it, and it must decode to the same VK. Non-interactively (`--passphrase-stdin`) there is no retype, but a failed write of the key is still an error.
-3. Only then create the vault directories and write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, or `init` is interrupted by a handled signal (section 8) before vault.json is in place, it removes vault.json's temp file and the directories it created itself, and nothing that existed before. SIGKILL or a power loss can leave a half-created tree (empty `objects/` and `inbox/`, possibly a temp file): delete the directory by hand and run `init` again. `init` refuses a non-empty directory and never deletes anything itself; when the directory holds only empty `objects/` and `inbox/` directories and `.valv-*.part` files, the error says it looks like an interrupted `init`.
+3. Only then create the vault directories and write vault.json (section 8), read it back and run passphrase unlock on it. If any step fails, or `init` is interrupted by a handled signal (section 8) before vault.json is in place, it removes vault.json's temp file and the directories it created itself, and nothing that existed before. SIGKILL or a power loss can leave a half-created tree (empty `objects/` and `inbox/`, possibly a temp file): delete the directory by hand and run `init` again. `init` refuses a non-empty directory and never deletes anything itself; when the directory holds only empty `objects/` and `inbox/` directories and `.ndes-*.part` files, the error says it looks like an interrupted `init`.
 
 Recovery-key unlock (no `wrapped_vk` involved):
 1. Parse and check vault.json (section 4.2).
@@ -145,7 +145,7 @@ Objects need only VK, so the recovery key must work even when vault.json is miss
 2. Check the key against the vault. An object is *readable* if it passes the path check (section 4.1), the `meta_len` bounds and the structural check (section 5.3); only its `wrapped_fk` unwrap with K_wrap can then fail. An inbox file *authenticates* if, with the inbox private key and K_auth derived from the recovered VK, its `meta_blob` and first chunk authenticate. A correct key must never be refusable by files the host can plant, so no failed check counts against the key on its own. The cases, in order:
    1. At least one readable object unwraps: verified. If other readable objects do not unwrap, say how many ("N of M objects do not unwrap with this key; run verify after recovery").
    2. No object unwraps, but an inbox file authenticates: verified.
-   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files; including when `objects/` contains files but none is readable, in which case M = 0): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told: run `valv ls`; if every file fails with an authentication error, the key was probably wrong, so run recovery again with the right key and `--force`; if only some files fail, those objects may be damaged, so run `valv verify`.
+   3. No object unwraps and no inbox file authenticates (wrong key, damaged objects, planted decoys, bit rot, planted inbox files; including when `objects/` contains files but none is readable, in which case M = 0): report "cannot be verified: 0 of M readable objects unwrap with this key; the key may be wrong or the objects damaged" and refuse, unless the user explicitly overrides (`--unverified-key`). With the override, vault.json is written and labelled "NOT verified", and the user is told: run `ndes ls`; if every file fails with an authentication error, the key was probably wrong, so run recovery again with the right key and `--force`; if only some files fail, those objects may be damaged, so run `ndes verify`.
    4. Nothing to check against (there are no object files and no inbox files at all): only the checksum vouches for the key; warn the user.
 
    In cases 3 (with the override) and 4, an interactive user must retype the recovery key, which must decode to the same VK, before anything is written.
@@ -159,7 +159,7 @@ All integers big-endian.
 
 ```
 offset  size       field
-0       4          magic    "VALV"
+0       4          magic    "NDES"
 4       1          version  0x01
 5       1          kind     0x01
 6       16         file_id
@@ -251,7 +251,7 @@ Written by the inbox server, which holds `inbox_pub` and K_auth (section 3).
 
 ```
 offset  size       field
-0       4          magic    "VALV"
+0       4          magic    "NDES"
 4       1          version  0x01
 5       1          kind     0x02
 6       16         file_id  (server picks random)
@@ -266,7 +266,7 @@ Magic, version, `meta_len`, metadata and chunks follow sections 5.1 to 5.3, with
 ### 6.2 Server procedure per upload
 
 1. Generate an ephemeral X25519 keypair. `DH = X25519(eph_priv, inbox_pub)`, with `inbox_pub` from the server's own configuration. Reject an all-zero result.
-2. `FK = HKDF-SHA256(ikm = DH | K_auth, salt = eph_pub | inbox_pub, info = "valv/v1/inbox-fk", L = 32)`, with K_auth from the server's own configuration.
+2. `FK = HKDF-SHA256(ikm = DH | K_auth, salt = eph_pub | inbox_pub, info = "ndes/v1/inbox-fk", L = 32)`, with K_auth from the server's own configuration.
 3. Derive K_content and K_meta from FK as in section 3. Build the metadata as any writer does (section 5.2, `rev` = 1), encrypt it, and stream-encrypt the chunks as in section 5, with the inbox file_id.
 4. Discard eph_priv and FK. After the upload completes the server can no longer decrypt the file.
 
@@ -304,7 +304,7 @@ The vault needs only four operations from its storage: `put(path, bytes)`, `get(
 
 Rules that make this safe on dumb storage:
 - One vault handle per command: every command opens the vault directory exactly once, at its start and before any passphrase prompt, with no-follow (a vault path whose last component is a symlink is refused; give the real directory), and checks the directory rules below on that handle. Every later read and write for the rest of the command (vault.json, `objects/`, `inbox/`, `objects/xx/`, temp files, renames, read-back, cleanup) goes through that handle; the vault path is never resolved again. The same holds for an inbox directory given with `--inbox`, for `get`'s output directory, and for `init`, which opens the target directory, or its nearest existing parent, before prompting and creates everything relative to that handle.
-- Temp files: writers open the destination directory once and do everything relative to that handle: create the temp file in it, named `.valv-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600 (`openat`); verify it by reopening it through the handle; and move it into place with `renameat`, or for a writer that must not replace an existing file, a no-replace move (`linkat`, then removing the temp name). The directory that was checked is the directory that is written; no path is resolved again in between. Inside the vault, `objects/` and `objects/xx/` are opened from the vault directory's handle without following symlinks. If the final name is an existing symlink or hard link, it is replaced, never followed. Temp files are removed on any error or interruption. Readers skip `*.part`.
+- Temp files: writers open the destination directory once and do everything relative to that handle: create the temp file in it, named `.ndes-<16 random lowercase hex>.part`, with create-exclusive, no-follow and mode 0600 (`openat`); verify it by reopening it through the handle; and move it into place with `renameat`, or for a writer that must not replace an existing file, a no-replace move (`linkat`, then removing the temp name). The directory that was checked is the directory that is written; no path is resolved again in between. Inside the vault, `objects/` and `objects/xx/` are opened from the vault directory's handle without following symlinks. If the final name is an existing symlink or hard link, it is replaced, never followed. Temp files are removed on any error or interruption. Readers skip `*.part`.
 - Signals: every command handles SIGINT, SIGTERM, SIGHUP and SIGQUIT the same way: remove its temp files (and, for `init`, the directories it created), restore the terminal if a passphrase prompt had changed it, and exit with 128 + the signal number (130, 143, 129, 131). SIGKILL cannot be handled; it can leave a temp file behind, which readers skip and `verify` reports as a note.
 - Every vault file that is opened must be a regular file: no symlinks, FIFOs or devices.
 - `objects/`, `inbox/` and each `objects/xx/` must be real directories. Before opening anything under the vault, tools check each of them without following symlinks; a symlinked directory is an error in `verify` and makes every other command refuse.
@@ -341,12 +341,12 @@ Deployment (v1, "mode B", chosen first):
 6. File names on storage never derive from plaintext names. file_id is always random.
 7. Do not edit files in place. Write temp, then rename or replace.
 8. When the spec is ambiguous, stop and ask. Do not guess. Section 15 says who decides.
-9. Fixed keys, nonces and ids exist only in test code behind the `valv_testvectors` build tag. Release builds contain no way to inject a random source or fixed values, and a test checks this.
+9. Fixed keys, nonces and ids exist only in test code behind the `ndes_testvectors` build tag. Release builds contain no way to inject a random source or fixed values, and a test checks this.
 10. For every input, accept/reject is normative and must be identical across all implementations; the error class is normative only for single-fault inputs, whereas error precedence when an input has multiple faults is not normative.
 
 ## 11. Build order
 
-1. **Spec + test vectors.** A reference generator (Go), in test-only code behind the `valv_testvectors` build tag, with fixed seeds (fixed VK, file_ids, FKs, nonces). Regenerating needs `-tags valv_testvectors`; the verification and negative tests read the committed vector files and run without the tag. Vector files give every field in hex; vault.json is also committed as-is (base64 as the format requires) with a hex breakdown next to it.
+1. **Spec + test vectors.** A reference generator (Go), in test-only code behind the `ndes_testvectors` build tag, with fixed seeds (fixed VK, file_ids, FKs, nonces). Regenerating needs `-tags ndes_testvectors`; the verification and negative tests read the committed vector files and run without the tag. Vector files give every field in hex; vault.json is also committed as-is (base64 as the format requires) with a hex breakdown next to it.
    - Positive vectors: vault.json, recovery key (with checksum; valid and invalid inputs), K_auth, a passphrase given in NFD and in NFC that derive the same KEK, a tiny object, a multi-chunk object (3 full chunks plus a partial), an exact-multiple-of-chunk-size object, an empty file, an inbox file and the object produced by ingesting it, an object whose name is NFD (accepted; tools warn), and metadata encodings using å, ä, ö, é, a Hangul syllable, and one NFD input that must come out as NFC. At least one mtime is above 2^53.
    - Negative vectors: flipped bit, truncated final chunk, truncated at a chunk boundary, dropped middle chunk, swapped chunks, wrong passphrase, wrong file_id, tampered header; each of the three structural-check rejections (section 5.3); metadata with a duplicate key, invalid UTF-8, wrong key order, an extra key, an escaped `/`, a float mtime, a leading zero, non-space padding, rev 0; a renamed file (file_id mismatch), a wrong prefix directory, an uppercase hex name; an inbox file built without K_auth and one built with a wrong K_auth.
    - Round trips for 0, 1, 65535, 65536, 65537 bytes and 3 full chunks + 1 byte.
@@ -394,7 +394,7 @@ A log of what was decided after the first draft and where each rule now lives. T
 | H | Unlock and `init` verify `inbox_pub` | 4.3 |
 | I, K | Canonical-form-only metadata readers; new fields need a version bump | 5.2 |
 | J | Non-empty names; same rules for `dir` components | 5.2 |
-| L | Deterministic values only behind the `valv_testvectors` build tag | 10, 11 |
+| L | Deterministic values only behind the `ndes_testvectors` build tag | 10, 11 |
 | M | Fresh salt and wrap nonce on every passphrase change | 4.4 |
 | N | Vector file format; an mtime above 2^53 | 11 |
 | C1 | Byte-exact vault.json writer format; canonical-only readers | 4.2 |
@@ -492,7 +492,7 @@ Fourth revision (re-review of step2-fixed):
 - Section 13: rows N1 to N11.
 
 Fifth revision (round 3 re-verification):
-- Section 4.5: four cases instead of five; readable objects that do not unwrap no longer refuse a key outright ("cannot be verified" with an override); note for partly unwrapping vaults; `valv ls` hint after an unverified write.
+- Section 4.5: four cases instead of five; readable objects that do not unwrap no longer refuse a key outright ("cannot be verified" with an override); note for partly unwrapping vaults; `ndes ls` hint after an unverified write.
 - Section 5.4: output paths resolved physically; outside-the-vault check walks up from the opened directory handle; empty, `.` and `..` final names refused.
 - Section 7: junk-renamed files are indistinguishable from deletion.
 - Section 8: writes relative to directory handles (`openat`, `renameat`, `linkat`); junk count in `verify`'s summary.
@@ -510,7 +510,7 @@ Freeze:
 
 Post-freeze clarifications (audit follow-up, documentation only; each statement was checked against the Go and Swift implementations and no behaviour changed):
 - Section 7: the host learns the exact plaintext length, not an approximate size (SP1); renaming an object to `*.part` or to a junk name hides it, equivalent to deletion (SP5).
-- Section 8: where `valv pull` stores downloads before authentication (SP2).
+- Section 8: where `ndes pull` stores downloads before authentication (SP2).
 - Section 6.3: a file_id that matches an existing object with different content is a permanent conflict that is resolved by hand (SP3).
 - Section 3: passphrase NFC depends on the platform's Unicode version, so the recovery key is the only fallback; the recovery-key checksum is 24 bits and detects typos only (SP4, SP6).
 - Section 12: size padding listed as a possible v2 item.
@@ -524,8 +524,13 @@ Post-freeze clarifications (step 3 cross-implementation questions Q1–Q6, docum
 - Section 10: rule 10 on normative accept/reject versus single-fault error classes.
 - Section 13: rows S-Q1 to S-Q6.
 
+Pre-release re-baseline (owner decision R1):
+- Pre-release re-baseline: Valv renamed to ndes, constants changed, version byte unchanged, old test vaults unreadable by design (owner decision R1). The freeze rules apply again from the new tag.
+- Wire constants updated: magic "VALV" -> "NDES", HKDF labels "valv/v1/*" -> "ndes/v1/*", config AAD prefix "valv-config-v1" -> "ndes-config-v1", recovery checksum label "valv/v1/recovery-checksum" -> "ndes/v1/recovery-checksum". Temp file prefix `.valv-*.part` -> `.ndes-*.part`. Test vector build tag `valv_testvectors` -> `ndes_testvectors`.
+
 ## 15. Freeze rules
 
+- **Pre-release re-baseline: Valv renamed to ndes, constants changed, version byte unchanged, old test vaults unreadable by design (owner decision R1).** The freeze rules apply again from the new tag.
 - **Format changes.** A format change is any change that alters the bytes of a committed vector, changes which inputs a reader accepts or rejects, or changes a derivation, label, AAD, field, or layout. Every format change requires a new format version byte (0x02) and a new spec section. v1 readers must keep working. A v1 file is never silently reinterpreted.
 - **Clarifications.** A clarification that changes no behaviour (wording, examples, an added vector that both implementations already agree on) is allowed. It must be listed in the changelog (section 14) and checked against every implementation.
 - **Tool fixes.** Bugs in CLI plumbing (path handling, signals, messages, commands) are normal fixes. They must not touch `testvectors/`.
