@@ -1,5 +1,5 @@
 import Foundation
-import ValvCore
+import NdesCore
 import CryptoKit
 
 let vkHex = "c660972aac797376ea9f855d87b834a1e8abf74fa2cb8940db2e92bfc5ea1ed4"
@@ -53,7 +53,7 @@ func sendSuccess(_ payload: Data) {
 
 func sendError(_ err: Error) {
     let errClass: String
-    if let ve = err as? ValvError {
+    if let ve = err as? NdesError {
         errClass = ve.vectorClass
     } else {
         errClass = "malformed"
@@ -66,7 +66,7 @@ func sha256(_ data: Data) -> Data {
 }
 
 func fileIDFromBytes(_ raw: [UInt8]) throws -> FileID {
-    guard raw.count == 16 else { throw ValvError.path("file_id must be 16 bytes") }
+    guard raw.count == 16 else { throw NdesError.path("file_id must be 16 bytes") }
     let h = raw.map { String(format: "%02x", $0) }.joined()
     return try FileID(objectPath: "objects/\(h.prefix(2))/\(h).obj")
 }
@@ -105,7 +105,7 @@ while true {
 
         case 3: // DecryptObject
             guard payload.count >= 16 else {
-                sendError(ValvError.malformed("payload too short"))
+                sendError(NdesError.malformed("payload too short"))
                 return
             }
             do {
@@ -123,7 +123,7 @@ while true {
 
         case 4: // DecryptInbox
             guard payload.count >= 16 else {
-                sendError(ValvError.malformed("payload too short"))
+                sendError(NdesError.malformed("payload too short"))
                 return
             }
             do {
@@ -142,7 +142,7 @@ while true {
 
         case 5: // IngestInbox
             guard payload.count >= 16 else {
-                sendError(ValvError.malformed("payload too short"))
+                sendError(NdesError.malformed("payload too short"))
                 return
             }
             do {
@@ -155,7 +155,7 @@ while true {
                 let objOut = DataOutput()
                 let meta2 = try vault.decryptObject(objInput, expected: expectedID, to: objOut)
                 guard meta == meta2 else {
-                    sendError(ValvError.metadata("ingested metadata mismatch"))
+                    sendError(NdesError.metadata("ingested metadata mismatch"))
                     return
                 }
                 var res = sha256(objOut.data)
@@ -167,7 +167,7 @@ while true {
 
         case 6: // DecodeRecoveryKey
             guard let str = String(data: payload, encoding: .utf8) else {
-                sendError(ValvError.malformed("invalid utf8"))
+                sendError(NdesError.malformed("invalid utf8"))
                 return
             }
             do {
@@ -179,7 +179,7 @@ while true {
 
         case 7: // ParseObjectPath
             guard let str = String(data: payload, encoding: .utf8) else {
-                sendError(ValvError.path("invalid utf8"))
+                sendError(NdesError.path("invalid utf8"))
                 return
             }
             do {
@@ -192,7 +192,7 @@ while true {
 
         case 8: // ParseInboxPath
             guard let str = String(data: payload, encoding: .utf8) else {
-                sendError(ValvError.path("invalid utf8"))
+                sendError(NdesError.path("invalid utf8"))
                 return
             }
             do {
@@ -205,14 +205,14 @@ while true {
 
         case 9: // CompareIngested
             guard payload.count >= 20 else {
-                sendError(ValvError.malformed("payload too short"))
+                sendError(NdesError.malformed("payload too short"))
                 return
             }
             do {
                 let expectedID = try fileIDFromBytes([UInt8](payload[0..<16]))
                 let inbLen = Int(payload[16..<20].withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
                 guard payload.count >= 20 + inbLen else {
-                    sendError(ValvError.malformed("inbox length mismatch"))
+                    sendError(NdesError.malformed("inbox length mismatch"))
                     return
                 }
                 let inbData = payload[20..<(20 + inbLen)]
@@ -229,7 +229,7 @@ while true {
             }
 
         default:
-            sendError(ValvError.malformed("unknown cmd \(cmd)"))
+            sendError(NdesError.malformed("unknown cmd \(cmd)"))
         }
     }
 }

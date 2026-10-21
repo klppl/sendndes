@@ -5,13 +5,13 @@ let package = Package(
     name: "SwiftHarness",
     platforms: [.macOS(.v13)],
     dependencies: [
-        .package(path: "../../../swift/ValvCore"),
+        .package(path: "../../../swift/NdesCore"),
     ],
     targets: [
         .executableTarget(
             name: "SwiftHarness",
             dependencies: [
-                .product(name: "ValvCore", package: "ValvCore")
+                .product(name: "NdesCore", package: "NdesCore")
             ]
         )
     ]
