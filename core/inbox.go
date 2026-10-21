@@ -20,7 +20,8 @@ func (h *inboxHeader) size() int64 { return inboxFixedHeader + int64(len(h.metaB
 
 func (h *inboxHeader) marshal() []byte {
 	b := make([]byte, 0, h.size())
-	b = append(b, 'V', 'A', 'L', 'V', FormatVersion, KindInbox)
+	b = append(b, Magic...)
+	b = append(b, FormatVersion, KindInbox)
 	b = append(b, h.fileID[:]...)
 	b = append(b, h.ephPub[:]...)
 	b = binary.BigEndian.AppendUint32(b, uint32(len(h.metaBlob)))

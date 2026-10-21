@@ -13,13 +13,13 @@ import (
 )
 
 // TestNoDeterministicHookInReleaseBuild checks SPEC 10.9: fixed keys, ids and
-// nonces exist only in test code behind the valv_testvectors tag.
+// nonces exist only in test code behind the ndes_testvectors tag.
 func TestNoDeterministicHookInReleaseBuild(t *testing.T) {
 	const genFile = "gen_vectors_test.go"
 	plain := build.Default
 	plain.BuildTags = nil
 	tagged := build.Default
-	tagged.BuildTags = []string{"valv_testvectors"}
+	tagged.BuildTags = []string{"ndes_testvectors"}
 
 	pkg, err := plain.ImportDir(".", 0)
 	if err != nil {
@@ -51,8 +51,8 @@ func TestNoDeterministicHookInReleaseBuild(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(src), "valv_testvectors") {
-			t.Errorf("%s mentions valv_testvectors", path)
+		if strings.Contains(string(src), "ndes_testvectors") {
+			t.Errorf("%s mentions ndes_testvectors", path)
 		}
 		return nil
 	})

@@ -20,19 +20,19 @@ const (
 
 // HKDF info labels (SPEC 3, 6.2).
 const (
-	infoWrap        = "valv/v1/wrap"
-	infoInboxX25519 = "valv/v1/inbox-x25519"
-	infoContent     = "valv/v1/content"
-	infoMeta        = "valv/v1/meta"
-	infoInboxFK     = "valv/v1/inbox-fk"
-	infoInboxAuth   = "valv/v1/inbox-auth" // inbox epoch 0
+	infoWrap        = "ndes/v1/wrap"
+	infoInboxX25519 = "ndes/v1/inbox-x25519"
+	infoContent     = "ndes/v1/content"
+	infoMeta        = "ndes/v1/meta"
+	infoInboxFK     = "ndes/v1/inbox-fk"
+	infoInboxAuth   = "ndes/v1/inbox-auth" // inbox epoch 0
 )
 
 // hkdf32 is HKDF-SHA256 with L=32. A nil salt is the empty salt.
 func hkdf32(ikm, salt []byte, info string) [KeySize]byte {
 	var out [KeySize]byte
 	if _, err := io.ReadFull(hkdf.New(sha256.New, ikm, salt, []byte(info)), out[:]); err != nil {
-		panic("valv: hkdf: " + err.Error()) // cannot happen for L=32
+		panic("ndes: hkdf: " + err.Error()) // cannot happen for L=32
 	}
 	return out
 }
@@ -56,7 +56,7 @@ func DeriveVaultKeys(vk [KeySize]byte) (*VaultKeys, error) {
 	pub, err := curve25519.X25519(k.InboxPriv[:], curve25519.Basepoint)
 	if err != nil {
 		k.Wipe()
-		return nil, fmt.Errorf("valv: derive inbox key: %w", err)
+		return nil, fmt.Errorf("ndes: derive inbox key: %w", err)
 	}
 	copy(k.InboxPub[:], pub)
 	return k, nil
@@ -120,7 +120,7 @@ func x25519(priv, pub []byte) ([]byte, error) {
 func seal(key *[KeySize]byte, nonce, plaintext, aad []byte) []byte {
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
-		panic("valv: chacha20poly1305: " + err.Error())
+		panic("ndes: chacha20poly1305: " + err.Error())
 	}
 	return aead.Seal(nil, nonce, plaintext, aad)
 }
@@ -128,7 +128,7 @@ func seal(key *[KeySize]byte, nonce, plaintext, aad []byte) []byte {
 func open(key *[KeySize]byte, nonce, ciphertext, aad []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
-		panic("valv: chacha20poly1305: " + err.Error())
+		panic("ndes: chacha20poly1305: " + err.Error())
 	}
 	pt, err := aead.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
@@ -140,6 +140,6 @@ func open(key *[KeySize]byte, nonce, ciphertext, aad []byte) ([]byte, error) {
 // randomBytes fills b from the OS CSPRNG.
 func randomBytes(b []byte) {
 	if _, err := rand.Read(b); err != nil {
-		panic("valv: crypto/rand: " + err.Error())
+		panic("ndes: crypto/rand: " + err.Error())
 	}
 }

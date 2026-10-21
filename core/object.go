@@ -11,7 +11,7 @@ import (
 
 // Header constants (SPEC 5.1, 6.1).
 const (
-	Magic         = "VALV"
+	Magic         = "NDES"
 	FormatVersion = 1
 	KindObject    = 0x01
 	KindInbox     = 0x02
@@ -35,12 +35,14 @@ func newFileID() FileID {
 
 // wrapAAD is bytes 0..22 of an object header.
 func wrapAAD(id FileID) []byte {
-	return append([]byte{'V', 'A', 'L', 'V', FormatVersion, KindObject}, id[:]...)
+	out := append(append(make([]byte, 0, 22), Magic...), FormatVersion, KindObject)
+	return append(out, id[:]...)
 }
 
 // metaAAD is magic | version | file_id, without the kind.
 func metaAAD(id FileID) []byte {
-	return append([]byte{'V', 'A', 'L', 'V', FormatVersion}, id[:]...)
+	out := append(append(make([]byte, 0, 21), Magic...), FormatVersion)
+	return append(out, id[:]...)
 }
 
 // checkPrefix checks magic, version and kind, and returns the file_id.
@@ -245,7 +247,7 @@ func (or *ObjectReader) Info() ObjectInfo {
 // to w. It can be called once.
 func (or *ObjectReader) DecryptTo(w io.Writer) error {
 	if or.used {
-		return errors.New("valv: ObjectReader.DecryptTo called twice")
+		return errors.New("ndes: ObjectReader.DecryptTo called twice")
 	}
 	or.used = true
 	return readChunks(or.r, or.o.ctTotal, &or.o.keys.content, or.o.hdr.fileID, func(_, plain []byte) error {
@@ -327,7 +329,7 @@ func (o *NewObject) Meta() Metadata { return o.meta }
 // once: a second call would reuse the FK and nonces.
 func (o *NewObject) Encrypt(w io.Writer, keys *VaultKeys, content io.Reader) error {
 	if o.used {
-		return errors.New("valv: NewObject.Encrypt called twice")
+		return errors.New("ndes: NewObject.Encrypt called twice")
 	}
 	o.used = true
 	return encryptObject(w, keys, o.metaPlain, content, o.id, &o.fk, o.wrapNonce[:], o.metaNonce[:])

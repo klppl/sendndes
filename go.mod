@@ -1,4 +1,4 @@
-module github.com/klppl/valv
+module github.com/klppl/sendndes
 
 go 1.26.3
 

@@ -1,10 +1,10 @@
-//go:build valv_testvectors
+//go:build ndes_testvectors
 
 // Test-vector generator. It uses fixed keys, ids and nonces, so it exists
-// only in this test file behind the valv_testvectors build tag (SPEC 10.9).
+// only in this test file behind the ndes_testvectors build tag (SPEC 10.9).
 // Regenerate with:
 //
-//	go test -tags valv_testvectors -run TestGenerateVectors ./core
+//	go test -tags ndes_testvectors -run TestGenerateVectors ./core
 
 package core
 
@@ -86,7 +86,7 @@ func TestGenerateVectors(t *testing.T) {
 		}
 	}
 	g := &generator{t: t}
-	g.out.Format = "valv-testvectors-v1"
+	g.out.Format = "ndes-testvectors-v1"
 	vaultJSON := g.genVault()
 	g.genObjects()
 	g.genInbox()

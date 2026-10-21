@@ -13,7 +13,7 @@ import (
 var recoveryEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 const (
-	recoveryChecksumLabel = "valv/v1/recovery-checksum"
+	recoveryChecksumLabel = "ndes/v1/recovery-checksum"
 	recoveryChecksumSize  = 3
 	recoveryKeyChars      = (KeySize + recoveryChecksumSize) * 8 / 5 // 56, no unused bits
 )

@@ -1,6 +1,6 @@
 {
   "v": 1,
   "kdf": { "alg": "argon2id", "salt": "5OaqunHpjzeTORWnJxggYQ==", "t": 3, "m_kib": 65536, "p": 1 },
-  "wrapped_vk": "PLbeIq3TtOS7u8fZKzAtGOko2zkN0SLBhK6gzS02qtOFXA67AXXyQAMehgqdxo/600iZOBcTNnuMANT9",
+  "wrapped_vk": "PLbeIq3TtOS7u8fZKzAtGOko2zkN0SLBhK6gzS02qtOFXA67AXXyQAMehgpzjALog7fwqEIkw2ekcXuy",
   "inbox_pub": "rTbeISP1939r/mcGSyfuj2TSJkcaA96r5yOzLRFSKNE="
 }

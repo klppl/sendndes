@@ -23,7 +23,7 @@ const (
 
 	SaltSize       = 16
 	wrappedVKSize  = NonceSize + KeySize + TagSize
-	configAADLabel = "valv-config-v1"
+	configAADLabel = "ndes-config-v1"
 )
 
 var b64 = base64.StdEncoding.Strict()
@@ -226,11 +226,11 @@ func writeAndVerifyConfig(passphrase string, vk *[KeySize]byte, salt, nonce []by
 	clear(pass)
 	check, err := unlockBytes(data, passphrase)
 	if err != nil {
-		return nil, fmt.Errorf("valv: written vault.json does not unlock: %w", err)
+		return nil, fmt.Errorf("ndes: written vault.json does not unlock: %w", err)
 	}
 	defer check.Wipe()
 	if subtle.ConstantTimeCompare(check.VK[:], vk[:]) != 1 {
-		return nil, fmt.Errorf("valv: written vault.json unlocks to a different key")
+		return nil, fmt.Errorf("ndes: written vault.json unlocks to a different key")
 	}
 	return data, nil
 }

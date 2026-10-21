@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/klppl/valv/core"
+	"github.com/klppl/sendndes/core"
 )
 
 type Worker struct {
