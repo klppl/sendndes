@@ -1,0 +1,56 @@
+/// A 16-byte file_id. Public code gets one only from a path (the expected id
+/// for a reader, SPEC 4.1) or from a writer that generated it randomly.
+public struct FileID: Hashable, Sendable, CustomStringConvertible {
+    let bytes: [UInt8]
+
+    init(bytes: [UInt8]) {
+        precondition(bytes.count == 16)
+        self.bytes = bytes
+    }
+
+    /// 32 lowercase hex characters.
+    public var hex: String { hexEncode(bytes) }
+    public var description: String { hex }
+
+    /// `objects/<first 2 hex>/<32 hex>.obj`, relative to the vault.
+    public var objectPath: String { "objects/\(hex.prefix(2))/\(hex).obj" }
+    /// `inbox/<32 hex>.inb`, relative to the vault.
+    public var inboxPath: String { "inbox/\(hex).inb" }
+
+    /// The expected file_id of an object at `path` (which must be
+    /// `objects/<dir>/<name>`). The first component must be `objects`,
+    /// `<dir>` must equal the first two hex characters, and `<name>` must be
+    /// exactly `<32 lowercase hex>.obj`.
+    public init(objectPath path: String) throws {
+        let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].elementsEqual(Array("objects".utf8)) else {
+            throw NdesError.path("object path must be objects/<xx>/<file_id>.obj")
+        }
+        let id = try FileID.parseName(parts[2], ext: ".obj")
+        let dir = [UInt8](parts[1])
+        guard dir == Array(id.hex.utf8.prefix(2)) else {
+            throw NdesError.path("object is not in the directory named by its first two hex characters")
+        }
+        self = id
+    }
+
+    /// The expected file_id of an inbox file at `path` (which must be
+    /// `inbox/<name>`); the first component must be `inbox` and `<name>` must
+    /// be exactly `<32 lowercase hex>.inb`.
+    public init(inboxPath path: String) throws {
+        let parts = Array(path.utf8).split(separator: 0x2F, omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[0].elementsEqual(Array("inbox".utf8)) else {
+            throw NdesError.path("inbox path must be inbox/<file_id>.inb")
+        }
+        self = try FileID.parseName(parts[1], ext: ".inb")
+    }
+
+    private static func parseName(_ name: ArraySlice<UInt8>, ext: String) throws -> FileID {
+        let e = Array(ext.utf8)
+        guard name.count == 32 + e.count, name.suffix(e.count).elementsEqual(e),
+              let raw = hexDecodeLowercase(name.prefix(32)) else {
+            throw NdesError.path("name must be exactly 32 lowercase hex characters plus \(ext)")
+        }
+        return FileID(bytes: raw)
+    }
+}
