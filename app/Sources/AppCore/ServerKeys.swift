@@ -1,10 +1,18 @@
 import Foundation
 import CryptoKit
+import ValvCore
 
 /// The two lines `valv server-config` prints and the valvd admin GUI asks the owner to paste.
 public struct ServerKeys: Equatable, Sendable {
     public let inboxPub: String
     public let kAuth: String
+
+    public init?(inboxPub: String, kAuth: String) {
+        guard let p = Data(base64Encoded: inboxPub), p.count == 32, p.base64EncodedString() == inboxPub,
+              let k = Data(base64Encoded: kAuth), k.count == 32, k.base64EncodedString() == kAuth else { return nil }
+        self.inboxPub = inboxPub
+        self.kAuth = kAuth
+    }
 
     /// Parses the helper's stdout lines ("inbox_pub: <b64>", "k_auth: <b64>"); each value must be 32 bytes of base64.
     public init?(lines: [String]) {
@@ -14,11 +22,24 @@ public struct ServerKeys: Equatable, Sendable {
         inboxPub = p; kAuth = k
     }
 
+    /// Parses pasted text that contains "inbox_pub: <b64>" and "k_auth: <b64>".
+    public init?(text: String) {
+        let lines = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        self.init(lines: lines)
+    }
+
     private static func value(_ line: String, prefix: String) -> String? {
         guard line.hasPrefix(prefix) else { return nil }
-        let v = String(line.dropFirst(prefix.count))
+        let v = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
         guard let d = Data(base64Encoded: v), d.count == 32, d.base64EncodedString() == v else { return nil }
         return v
+    }
+
+    /// Creates an InboxSealer configured with these keys.
+    public func makeSealer() throws -> InboxSealer {
+        try InboxSealer(inboxPubBase64: inboxPub, kAuthBase64: kAuth)
     }
 
     /// Exactly what `valv server-config` writes to stdout.

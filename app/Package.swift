@@ -8,8 +8,11 @@ let package = Package(
         .library(name: "AppCore", targets: ["AppCore"]),
         .executable(name: "sendndes", targets: ["sendndes"]),
     ],
+    dependencies: [
+        .package(path: "../swift/ValvCore"),
+    ],
     targets: [
-        .target(name: "AppCore"),
+        .target(name: "AppCore", dependencies: ["ValvCore"]),
         .executableTarget(name: "sendndes", dependencies: ["AppCore"]),
         .testTarget(name: "AppCoreTests", dependencies: ["AppCore"]),
     ]

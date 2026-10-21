@@ -226,3 +226,44 @@ func CheckAlreadyIngested(inbox io.Reader, inboxSize int64, object io.Reader, ob
 	}
 	return err
 }
+
+// ValidateAndCopyInbox writes an inbox stream from r to w, checking that its magic,
+// version, kind, header FileID (matching expected), meta_blob length, and chunk
+// structure are valid. It returns the total bytes written.
+func ValidateAndCopyInbox(w io.Writer, r io.Reader, expected FileID) (int64, error) {
+	var fixed [inboxFixedHeader]byte
+	if _, err := io.ReadFull(r, fixed[:]); err != nil {
+		return 0, shortRead(err)
+	}
+	id, err := checkPrefix(fixed[:], KindInbox)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkExpected(id, expected); err != nil {
+		return 0, err
+	}
+	metaLen := binary.BigEndian.Uint32(fixed[54:58])
+	if !validMetaLen(metaLen) {
+		return 0, fmt.Errorf("%w: meta_len %d", ErrMalformed, metaLen)
+	}
+	if _, err := w.Write(fixed[:]); err != nil {
+		return 0, err
+	}
+	metaBlob := make([]byte, metaLen)
+	if _, err := io.ReadFull(r, metaBlob); err != nil {
+		return int64(inboxFixedHeader), shortRead(err)
+	}
+	if _, err := w.Write(metaBlob); err != nil {
+		return int64(inboxFixedHeader), err
+	}
+	buf := make([]byte, StoredChunkSize)
+	n, err := io.CopyBuffer(w, r, buf)
+	total := int64(inboxFixedHeader) + int64(metaLen) + n
+	if err != nil {
+		return total, err
+	}
+	if _, err := chunkCount(n); err != nil {
+		return total, err
+	}
+	return total, nil
+}

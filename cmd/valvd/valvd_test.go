@@ -1017,3 +1017,138 @@ func TestInboxDirectoryPermissions(t *testing.T) {
 	}
 	d.Close()
 }
+
+func TestClientSealedUpload(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
+
+	// 1. Create a client-sealed inbox file locally.
+	meta := core.Metadata{Name: "client_secret.txt", Dir: "docs", MTime: 1234567890, MIME: "text/plain", Rev: 1}
+	plain := []byte("this is a client-sealed secret plaintext that the server never sees in the clear")
+	var inbBuf bytes.Buffer
+	id, err := core.SealInbox(&inbBuf, env.keys.InboxPub, env.keys.InboxAuth, meta, bytes.NewReader(plain))
+	if err != nil {
+		t.Fatalf("SealInbox: %v", err)
+	}
+	sealedBytes := inbBuf.Bytes()
+
+	// 2. Reject if metadata headers are supplied on client-sealed upload.
+	reqBadHdr, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+id.String(), bytes.NewReader(sealedBytes))
+	reqBadHdr.Header.Set("Authorization", "Bearer "+testBearerToken)
+	reqBadHdr.Header.Set("X-Valv-Name", "leak.txt")
+	respBadHdr, err := env.client.Do(reqBadHdr)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respBadHdr.Body.Close()
+	if respBadHdr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PUT with X-Valv-* headers: got %d, want 400", respBadHdr.StatusCode)
+	}
+
+	// 3. Reject wrong auth token.
+	reqBadAuth, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+id.String(), bytes.NewReader(sealedBytes))
+	reqBadAuth.Header.Set("Authorization", "Bearer wrong-token")
+	respBadAuth, err := env.client.Do(reqBadAuth)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respBadAuth.Body.Close()
+	if respBadAuth.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("PUT with wrong auth: got %d, want 401", respBadAuth.StatusCode)
+	}
+
+	// 4. Reject file_id mismatch between URL and header.
+	wrongID := core.FileID{}
+	rand.Read(wrongID[:])
+	reqWrongID, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+wrongID.String(), bytes.NewReader(sealedBytes))
+	reqWrongID.Header.Set("Authorization", "Bearer "+testBearerToken)
+	respWrongID, err := env.client.Do(reqWrongID)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	respWrongID.Body.Close()
+	if respWrongID.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PUT with mismatched ID: got %d, want 400", respWrongID.StatusCode)
+	}
+
+	// 5. Valid client-sealed upload -> 201 Created.
+	req, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+id.String(), bytes.NewReader(sealedBytes))
+	req.Header.Set("Authorization", "Bearer "+testBearerToken)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = int64(len(sealedBytes))
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("PUT client-sealed: got %d, want 201: %s", resp.StatusCode, body)
+	}
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.ID != id.String() {
+		t.Fatalf("PUT client-sealed response mismatch: %s", body)
+	}
+
+	// Verify the stored file on server by downloading and ingesting it.
+	getReq, _ := http.NewRequest(http.MethodGet, env.baseURL+"/inbox/"+id.String(), nil)
+	getReq.Header.Set("Authorization", "Bearer "+testBearerToken)
+	getResp, err := env.client.Do(getReq)
+	if err != nil {
+		t.Fatalf("GET /inbox/{id}: %v", err)
+	}
+	gotBytes, _ := io.ReadAll(getResp.Body)
+	getResp.Body.Close()
+	if !bytes.Equal(gotBytes, sealedBytes) {
+		t.Fatal("downloaded bytes differ from uploaded client-sealed bytes")
+	}
+
+	var objBuf bytes.Buffer
+	ingestMeta, err := core.IngestInbox(bytes.NewReader(gotBytes), int64(len(gotBytes)), id, env.keys, &objBuf)
+	if err != nil {
+		t.Fatalf("IngestInbox: %v", err)
+	}
+	if ingestMeta.Name != meta.Name || ingestMeta.Dir != meta.Dir {
+		t.Fatalf("metadata mismatch: got %+v, want %+v", ingestMeta, meta)
+	}
+	var plainBuf bytes.Buffer
+	if _, err := core.DecryptObject(bytes.NewReader(objBuf.Bytes()), int64(objBuf.Len()), id, env.keys, &plainBuf); err != nil {
+		t.Fatalf("DecryptObject: %v", err)
+	}
+	if !bytes.Equal(plainBuf.Bytes(), plain) {
+		t.Fatalf("decrypted plaintext differs: got %q, want %q", plainBuf.String(), string(plain))
+	}
+
+	// 6. L11 Idempotency: Uploading identical bytes for the existing file_id succeeds as a no-op (200 OK).
+	retryReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+id.String(), bytes.NewReader(sealedBytes))
+	retryReq.Header.Set("Authorization", "Bearer "+testBearerToken)
+	retryReq.Header.Set("Content-Type", "application/octet-stream")
+	retryReq.ContentLength = int64(len(sealedBytes))
+	retryResp, err := env.client.Do(retryReq)
+	if err != nil {
+		t.Fatalf("Do retry: %v", err)
+	}
+	retryBody, _ := io.ReadAll(retryResp.Body)
+	retryResp.Body.Close()
+	if retryResp.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent PUT retry: got %d, want 200: %s", retryResp.StatusCode, retryBody)
+	}
+
+	// 7. Uploading DIFFERENT bytes for an existing file_id -> 409 Conflict.
+	diffBytes := make([]byte, len(sealedBytes))
+	copy(diffBytes, sealedBytes)
+	diffBytes[len(diffBytes)-1] ^= 0x01 // flip last byte
+	confReq, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox/"+id.String(), bytes.NewReader(diffBytes))
+	confReq.Header.Set("Authorization", "Bearer "+testBearerToken)
+	confReq.Header.Set("Content-Type", "application/octet-stream")
+	confReq.ContentLength = int64(len(diffBytes))
+	confResp, err := env.client.Do(confReq)
+	if err != nil {
+		t.Fatalf("Do conflict: %v", err)
+	}
+	confResp.Body.Close()
+	if confResp.StatusCode != http.StatusConflict {
+		t.Fatalf("conflicting PUT: got %d, want 409", confResp.StatusCode)
+	}
+}

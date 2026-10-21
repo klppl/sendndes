@@ -15,10 +15,25 @@ public struct InboxSealer: Sendable {
     let inboxPub: [UInt8]
     let kAuth: SymmetricKey
 
-    init(inboxPub: [UInt8], kAuth: SymmetricKey) {
+    public init(inboxPub: [UInt8], kAuth: SymmetricKey) {
         precondition(inboxPub.count == 32)
         self.inboxPub = inboxPub
         self.kAuth = kAuth
+    }
+
+    public init(inboxPub: [UInt8], kAuthBytes: [UInt8]) {
+        precondition(inboxPub.count == 32)
+        precondition(kAuthBytes.count == 32)
+        self.inboxPub = inboxPub
+        self.kAuth = SymmetricKey(data: kAuthBytes)
+    }
+
+    public init(inboxPubBase64: String, kAuthBase64: String) throws {
+        guard let pub = Data(base64Encoded: inboxPubBase64), pub.count == 32,
+              let auth = Data(base64Encoded: kAuthBase64), auth.count == 32 else {
+            throw ValvError.malformed("invalid inbox_pub or k_auth")
+        }
+        self.init(inboxPub: [UInt8](pub), kAuth: SymmetricKey(data: auth))
     }
 
     /// Seals `plaintext` into a new inbox file with a random file_id and a

@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"strings"
@@ -92,6 +93,88 @@ func TestInboxRoundTrip(t *testing.T) {
 		if _, err := DecryptObject(bytes.NewReader(obj.Bytes()), int64(obj.Len()), id, keys, &out); err != nil || !bytes.Equal(out.Bytes(), plain) {
 			t.Fatalf("%d: decrypt ingested: %v", n, err)
 		}
+
+		// ValidateAndCopyInbox accepts the valid inbox stream.
+		var copied bytes.Buffer
+		nCopied, err := ValidateAndCopyInbox(&copied, bytes.NewReader(inb.Bytes()), id)
+		if err != nil {
+			t.Fatalf("%d: ValidateAndCopyInbox: %v", n, err)
+		}
+		if nCopied != int64(inb.Len()) || !bytes.Equal(copied.Bytes(), inb.Bytes()) {
+			t.Fatalf("%d: ValidateAndCopyInbox output mismatch", n)
+		}
+
+		// Reject wrong expected file_id.
+		var other FileID
+		randomBytes(other[:])
+		var dummy bytes.Buffer
+		if _, err := ValidateAndCopyInbox(&dummy, bytes.NewReader(inb.Bytes()), other); !errors.Is(err, ErrPathMismatch) {
+			t.Fatalf("%d: ValidateAndCopyInbox wrong ID: %v", n, err)
+		}
+	}
+}
+
+func TestValidateAndCopyInboxErrors(t *testing.T) {
+	keys := testKeys(t)
+	var inb bytes.Buffer
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, strings.NewReader("hello world"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := inb.Bytes()
+
+	// Truncated header (< 58 bytes)
+	for i := 0; i < 58; i++ {
+		var out bytes.Buffer
+		if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(valid[:i]), id); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("truncated header at %d: want ErrMalformed, got %v", i, err)
+		}
+	}
+
+	// Bad magic
+	badMagic := append([]byte{}, valid...)
+	copy(badMagic[:4], "NOPE")
+	var out bytes.Buffer
+	if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(badMagic), id); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("bad magic: %v", err)
+	}
+
+	// Bad version
+	badVer := append([]byte{}, valid...)
+	badVer[4] = 99
+	out.Reset()
+	if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(badVer), id); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("bad version: %v", err)
+	}
+
+	// Bad kind (object instead of inbox)
+	badKind := append([]byte{}, valid...)
+	badKind[5] = KindObject
+	out.Reset()
+	if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(badKind), id); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("bad kind: %v", err)
+	}
+
+	// Truncated chunks (remaining ciphertext < 16 bytes)
+	// In valid, ciphertext starts after fixed header (58) + metaLen.
+	metaLen := int(binary.BigEndian.Uint32(valid[54:58]))
+	ctStart := inboxFixedHeader + metaLen
+	for ctLen := 0; ctLen < TagSize; ctLen++ {
+		out.Reset()
+		if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(valid[:ctStart+ctLen]), id); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("ciphertext length %d (< 16): want ErrMalformed, got %v", ctLen, err)
+		}
+	}
+
+	// Invalid chunk residue (e.g. multi-chunk with final chunk < 16 bytes)
+	// Add 5 bytes to a full chunk or test residue < 16 after full chunk.
+	ctResidue := make([]byte, StoredChunkSize+5)
+	var residueInb bytes.Buffer
+	residueInb.Write(valid[:ctStart])
+	residueInb.Write(ctResidue)
+	out.Reset()
+	if _, err := ValidateAndCopyInbox(&out, bytes.NewReader(residueInb.Bytes()), id); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("chunk residue 5: want ErrMalformed, got %v", err)
 	}
 }
 

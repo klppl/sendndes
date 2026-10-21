@@ -31,6 +31,7 @@ HASH=$(shasum -a 256 "$APP/Contents/Helpers/valv" | cut -d' ' -f1)
 
 mkdir -p "$SRC"
 rsync -a --delete --exclude .build app/ "$SRC/"
+ln -sfn ../swift "$SRC/../swift"
 printf 'let helperSHA256: String? = "%s"\n' "$HASH" > "$SRC/Sources/sendndes/HelperHash.swift"
 (cd "$SRC" && swift build -c release --arch arm64) 2>&1 | tee build/swift-build.log
 BIN=$(cd "$SRC" && swift build -c release --arch arm64 --show-bin-path)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -206,8 +207,10 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			s.handleGetInboxFile(w, r, idStr)
 		case http.MethodDelete:
 			s.handleDeleteInboxFile(w, r, idStr)
+		case http.MethodPut:
+			s.handlePutClientSealedInbox(w, r, idStr)
 		default:
-			w.Header().Set("Allow", "GET, DELETE")
+			w.Header().Set("Allow", "GET, DELETE, PUT")
 			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 	default:
@@ -459,9 +462,165 @@ func putErrorResponse(err error) (int, string) {
 		return http.StatusBadRequest, "incomplete upload stream"
 	case isTimeoutError(err):
 		return http.StatusRequestTimeout, "upload timed out"
+	case errors.Is(err, core.ErrMalformed) || errors.Is(err, core.ErrUnsupported) || errors.Is(err, core.ErrPathMismatch):
+		return http.StatusBadRequest, "malformed inbox file"
 	default:
 		return http.StatusBadRequest, "upload failed"
 	}
+}
+
+func (s *inboxServer) handlePutClientSealedInbox(w http.ResponseWriter, r *http.Request, idStr string) {
+	id, err := core.ParseFileID(idStr)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "invalid file_id")
+		return
+	}
+
+	// Reject any metadata headers: client-sealed uploads contain sealed metadata inside meta_blob.
+	for k := range r.Header {
+		if strings.HasPrefix(http.CanonicalHeaderKey(k), "X-Valv-") {
+			httpError(w, http.StatusBadRequest, "metadata headers not allowed on client-sealed upload")
+			return
+		}
+	}
+
+	// Reject known Content-Length exceeding maxUploadBytes immediately.
+	if r.ContentLength > s.opts.maxUploadBytes {
+		httpError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size")
+		return
+	}
+
+	// Concurrency semaphore for uploads.
+	timer := time.NewTimer(s.opts.slotWaitTimeout)
+	defer timer.Stop()
+	select {
+	case s.putSem <- struct{}{}:
+		defer func() { <-s.putSem }()
+	case <-timer.C:
+		httpError(w, http.StatusTooManyRequests, "upload concurrency limit reached")
+		return
+	case <-r.Context().Done():
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	limitedBody := http.MaxBytesReader(w, r.Body, s.opts.maxUploadBytes)
+	defer limitedBody.Close()
+
+	bodyReader := &streamBodyReader{
+		r:             limitedBody,
+		rc:            rc,
+		ioTimeout:     s.opts.ioTimeout,
+		contentLength: r.ContentLength,
+		reqCtx:        r.Context(),
+		srvCtx:        s.baseCtx,
+		deadline:      s.uploadDeadline(r.ContentLength, time.Now()),
+	}
+
+	// L11: Idempotency check. If the file already exists, check whether the incoming
+	// stream is identical. If identical, return 200 OK (no-op). If different, return 409 Conflict.
+	name := core.InboxName(id)
+	existingFile, existingSize, openErr := s.dir.openFile(name)
+	if openErr == nil {
+		defer existingFile.Close()
+		same, compErr := compareStreams(existingFile, existingSize, bodyReader)
+		if compErr != nil {
+			status, msg := putErrorResponse(compErr)
+			httpError(w, status, msg)
+			return
+		}
+		if err := bodyReader.verifyComplete(); err != nil {
+			status, msg := putErrorResponse(err)
+			httpError(w, status, msg)
+			return
+		}
+		if !same {
+			httpError(w, http.StatusConflict, "file_id already exists with different content")
+			return
+		}
+		_ = rc.SetWriteDeadline(time.Now().Add(s.opts.writeTimeout))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"id":"`+id.String()+`"}`+"\n")
+		return
+	}
+
+	need := r.ContentLength
+	if need < 0 {
+		need = -1
+	}
+
+	writtenID, err := writeInboxAt(s.dir, s.reg, &s.quotaMu, s.opts.maxInboxFiles, &s.bytes, need, func(fileWriter io.Writer, budget int64) (core.FileID, int64, error) {
+		cw := &countingWriter{w: &budgetWriter{w: fileWriter, left: budget, limited: budget > 0}}
+		bw := bufio.NewWriterSize(cw, core.StoredChunkSize)
+		n, valErr := core.ValidateAndCopyInbox(bw, bodyReader, id)
+		if valErr != nil {
+			return core.FileID{}, 0, valErr
+		}
+		if err := bodyReader.verifyComplete(); err != nil {
+			return core.FileID{}, 0, err
+		}
+		if err := bw.Flush(); err != nil {
+			return core.FileID{}, 0, err
+		}
+		return id, n, nil
+	})
+	if err != nil {
+		// If writeInboxAt raced with a concurrent upload of the same ID:
+		if errors.Is(err, errExists) {
+			if raceFile, _, rErr := s.dir.openFile(name); rErr == nil {
+				defer raceFile.Close()
+				// We already consumed bodyReader, but since it exists now, return 409 or conflict.
+				httpError(w, http.StatusConflict, "file_id already exists")
+				return
+			}
+		}
+		status, msg := putErrorResponse(err)
+		httpError(w, status, msg)
+		return
+	}
+
+	_ = rc.SetWriteDeadline(time.Now().Add(s.opts.writeTimeout))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusCreated)
+	_, _ = io.WriteString(w, `{"id":"`+writtenID.String()+`"}`+"\n")
+}
+
+// compareStreams compares an existing file stream with an incoming reader byte-for-byte.
+func compareStreams(existing io.Reader, existingSize int64, incoming io.Reader) (bool, error) {
+	buf1 := make([]byte, core.StoredChunkSize)
+	buf2 := make([]byte, core.StoredChunkSize)
+	var totalRead int64
+	for {
+		n1, err1 := io.ReadFull(existing, buf1)
+		if err1 != nil && !errors.Is(err1, io.EOF) && !errors.Is(err1, io.ErrUnexpectedEOF) {
+			return false, err1
+		}
+		n2, err2 := io.ReadFull(incoming, buf2)
+		if err2 != nil && !errors.Is(err2, io.EOF) && !errors.Is(err2, io.ErrUnexpectedEOF) {
+			return false, err2
+		}
+		if n1 != n2 || !bytes.Equal(buf1[:n1], buf2[:n2]) {
+			return false, nil
+		}
+		totalRead += int64(n1)
+		if errors.Is(err1, io.EOF) || errors.Is(err1, io.ErrUnexpectedEOF) {
+			if !errors.Is(err2, io.EOF) && !errors.Is(err2, io.ErrUnexpectedEOF) {
+				var extra [1]byte
+				ne, _ := incoming.Read(extra[:])
+				if ne > 0 {
+					return false, nil
+				}
+			}
+			break
+		}
+	}
+	if existingSize >= 0 && totalRead != existingSize {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *inboxServer) handleListInbox(w http.ResponseWriter, r *http.Request) {

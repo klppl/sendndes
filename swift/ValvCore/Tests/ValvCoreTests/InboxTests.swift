@@ -152,4 +152,21 @@ import Testing
                                               expected: expected)
         } == "auth")
     }
+
+    @Test func standaloneInboxSealer() throws {
+        let pubB64 = Data(testVault.inboxPublicKey).base64EncodedString()
+        let authB64 = Data(keyBytes(testVault.kAuth)).base64EncodedString()
+        let sealer = try InboxSealer(inboxPubBase64: pubB64, kAuthBase64: authB64)
+        let plain = Data("standalone inbox sealer test".utf8)
+        let meta = try Metadata(name: "test.txt", dir: "sub", mtime: 1234567, mime: "text/plain", rev: 1)
+        let out = DataOutput()
+        let fileID = try sealer.seal(plaintext: DataInput(plain), metadata: meta, to: out)
+
+        let reader = try testVault.openInbox(DataInput(out.data), expected: fileID)
+        #expect(reader.fileID == fileID)
+        #expect(reader.metadata == meta)
+        let dec = DataOutput()
+        try reader.decryptAll(to: dec)
+        #expect(dec.data == plain)
+    }
 }
