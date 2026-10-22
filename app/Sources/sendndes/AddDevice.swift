@@ -25,11 +25,32 @@ struct DevicesTab: View {
             } header: {
                 Text("Add a phone")
             } footer: {
-                Text("The phone sends files to your server and can't read or delete anything: it gets its own upload-only token. The QR code holds that token and the server keys, so show it only to the phone you are pairing. It disappears after a minute, when you close its window, when you lock the vault, or when this app loses focus. The app offers no way to save or copy it and asks macOS to keep the window out of screen sharing and screenshots, but macOS does not always honour that, so make sure nobody is recording your screen.")
+                Text("The phone scans the code, then asks your server to connect and shows a code; you approve it here when the codes match. It gets its own upload-only access and can't read or delete anything. The QR code holds the server address and the vault's two public sealing keys, so show it only to the phone you are pairing. It disappears after a minute, when you close its window, when you lock the vault, or when this app loses focus. The app offers no way to save or copy it and asks macOS to keep the window out of screen sharing and screenshots, but macOS does not always honour that.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                if model.deviceList.isEmpty {
+                    Text("No devices yet.").foregroundStyle(.secondary)
+                }
+                ForEach(model.deviceList) { d in
+                    LabeledContent {
+                        Button("Remove", role: .destructive) { Task { await model.revokeDevice(d.label) } }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: d.label)
+                            Text(d.role == "both" ? "A Mac with full access" : d.role == "upload" ? "Can only send files" : "Can read the inbox").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let m = model.devicesMessage { Text(verbatim: m).font(.callout) }
+            } header: {
+                Text("Connected devices")
+            } footer: {
+                Text("Remove a device when you lose it: it stops working at once.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .task { while !Task.isCancelled { if model.lockState == .unlocked || model.tokenIsSet { await model.refreshDevices() }; try? await Task.sleep(nanoseconds: 5_000_000_000) } }
         .onAppear { if server.isEmpty, model.serverURLText.hasPrefix("https://") { server = model.serverURLText } }
         .onChange(of: model.pairing) { _, new in
             if new != nil { PairingWindow.shared.show(model: model) } else { PairingWindow.shared.close() }
@@ -67,7 +88,7 @@ final class PairingWindow: NSObject, NSWindowDelegate {
         resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { model.clearPairing() }
         }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 640), styleMask: [.titled, .closable],
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 760), styleMask: [.titled, .closable],
                          backing: .buffered, defer: false)
         w.title = "Add a phone"
         w.sharingType = .none
@@ -102,6 +123,7 @@ private struct PairingView: View {
         .background(Theme.paper)
         .tint(Theme.pink)
         .onChange(of: model.pairing) { _, new in if new == nil { PairingWindow.shared.close() } }
+        .task { while !Task.isCancelled { await model.refreshDevices(); try? await Task.sleep(nanoseconds: 2_000_000_000) } }
     }
 
     @ViewBuilder private func content(_ p: DevicePairing) -> some View {
@@ -126,21 +148,26 @@ private struct PairingView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 8) {
-                Text("Then allow it on your server").label(.callout, weight: .bold).foregroundStyle(Theme.ink)
-                Text("Add this line to the tokens file (`--tokens-file`, or `tokens` in the data folder) and reload:")
+                Text("Then approve the phone here").label(.callout, weight: .bold).foregroundStyle(Theme.ink)
+                Text("After you scan, the phone shows a code. When the same code appears below, press Approve.")
                     .label(.caption, weight: .medium).foregroundStyle(Theme.inkSoft)
-                Text(verbatim: p.tokenLine).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.sun.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
-                HStack {
-                    Button("Copy line") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(p.tokenLine, forType: .string)
-                    }.buttonStyle(.chunkyQuietSmall)
-                    Text("sudo systemctl reload ndesd").font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.inkSoft)
+                if let reqs = model.phonePairing?.requests, !reqs.isEmpty {
+                    ForEach(reqs) { r in
+                        HStack(spacing: 10) {
+                            Text(verbatim: r.spacedCode).font(.system(size: 26, weight: .heavy, design: .rounded)).monospacedDigit().foregroundStyle(Theme.ink)
+                            Text(verbatim: r.label).label(.callout, weight: .semibold).foregroundStyle(Theme.inkSoft).lineLimit(1)
+                            Spacer()
+                            Button("Approve") { Task { await model.decidePair(r.id, approve: true); model.clearPairing() } }.buttonStyle(.chunkySmall)
+                            Button("Deny") { Task { await model.decidePair(r.id, approve: false) } }.buttonStyle(.chunkyQuietSmall)
+                        }
+                        .padding(8).sticker(radius: 12)
+                    }
+                } else if !model.tokenIsSet || model.tokenNeedsReentry {
+                    Text("Connect this Mac to your server first (Settings > Server), or approve on the server's web page.").label(.caption, weight: .medium).foregroundStyle(Theme.tomatoText)
+                } else {
+                    Text("Waiting for the phone…").label(.caption, weight: .medium).foregroundStyle(Theme.inkSoft)
                 }
-                Text("The line holds only a hash of the token. To remove a phone later, delete its line and reload.")
-                    .label(.caption, weight: .medium).foregroundStyle(Theme.inkSoft)
+                if let m = model.devicesMessage { Text(verbatim: m).label(.caption, weight: .medium).foregroundStyle(Theme.tomatoText) }
             }
             Button("Done") { model.clearPairing() }.buttonStyle(.chunkyPrimary)
         }

@@ -13,7 +13,10 @@ import (
 	"strings"
 )
 
-const senderPayloadPrefix = "ndes-sender1:"
+const (
+	senderPayloadPrefix  = "ndes-sender1:" // carries an upload token made here (the owner adds its hash to the server)
+	senderPayload2Prefix = "ndes-sender2:" // no token: the phone asks the server to pair and the owner approves
+)
 
 var errSenderConfig = errors.New("invalid sender-config argument")
 
@@ -117,6 +120,7 @@ func (a *app) cmdSenderConfig(args []string) error {
 	server := fs.String("server", "", "https URL of the inbox server")
 	label := fs.String("label", "", "name for this device (letters, digits, punctuation; no spaces)")
 	jsonFlag := fs.Bool("json", false, "one JSON object per line (for the Mac app)")
+	pairFlag := fs.Bool("pair", false, "no token: the phone asks the server to pair and the owner approves there")
 	js := jsonLines{a.stdout}
 	fail := func(err error) error {
 		if *jsonFlag {
@@ -145,27 +149,40 @@ func (a *app) cmdSenderConfig(args []string) error {
 	}
 	defer keys.Wipe()
 
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return fail(fmt.Errorf("no random numbers: %w", err))
+	token, tokenLine := "", ""
+	if !*pairFlag {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return fail(fmt.Errorf("no random numbers: %w", err))
+		}
+		defer clear(raw[:])
+		token = base64.RawURLEncoding.EncodeToString(raw[:])
+		th := sha256.Sum256([]byte(token))
+		tokenLine = "upload " + *label + " " + hex.EncodeToString(th[:])
 	}
-	defer clear(raw[:])
-	token := base64.RawURLEncoding.EncodeToString(raw[:])
-	th := sha256.Sum256([]byte(token))
-	tokenLine := "upload " + *label + " " + hex.EncodeToString(th[:])
 	ph := sha256.Sum256(keys.InboxPub[:])
 	fp := hex.EncodeToString(ph[:])[:8]
 
 	std := base64.StdEncoding
 	var sb strings.Builder
-	sb.WriteString(`{"v":1,"url":`)
+	if *pairFlag {
+		sb.WriteString(`{"v":2,"url":`)
+	} else {
+		sb.WriteString(`{"v":1,"url":`)
+	}
 	sb.WriteString(jsonString(base))
 	sb.WriteString(`,"inbox_pub":"` + std.EncodeToString(keys.InboxPub[:]) + `"`)
 	sb.WriteString(`,"k_auth":"` + std.EncodeToString(keys.InboxAuth[:]) + `"`)
-	sb.WriteString(`,"token":"` + token + `"`)
+	if !*pairFlag {
+		sb.WriteString(`,"token":"` + token + `"`)
+	}
 	sb.WriteString(`,"label":` + jsonString(*label))
 	sb.WriteString(`,"fp":"` + fp + `"}`)
-	payload := senderPayloadPrefix + base64.RawURLEncoding.EncodeToString([]byte(sb.String()))
+	prefix := senderPayloadPrefix
+	if *pairFlag {
+		prefix = senderPayload2Prefix
+	}
+	payload := prefix + base64.RawURLEncoding.EncodeToString([]byte(sb.String()))
 
 	// A redirect to a regular file gets mode 0600 before the secrets are written.
 	if f, ok := a.stdout.(*os.File); ok {
@@ -178,9 +195,15 @@ func (a *app) cmdSenderConfig(args []string) error {
 	fmt.Fprintln(a.stderr, "warning: the payload holds a secret upload token and k_auth. Show it only to the phone you are pairing (scan the QR code, then clear the screen); do not save it or send it. Add the token line to the server's tokens file and reload it.")
 	if *jsonFlag {
 		js.rec("payload", "payload", payload, "fp", fp)
-		js.rec("token-line", "line", tokenLine)
+		if !*pairFlag {
+			js.rec("token-line", "line", tokenLine)
+		}
 		js.rec("end")
 		return nil
+	}
+	if *pairFlag {
+		_, err = fmt.Fprintf(a.stdout, "payload: %s\nfp: %s\n", payload, fp)
+		return err
 	}
 	_, err = fmt.Fprintf(a.stdout, "payload: %s\ntoken-line: %s\nfp: %s\n", payload, tokenLine, fp)
 	return err

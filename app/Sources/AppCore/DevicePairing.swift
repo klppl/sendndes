@@ -7,7 +7,7 @@ public struct DevicePairing: Equatable, Sendable {
     /// `ndes-sender1:` + base64url(JSON). Holds the upload token and k_auth: never shown as text, saved or copied.
     public let payload: String
     public let fingerprint: String
-    /// `upload <label> <sha256-hex>`: only a hash, safe to show and copy.
+    /// Only for the older flow that makes the token here (`upload <label> <sha256-hex>`); empty when the phone asks the server to pair.
     public let tokenLine: String
     public let label: String
     public let server: String
@@ -31,7 +31,7 @@ final class PairingAccumulator: @unchecked Sendable {
         }
         switch type {
         case "payload":
-            guard let p = o["payload"] as? String, p.hasPrefix("ndes-sender1:"), p.utf8.count < 4096,
+            guard let p = o["payload"] as? String, p.hasPrefix("ndes-sender1:") || p.hasPrefix("ndes-sender2:"), p.utf8.count < 4096,
                   let f = o["fp"] as? String, f.count == 8, f.allSatisfy({ $0.isHexDigit && !$0.isUppercase }), payload == nil else { bad = true; return false }
             payload = p; fp = f
         case "token-line":
@@ -46,8 +46,11 @@ final class PairingAccumulator: @unchecked Sendable {
 
     func result(label: String, server: String, expires: Date) -> DevicePairing? {
         lock.lock(); defer { lock.unlock() }
-        guard !bad, ended, errorCode == nil, let p = payload, let f = fp, let l = line else { return nil }
-        return DevicePairing(payload: p, fingerprint: f, tokenLine: l, label: label, server: server, expires: expires)
+        guard !bad, ended, errorCode == nil, let p = payload, let f = fp else { return nil }
+        // A v1 payload (token made here) needs its token line; a v2 payload (pairing by approval) has none.
+        if p.hasPrefix("ndes-sender1:"), line == nil { return nil }
+        if p.hasPrefix("ndes-sender2:"), line != nil { return nil }
+        return DevicePairing(payload: p, fingerprint: f, tokenLine: line ?? "", label: label, server: server, expires: expires)
     }
 }
 

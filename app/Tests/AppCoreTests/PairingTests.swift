@@ -15,24 +15,23 @@ final class PairingTests: XCTestCase {
         let ok = await m.createPairing(label: "iphone", serverURL: "https://inbox.example.com")
         XCTAssertTrue(ok, m.pairingMessage ?? "nil")
         let p = try XCTUnwrap(m.pairing)
-        XCTAssertTrue(p.payload.hasPrefix("ndes-sender1:"))
+        XCTAssertTrue(p.payload.hasPrefix("ndes-sender2:"), "the phone asks the server to pair: no token in the code")
         XCTAssertEqual(p.fingerprint.count, 8)
-        XCTAssertTrue(p.tokenLine.hasPrefix("upload iphone "))
-        XCTAssertEqual(p.tokenLine.split(separator: " ").last?.count, 64, "the hash of the token")
-        XCTAssertFalse(p.tokenLine.contains(String(p.payload.dropFirst(13))), "the token line never holds the payload")
+        XCTAssertEqual(p.tokenLine, "")
         // The payload decodes to the documented JSON.
-        let body = String(p.payload.dropFirst("ndes-sender1:".count))
+        let body = String(p.payload.dropFirst("ndes-sender2:".count))
             .replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         let json = try XCTUnwrap(Data(base64Encoded: body + String(repeating: "=", count: (4 - body.count % 4) % 4)))
         let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: json) as? [String: Any])
-        XCTAssertEqual(obj["v"] as? Int, 1)
+        XCTAssertEqual(obj["v"] as? Int, 2)
         XCTAssertEqual(obj["url"] as? String, "https://inbox.example.com")
         XCTAssertEqual(obj["label"] as? String, "iphone")
         XCTAssertEqual(obj["fp"] as? String, p.fingerprint)
-        XCTAssertEqual((obj["token"] as? String)?.count, 43)
-        // A second pairing makes a different token.
+        XCTAssertNil(obj["token"], "no token in a pairing code")
+        XCTAssertNotNil(obj["inbox_pub"]); XCTAssertNotNil(obj["k_auth"])
+        // There is nothing random in it any more: no token is made here, the phone asks the server for its own.
         _ = await m.createPairing(label: "iphone", serverURL: "https://inbox.example.com")
-        XCTAssertNotEqual(m.pairing?.payload, p.payload)
+        XCTAssertEqual(m.pairing?.payload, p.payload)
     }
 
     func testRejectedInputsNeverRunTheHelper() async {
@@ -71,7 +70,7 @@ final class PairingTests: XCTestCase {
 
     func testNothingSecretOnTheCommandLine() async {
         let args = AppModel.senderConfigArguments(vault: "/v", server: "https://inbox.example.com", label: "iphone")
-        XCTAssertEqual(args, ["sender-config", "--json", "--passphrase-stdin", "--vault=/v", "--server=https://inbox.example.com", "--label=iphone"])
+        XCTAssertEqual(args, ["sender-config", "--json", "--passphrase-stdin", "--pair", "--vault=/v", "--server=https://inbox.example.com", "--label=iphone"])
         await env.unlock()
         _ = await env.model.createPairing(label: "iphone", serverURL: "https://inbox.example.com")
         let secret = String(env.model.pairing?.payload.dropFirst(13) ?? "")
@@ -96,6 +95,9 @@ final class PairingTests: XCTestCase {
         let good = [#"{"type":"payload","payload":"ndes-sender1:abc","fp":"0123abcd"}"#,
                     #"{"type":"token-line","line":"upload x \#(String(repeating: "a", count: 64))"}"#, #"{"type":"end"}"#]
         XCTAssertNotNil(run(good))
+        XCTAssertNotNil(run([#"{"type":"payload","payload":"ndes-sender2:abc","fp":"0123abcd"}"#, good[2]]), "a pairing payload has no token line")
+        XCTAssertNil(run([#"{"type":"payload","payload":"ndes-sender2:abc","fp":"0123abcd"}"#, good[1], good[2]]), "a pairing payload with a token line")
+        XCTAssertNil(run([good[0].replacingOccurrences(of: "sender1", with: "sender1"), good[2]]), "an old payload needs its token line")
         XCTAssertNil(run(Array(good.dropLast())), "no end record")
         XCTAssertNil(run([good[0], good[1], #"{"type":"error","code":"other"}"#]))
         XCTAssertNil(run([#"{"type":"payload","payload":"nope","fp":"0123abcd"}"#, good[1], good[2]]))

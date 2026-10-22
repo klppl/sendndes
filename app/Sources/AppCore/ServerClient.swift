@@ -222,7 +222,7 @@ public struct ServerClient {
 }
 
 /// A single request on its own session, with the redirect/challenge/size rules.
-private final class Transfer: NSObject, URLSessionDataDelegate {
+final class Transfer: NSObject, URLSessionDataDelegate {
     static let bodyCap = 4096
     private var cont: CheckedContinuation<Result<(Int, Data), UploadFailure>, Never>?
     private var data = Data()

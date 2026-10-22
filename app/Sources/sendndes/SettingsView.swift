@@ -65,24 +65,30 @@ private struct ServerTab: View {
     var body: some View {
         Form {
             Section {
-                ServerForm(model: model)
+                ConnectBox(model: model)
             } header: {
                 Text("Inbox server")
+            } footer: {
+                Text("Type the address of your server and press Connect. The server shows a code; approve it on the server's web page. Your Mac then keeps its own access in the Keychain, and files are locked on this Mac before they are sent.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                LabeledContent {
-                    Button("Copy Server Keys") { copyServerKeys() }.disabled(model.lockState != .unlocked)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Server keys")
-                        Text(model.lockState == .unlocked ? "Paste into the ndesd admin page, step 1." : "Unlock the vault first.")
-                            .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Advanced: type a token or let the server lock files") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ServerForm(model: model)
+                        LabeledContent {
+                            Button("Copy Server Keys") { copyServerKeys() }.disabled(model.lockState != .unlocked)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Server keys")
+                                Text(model.lockState == .unlocked ? "Only for a server that locks files itself (not recommended)." : "Unlock the vault first.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let keysNote { Text(verbatim: keysNote).font(.callout) }
                     }
+                    .padding(.top, 6)
                 }
-                if let keysNote { Text(verbatim: keysNote).font(.callout) }
-            } footer: {
-                Text("These let your server seal files for this vault. They can't decrypt anything, but anyone holding them can add files that look authentic, and they can't be rotated: give them only to your own server. The clipboard is cleared after 60 seconds.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

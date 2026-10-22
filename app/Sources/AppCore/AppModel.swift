@@ -60,6 +60,15 @@ public final class AppModel {
     public private(set) var changingPassphrase = false
     public var passphraseMessage: String?
 
+    // Connect this Mac to the server by approval, and approve phones
+    public enum ConnectState: Equatable { case idle, asking, waiting(code: String), failed(String), connected }
+    public private(set) var connectState: ConnectState = .idle
+    public private(set) var phonePairing: PairingState?
+    public private(set) var deviceList: [DeviceEntry] = []
+    public var devicesMessage: String?
+    var pairPollInterval: TimeInterval = 2
+    private var connectTask: Task<Void, Never>?
+
     // Add device (QR pairing for the phone app)
     public private(set) var pairing: DevicePairing?
     public private(set) var pairingBusy = false
@@ -350,12 +359,114 @@ public final class AppModel {
         return zip(x, y).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
+    // MARK: Connect to the server by approval
+
+    /// A short name for this Mac on the server's page ("alex-macbook"): letters, digits and hyphens, at most 32.
+    static func deviceLabel() -> String {
+        let host = ProcessInfo.processInfo.hostName.split(separator: ".").first.map(String.init) ?? "mac"
+        var out = ""
+        for u in host.lowercased().unicodeScalars {
+            let ok = (u.value >= 0x61 && u.value <= 0x7A) || (u.value >= 0x30 && u.value <= 0x39) || u == "-" || u == "_"
+            let c: Character = ok ? Character(u) : "-"
+            if c == "-", out.last == "-" || out.isEmpty { continue }
+            out.append(c)
+        }
+        out = String(out.prefix(32)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return out.isEmpty ? "mac" : out
+    }
+
+    /// Asks the server to connect this Mac. The server shows the owner a code; when it is approved there, the
+    /// token arrives here and is saved in the Keychain. Nothing is typed or copied.
+    public func connect(to address: String) {
+        guard connectTask == nil else { return }
+        let server: ServerURL
+        do { server = try URLPolicy.parse(address.trimmingCharacters(in: .whitespaces)) }
+        catch let e as URLPolicyError { connectState = .failed(e.message); return }
+        catch { connectState = .failed("That is not a valid server address."); return }
+        guard !vaultPath.isEmpty else { connectState = .failed("Choose or create a vault first."); return }
+        connectState = .asking
+        let interval = pairPollInterval
+        connectTask = Task { [weak self] in
+            defer { self?.connectTask = nil }
+            let req: PairRequestInfo
+            switch await PairClient.request(server: server, label: Self.deviceLabel(), role: "both") {
+            case .failure(let f): self?.connectState = .failed(f.message); return
+            case .success(let r): req = r
+            }
+            self?.connectState = .waiting(code: req.spacedCode)
+            let deadline = Date().addingTimeInterval(5 * 60)
+            var failures = 0
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { return }
+                switch await PairClient.status(server: server, request: req) {
+                case .success(.pending): failures = 0
+                case .success(.done): self?.connectState = .failed("The token was already collected. Connect again."); return
+                case .success(.approved(let token, _, _)):
+                    guard let self else { return }
+                    do {
+                        try self.saveSettings(serverURL: server.canonical, token: token, vaultPath: self.vaultPath)
+                        self.connectState = .connected
+                        Task { await self.updateServerKeysFromVault() }
+                    } catch {
+                        self.connectState = .failed("The token could not be saved in your Keychain.")
+                    }
+                    return
+                case .failure(let f):
+                    if f == .unreachable || f == .busy { failures += 1; if failures < 5 { continue } }
+                    self?.connectState = .failed(f.message); return
+                }
+            }
+            if !Task.isCancelled { self?.connectState = .failed(PairFailure.expired.message) }
+        }
+    }
+
+    public func cancelConnect() {
+        connectTask?.cancel()
+        connectTask = nil
+        connectState = .idle
+    }
+
+    // MARK: Devices (this Mac approves phones)
+
+    public func refreshDevices() async {
+        guard let (server, token) = credentials() else { devicesMessage = "Connect to the server first."; return }
+        switch await PairClient.pairingState(server: server, token: token) {
+        case .success(let st): phonePairing = st; devicesMessage = nil
+        case .failure(let f): devicesMessage = f.message; return
+        }
+        if case .success(let list) = await PairClient.devices(server: server, token: token) { deviceList = list }
+    }
+
+    /// Opens the server's pairing window so a phone can ask (it closes by itself).
+    public func openPairingWindow(minutes: Int = 10) async {
+        guard let (server, token) = credentials() else { devicesMessage = "Connect to the server first."; return }
+        if case .failure(let f) = await PairClient.ownerAction(server: server, token: token, method: "POST", path: "/v1/pair/open", json: ["minutes": minutes]) {
+            devicesMessage = f.message; return
+        }
+        await refreshDevices()
+    }
+
+    public func decidePair(_ id: String, approve: Bool) async {
+        guard let (server, token) = credentials() else { return }
+        if case .failure(let f) = await PairClient.ownerAction(server: server, token: token, method: "POST", path: "/v1/pair/\(id)/\(approve ? "approve" : "deny")") {
+            devicesMessage = f.message
+        }
+        await refreshDevices()
+    }
+
+    public func revokeDevice(_ label: String) async {
+        guard let (server, token) = credentials(), let l = label.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else { return }
+        if case .failure(let f) = await PairClient.ownerAction(server: server, token: token, method: "DELETE", path: "/v1/devices/" + l) { devicesMessage = f.message }
+        await refreshDevices()
+    }
+
     // MARK: Add device
 
     /// The helper's arguments for a pairing. Nothing secret goes on the command line: the passphrase is
     /// written to the helper's stdin, and the payload comes back on its stdout.
     static func senderConfigArguments(vault: String, server: String, label: String) -> [String] {
-        ["sender-config", "--json", "--passphrase-stdin", "--vault=\(vault)", "--server=\(server)", "--label=\(label)"]
+        ["sender-config", "--json", "--passphrase-stdin", "--pair", "--vault=\(vault)", "--server=\(server)", "--label=\(label)"]
     }
 
     /// Makes a new upload token and the QR payload for a phone (`ndes sender-config`). The pairing is kept in
@@ -396,6 +507,8 @@ public final class AppModel {
         } catch {
             pairingMessage = Self.message(for: error); return false
         }
+        // The phone will ask the server to connect: open the server's window for it, if this Mac may.
+        if credentials() != nil { Task { await self.openPairingWindow(minutes: 10) } }
         pairingTask = Task { [weak self, lifetime = pairingLifetime] in
             try? await Task.sleep(nanoseconds: UInt64(lifetime * 1_000_000_000))
             if !Task.isCancelled { self?.clearPairing() }
@@ -698,6 +811,8 @@ public final class AppModel {
         openMessage = nil
         clearPairing()
         pairingMessage = nil
+        phonePairing = nil
+        deviceList = []
         verifying = false
         verifyReport = nil
         verifyMessage = nil

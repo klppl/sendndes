@@ -176,3 +176,36 @@ func TestSenderConfigRedirectedOutputIsPrivate(t *testing.T) {
 		t.Fatalf("redirected output mode %v", st.Mode().Perm())
 	}
 }
+
+func TestSenderConfigPairHasNoToken(t *testing.T) {
+	v := newVault(t)
+	pub, kAuth := v.serverConfig()
+	r := ok(t, v.run("sender-config", "--pair", "--server", "https://inbox.example.com", "--label", "iphone"))
+	fields := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(r.stdout), "\n") {
+		k, val, _ := strings.Cut(line, ": ")
+		fields[k] = val
+	}
+	if _, has := fields["token-line"]; has || len(fields) != 2 {
+		t.Fatalf("a pairing payload has no token line: %v", fields)
+	}
+	body, okp := strings.CutPrefix(fields["payload"], "ndes-sender2:")
+	if !okp {
+		t.Fatalf("prefix: %q", fields["payload"])
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := m["token"]; has || m["v"].(float64) != 2 || m["inbox_pub"] != base64.StdEncoding.EncodeToString(pub[:]) || m["k_auth"] != base64.StdEncoding.EncodeToString(kAuth[:]) {
+		t.Fatalf("payload: %s", raw)
+	}
+	j := ok(t, v.run("sender-config", "--pair", "--json", "--server", "https://inbox.example.com", "--label", "iphone"))
+	if strings.Contains(j.stdout, "token-line") || !strings.Contains(j.stdout, `{"type":"end"}`) {
+		t.Fatalf("json: %s", j.stdout)
+	}
+}
