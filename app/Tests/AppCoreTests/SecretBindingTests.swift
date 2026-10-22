@@ -52,4 +52,17 @@ final class SecretBindingTests: XCTestCase {
         XCTAssertNil(env.model.credentials())
         XCTAssertTrue(env.model.tokenNeedsReentry)
     }
+
+    func testClearServerKeysSwitchesBackToServerSealing() throws {
+        let keys = try XCTUnwrap(ServerKeys(inboxPub: Data((0..<32).map { UInt8($0) }).base64EncodedString(),
+                                            kAuth: Data(repeating: 0xAB, count: 32).base64EncodedString()))
+        let url = "http://127.0.0.1:\(env.port)"
+        try env.model.saveSettings(serverURL: url, token: goodToken, serverKeys: keys, vaultPath: env.vault)
+        XCTAssertTrue(env.model.hasServerKeys)
+        try env.model.saveSettings(serverURL: url, token: nil, vaultPath: env.vault)
+        XCTAssertTrue(env.model.hasServerKeys, "saving without a choice keeps the keys")
+        try env.model.saveSettings(serverURL: url, token: nil, clearServerKeys: true, vaultPath: env.vault)
+        XCTAssertFalse(env.model.hasServerKeys)
+        XCTAssertEqual(env.model.credentials()?.1, goodToken, "the token is kept")
+    }
 }

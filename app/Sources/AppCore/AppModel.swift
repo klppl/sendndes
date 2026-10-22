@@ -167,8 +167,9 @@ public final class AppModel {
         }
     }
 
-    /// `token` nil keeps the stored one. A different host needs the token typed again.
-    public func saveSettings(serverURL: String, token: String?, serverKeys: ServerKeys? = nil, vaultPath newVault: String) throws {
+    /// `token` nil keeps the stored one. A different host needs the token typed again. `clearServerKeys` drops the
+    /// stored sealing keys (the app then sends files for the server to seal).
+    public func saveSettings(serverURL: String, token: String?, serverKeys: ServerKeys? = nil, clearServerKeys: Bool = false, vaultPath newVault: String) throws {
         let trimmed = serverURL.trimmingCharacters(in: .whitespaces)
         let parsed: ServerURL
         do { parsed = try URLPolicy.parse(trimmed) } catch let e as URLPolicyError { throw SettingsError.badURL(e.message) }
@@ -182,7 +183,7 @@ public final class AppModel {
         let stored = secrets.credential()
         if let stored, stored.server != parsed.canonical, (token ?? "").isEmpty { throw SettingsError.tokenRequiredForNewHost }
         let effectiveToken = (token != nil && !token!.isEmpty) ? token! : stored?.token
-        let effectiveKeys = serverKeys ?? (stored?.server == parsed.canonical ? stored?.serverKeys : nil)
+        let effectiveKeys = clearServerKeys ? nil : (serverKeys ?? (stored?.server == parsed.canonical ? stored?.serverKeys : nil))
         if let t = effectiveToken {
             do { try secrets.setCredential(token: t, server: parsed.canonical, serverKeys: effectiveKeys) } catch { throw SettingsError.keychain }
         }

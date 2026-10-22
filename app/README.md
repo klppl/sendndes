@@ -4,7 +4,7 @@ Build: `scripts/build-app.sh` → `build/sendndes.app` (arm64, ad-hoc signed, no
 Manual steps: `coordination/app-manual-test-m1.md`. Design: `coordination/app-design-v0.md`.
 
 Trust and secrets, in plain words:
-- The server sees your file's contents, name and folder for a moment while it seals them (inside the Tailscale tunnel). Client-side sealing comes later.
+- With the server keys saved (Settings → Server, optional), the app seals each file on your Mac and the server only ever stores ciphertext. Without them, the app falls back to server-side sealing: the server sees the file's contents, name and folder for a moment while it seals them (inside the Tailscale tunnel or HTTPS). The Send screen says which mode is active.
 - The bearer token is stored in your **login keychain** (legacy keychain): not synchronizable, not iCloud-synced, readable while the login keychain is unlocked (normally the whole login session). macOS may ask you to allow access after each rebuild of the app.
 - For a pull the token is written to a 0600 file in a private temp directory and deleted as soon as the helper has read it, and on lock, quit and next launch. A force-kill (SIGKILL) can leave it until the next launch.
 - The passphrase is kept in memory until you lock. A Swift String cannot be wiped, so it may stay in freed memory until overwritten.

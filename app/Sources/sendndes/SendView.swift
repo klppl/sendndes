@@ -62,16 +62,16 @@ struct SendView: View {
             HStack(spacing: 6) {
                 if model.hasServerKeys {
                     Image(systemName: "lock.shield").foregroundStyle(Theme.mintText)
-                    Text("Client-sealed: files are sealed on your Mac before upload. The server never sees plaintext or names.")
+                    Text("Sealed on this Mac: the server only receives encrypted files and never sees contents or names.")
                         .font(.caption).foregroundStyle(Theme.inkSoft)
                     HelpTip(title: "How client-sealed sending works",
                             text: "Files are sealed on your Mac using the vault's inbox public key and upload authentication key. The server stores only the sealed .inb file and never sees contents, names or directories.")
                 } else {
-                    Image(systemName: "eye").foregroundStyle(Theme.inkSoft)
-                    Text("In this version the server briefly sees each file and its name while it seals it.")
+                    Image(systemName: "eye").foregroundStyle(Theme.amberText)
+                    Text("Sealed by the server: files are sent unencrypted, and the server sees each file and its name while it seals it.")
                         .font(.caption).foregroundStyle(Theme.inkSoft)
                     HelpTip(title: "How sending works",
-                            text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server seals each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox.")
+                            text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server seals each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox. To seal on this Mac instead, choose that option in Settings → Server and paste the server keys.")
                 }
             }
         }
@@ -104,13 +104,16 @@ struct ServerForm: View {
     @State private var url = ""
     @State private var token = ""
     @State private var keysText = ""
+    @State private var sealMode: SealMode = .onMac
     @State private var error: String?
     @State private var saved = false
 
     private var tokenSaved: Bool { model.tokenIsSet && !model.tokenNeedsReentry }
     private var changed: Bool {
         url.trimmingCharacters(in: .whitespaces) != model.serverURLText || !token.isEmpty || !keysText.isEmpty
+            || (sealMode == .byServer && model.hasServerKeys)
     }
+    private enum SealMode { case onMac, byServer }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -125,11 +128,27 @@ struct ServerForm: View {
                     .textFieldStyle(StickerFieldStyle(icon: "key.fill")).labelsHidden()
                     .onSubmit(save)
             }
-            FieldLabel(title: "Client-sealing keys (optional)") {
-                SecureField("Server keys", text: $keysText,
-                            prompt: Text(model.hasServerKeys ? "Saved in your Keychain · paste to replace" : "Paste inbox_pub and k_auth to seal files on this Mac"))
-                    .textFieldStyle(StickerFieldStyle(icon: "lock.shield")).labelsHidden()
-                    .onSubmit(save)
+            FieldLabel(title: "How files are protected") {
+                VStack(spacing: 8) {
+                    SealChoice(selected: sealMode == .onMac, icon: "lock.shield", tint: Theme.mintText,
+                               title: "Seal on this Mac (recommended)",
+                               detail: "Files are encrypted here before they leave. The server only ever receives sealed files and can't see contents or names.") {
+                        sealMode = .onMac; error = nil
+                    }
+                    SealChoice(selected: sealMode == .byServer, icon: "eye", tint: Theme.amberText,
+                               title: "Let the server seal them",
+                               detail: "Files are sent unencrypted and the server encrypts them on arrival. It sees each file and its name for a moment, so use Tailscale or https.") {
+                        sealMode = .byServer; error = nil
+                    }
+                }
+            }
+            if sealMode == .onMac {
+                FieldLabel(title: "Server keys") {
+                    SecureField("Server keys", text: $keysText,
+                                prompt: Text(model.hasServerKeys ? "Saved in your Keychain · paste to replace" : "Paste the two key lines from Settings → Server → Copy Server Keys"))
+                        .textFieldStyle(StickerFieldStyle(icon: "lock.shield")).labelsHidden()
+                        .onSubmit(save)
+                }
             }
             if model.tokenNeedsReentry {
                 Banner(kind: .warn, text: "The saved token belongs to a different server address, so it isn't sent to this one. Paste it again.")
@@ -147,7 +166,10 @@ struct ServerForm: View {
                     .keyboardShortcut(compact ? nil : .defaultAction)
             }
         }
-        .onAppear { url = model.serverURLText }
+        .onAppear {
+            url = model.serverURLText
+            sealMode = (model.hasServerKeys || model.serverURLText.isEmpty) ? .onMac : .byServer
+        }
         .animation(.snappy(duration: 0.18), value: error)
     }
 
@@ -161,10 +183,48 @@ struct ServerForm: View {
             }
             parsedKeys = k
         }
+        if sealMode == .onMac, parsedKeys == nil, !model.hasServerKeys {
+            error = "Paste the server keys to seal files on this Mac, or choose “Let the server seal them”."
+            return
+        }
         do {
-            try model.saveSettings(serverURL: url, token: token.isEmpty ? nil : token, serverKeys: parsedKeys, vaultPath: model.vaultPath)
+            try model.saveSettings(serverURL: url, token: token.isEmpty ? nil : token,
+                                   serverKeys: sealMode == .onMac ? parsedKeys : nil,
+                                   clearServerKeys: sealMode == .byServer, vaultPath: model.vaultPath)
             token = ""; keysText = ""; error = nil; saved = true
             url = model.serverURLText
         } catch let e as AppModel.SettingsError { error = e.message } catch { self.error = "Could not save." }
+    }
+}
+
+/// One selectable row of the "How files are protected" choice.
+private struct SealChoice: View {
+    let selected: Bool
+    let icon: String
+    let tint: Color
+    let title: String
+    let detail: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selected ? tint : Theme.inkSoft)
+                VStack(alignment: .leading, spacing: 2) {
+                    Label(title, systemImage: icon).label(.callout).foregroundStyle(Theme.ink)
+                    Text(detail).font(.caption).foregroundStyle(Theme.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.card.opacity(selected ? 1 : 0.55)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(selected ? tint : Theme.ink.opacity(0.25), lineWidth: selected ? 2 : 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
