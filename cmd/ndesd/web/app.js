@@ -361,10 +361,50 @@ function connectBlock() {
     c.loopback ? banner("info", "This address only works on this machine. With a proxy (tailscale serve, Caddy, a tunnel), give your devices the proxy's https address instead.") : null);
 }
 
+// ---------------- device pairing ----------------
+
+function fmtCode(c) { return c.length === 6 ? c.slice(0, 3) + " " + c.slice(3) : c; }
+function roleText(r) { return r === "both" ? "Mac · full access" : r === "pull" ? "Reads the inbox" : "Phone · can only send"; }
+function mmss(sec) { return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); }
+
+// Add a device: open the window, compare the code on the device with the code here, approve. Also lists the devices.
+function pairingPanel(opts) {
+  const root = h("div", { class: "pairing" });
+  const act2 = (b, fn) => act(b, async () => { S.pairing = await fn(); redraw(); });
+  function redraw() {
+    const p = S.pairing || { open: false, seconds_left: 0, requests: [], devices: [] };
+    const reqs = p.requests.map((r) => h("li", { class: "pairreq" },
+      h("span", { class: "paircode", "aria-label": "Code " + r.code.split("").join(" ") }, fmtCode(r.code)),
+      h("span", { class: "pairwho" }, h("b", {}, r.label), h("span", { class: "soft small" }, roleText(r.role))),
+      h("span", { class: "btns" },
+        btn("Approve", "small primary", (e) => act2(e.currentTarget, () => api("POST", "/api/pairing/" + r.id + "/approve"))),
+        btn("Deny", "small danger", (e) => act2(e.currentTarget, () => api("POST", "/api/pairing/" + r.id + "/deny"))))));
+    const devs = p.devices.map((d) => h("li", {},
+      h("span", { class: "id" }, d.label), h("span", { class: "meta" }, roleText(d.role)),
+      h("button", { class: "btn quiet small danger", type: "button", "aria-label": "Remove " + d.label, onclick: (e) => act2(e.currentTarget, async () => {
+        if (!confirm("Remove " + d.label + "? It can't send files until it connects again.")) return S.pairing;
+        return api("DELETE", "/api/devices/" + encodeURIComponent(d.label));
+      }) }, "Remove")));
+    fill(root,
+      p.open
+        ? h("div", { class: "banner wait", role: "status" }, h("i", { class: "spinner", "aria-hidden": "true" }),
+            h("span", {}, "Ready for a new device (" + mmss(p.seconds_left) + " left). Open send n*des on it and press Connect; it shows a code. When the same code appears here, press Approve."),
+            btn("Close", "small", (e) => act2(e.currentTarget, () => api("POST", "/api/pairing/close"))))
+        : h("div", { class: "actions" }, btn("Add a device", "primary", (e) => act2(e.currentTarget, () => api("POST", "/api/pairing/open", { minutes: 10 }))),
+            h("span", { class: "soft small" }, "Opens a 10 minute window. Nothing can connect while it is closed.")),
+      reqs.length ? h("ul", { class: "pairreqs" }, reqs) : (p.open ? h("p", { class: "soft small" }, "No requests yet.") : null),
+      opts && opts.hideDevices ? null : h("div", {},
+        h("span", { class: "field-label" }, "Connected devices"),
+        devs.length ? h("ul", { class: "files" }, devs) : h("p", { class: "soft small" }, "None yet.")));
+  }
+  redraw();
+  return { el: root, redraw };
+}
+
 // ---------------- guided setup ----------------
 
 function stepper(now) {
-  const names = ["Link your vault", "Reachability", "Connect"];
+  const names = ["Reachability", "Connect your devices"];
   return h("ol", { class: "steps", "aria-label": "Setup progress" }, names.map((n, i) =>
     h("li", { class: i < now ? "done" : i === now ? "now" : "", "aria-current": i === now ? "step" : false },
       h("span", { class: "dot" }, i < now ? "✓" : String(i + 1)), h("span", {}, n))));
@@ -372,56 +412,38 @@ function stepper(now) {
 
 function setupFlow(start) {
   let step = start;
-  let baseline = null;   // inbox count when the connect step opened
   const box = h("div", { class: "wizard" });
   fill(app, topBar(true), box);
 
   function draw() {
     if (step === 0) {
-      const f = keysForm(() => { step = 1; draw(); });
       fill(box, stepper(0), h("section", { class: "sticker card" },
-        h("div", { class: "hero-title" }, aster("happy", 92), h("h2", {}, "Link your vault"),
-          h("p", { class: "soft" }, "In the Mac app open Settings → Server → Copy Server Keys (or run ", h("code", {}, "ndes server-config"), "), then paste here.")),
-        f.el,
-        h("p", { class: "note" }, "These keys let the server seal files for your vault. They can't open anything, but they can't be changed later either: give them only to your own server.")));
-      f.focus();
-      view = { redraw() {} };
-    } else if (step === 1) {
-      fill(box, stepper(1), h("section", { class: "sticker card" },
         h("div", { class: "hero-title" }, aster("happy", 92), h("h2", {}, "How will your devices reach it?"),
           h("p", { class: "soft" }, "Pick the situation that matches yours. You can change it later.")),
-        S.sync.fingerprint ? banner("ok", "Vault linked. Key check ", h("b", {}, S.sync.fingerprint), ", the same value the Mac app showed when you copied the keys.") : null,
-        reachForm({ saveLabel: "Continue", preferTailscale: true, onSaved: () => { step = 2; draw(); },
-          back: btn("Back", "quiet", () => { step = 0; draw(); }) })));
+        reachForm({ saveLabel: "Continue", preferTailscale: true, onSaved: () => { step = 1; draw(); } })));
       view = { redraw() {} };
+      startPolling(5000);
     } else {
-      baseline = baseline == null ? S.file_count : baseline;
-      const live = h("div", {});
-      const mascot = h("div", {});
+      const c = connectURL();
+      const live = pairingPanel();
       const done = btn("Finish", "primary", () => act(done, async () => {
         S.sync = await api("POST", "/api/setup/finish");
         dashboard();
       }));
-      fill(box, stepper(2), h("section", { class: "sticker card" },
-        h("div", { class: "hero-title" }, mascot, h("h2", {}, "Connect your Mac"),
-          h("p", { class: "soft" }, "In the Mac app open Send and paste these two. The token stays in your Mac's keychain.")),
-        connectBlock(), live,
-        h("div", { class: "actions" }, btn("Back", "quiet", () => { step = 1; draw(); }), h("span", { class: "grow" }), done)));
-      const drawLive = () => {
-        const arrived = S.file_count > baseline;
-        fill(mascot, aster(arrived ? "smitten" : "happy", 92));
-        fill(live, arrived
-          ? banner("ok", h("b", {}, "It works! "), "A file just arrived. It waits here until your vault pulls it in.")
-          : h("div", { class: "banner wait", role: "status" }, h("i", { class: "spinner", "aria-hidden": "true" }),
-              h("span", {}, "Waiting for a first file… Send any file from the Mac app to test the connection.")));
-        if (arrived) { done.textContent = "Done, show my server"; startPolling(5000); }
-      };
-      drawLive();
-      view = { redraw: () => { if (S.file_count > baseline || S.file_count < baseline) drawLive(); } };
+      fill(box, stepper(1), h("section", { class: "sticker card" },
+        h("div", { class: "hero-title" }, aster("happy", 92), h("h2", {}, "Connect your Mac"),
+          h("p", { class: "soft" }, "In the Mac app open Settings → Server, type this address and press Connect.")),
+        h("span", { class: "field-label" }, "Server address"),
+        h("div", { class: "copyrow" }, h("span", { class: "val" }, c.url),
+          h("span", { class: "btns" }, btn("Copy", "small primary", () => copy(c.url, "Address")))),
+        c.guessed ? banner("info", "This server listens on every interface, so the address uses the name you opened this page with. Use whatever name your devices reach this machine by.") : null,
+        c.loopback ? banner("info", "This address only works on this machine. With a proxy (tailscale serve, Caddy, a tunnel), give your devices the proxy's https address instead.") : null,
+        h("p", { class: "soft" }, "Then open the pairing window here and approve the code the Mac shows."),
+        live.el,
+        h("div", { class: "actions" }, btn("Back", "quiet", () => { step = 0; draw(); }), h("span", { class: "grow" }), done)));
+      view = { redraw() { live.redraw(); startPolling(S.pairing && S.pairing.open ? 2000 : 5000); } };
       startPolling(2000);
-      return;
     }
-    startPolling(5000);
   }
   draw();
 }
@@ -443,11 +465,14 @@ function heroState() {
 function dashboard() {
   const hero = h("section", { class: "sticker hero" });
   const inbox = h("section", { class: "sticker card" });
+  const pairingUI = pairingPanel();
   const connect = h("section", { class: "sticker card" },
-    h("div", { class: "card-head" }, h("h2", {}, "Connect a device")),
-    h("p", { class: "soft small" }, "Paste these in the Mac app under Send, or use them with ", h("code", {}, "ndes pull"), "."),
+    h("div", { class: "card-head" }, h("h2", {}, "Devices")),
+    h("p", { class: "soft small" }, "Connect a Mac or a phone: it shows a code, you compare it here and approve. No tokens to copy."),
     h("div", {}));
   const connectBody = connect.lastChild;
+  const addr = h("div", {});
+  fill(connectBody, addr, pairingUI.el);
   let lastKey = "";
 
   function drawHero() {
@@ -488,10 +513,13 @@ function dashboard() {
   }
 
   function drawConnect() {
-    const key = connectURL().url;
-    if (key === lastKey) return;
-    lastKey = key;
-    fill(connectBody, connectBlock());
+    pairingUI.redraw();
+    const c = connectURL();
+    if (c.url === lastKey) return;
+    lastKey = c.url;
+    fill(addr, h("span", { class: "field-label" }, "Server address"),
+      h("div", { class: "copyrow" }, h("span", { class: "val" }, c.url), h("span", { class: "btns" }, btn("Copy", "small primary", () => copy(c.url, "Address")))),
+      c.loopback ? banner("info", "This address only works on this machine. With a proxy (tailscale serve, Caddy, a tunnel), give your devices the proxy's https address instead.") : null);
   }
 
   function settings() {
@@ -502,7 +530,7 @@ function dashboard() {
       if (!confirm("Make a new token? Every device using the old one stops sending until you paste the new one.")) return;
       const r = await api("POST", "/api/token/regenerate");
       lastKey = ""; drawConnect();
-      fill(regenOut, banner(r.warning ? "warn" : "ok", r.warning ? sentence(r.warning) : "New token made. Copy it into your devices from Connect a device."));
+      fill(regenOut, banner(r.warning ? "warn" : "ok", r.warning ? sentence(r.warning) : "New token made. Show it under Access token to copy it."));
     }, regenOut));
     const cur = h("input", { id: "curpw", type: "password", autocomplete: "current-password" });
     const nw = h("input", { id: "newpw", type: "password", autocomplete: "new-password" });
@@ -517,11 +545,12 @@ function dashboard() {
       h("div", { class: "section-title" }, h("h2", {}, "Settings")),
       panel("Reachability", "Where your devices connect", reachForm({ saveLabel: "Save and apply" })),
       panel("Limits and HTTPS", "File size, queue length, certificate", limitsForm()),
-      panel("Vault keys", S.sync.fingerprint ? "Linked · key check " + S.sync.fingerprint : "Not linked",
-        h("div", {}, h("p", { class: "soft small" }, "Only paste new keys if this server should serve a different vault. Files already waiting were sealed for the old one."), keys.el)),
-      panel("Access token", "Change it if a device is lost", h("div", {},
-        h("p", { class: "soft small" }, "Every device sends this token. A new one locks out every device until you paste it again."), regenOut,
-        h("div", { class: "actions" }, regen))),
+      panel("Advanced: vault keys", S.sync.fingerprint ? "Linked · key check " + S.sync.fingerprint : "Not needed",
+        h("div", {}, h("p", { class: "soft small" }, "Not needed for the Mac app or the phone: they seal files themselves and this server then holds no keys. Paste the vault's server keys only if a script should upload plain files for this server to seal (it then sees them)."), keys.el)),
+      panel("Advanced: shared access token", "An older way to connect a device", h("div", {},
+        h("p", { class: "soft small" }, "One token that every device using it shares. Prefer Add a device. A new token locks out everything that uses the old one."),
+        h("div", { class: "actions" }, btn("Show token", "small", (e) => act(e.currentTarget, async () => { copy((await api("GET", "/api/token")).token, "Token"); }))),
+        regenOut, h("div", { class: "actions" }, regen))),
       panel("Admin password", "For this page", h("div", {},
         h("div", { class: "row" },
           h("label", { class: "field", for: "curpw" }, h("span", { class: "field-label" }, "Current password"), cur),
@@ -580,8 +609,7 @@ function limitsForm() {
 
 async function mainScreen() {
   [S, ifaces] = await Promise.all([api("GET", "/api/status"), api("GET", "/api/interfaces")]);
-  if (!S.sync.linked) setupFlow(0);
-  else if (!S.sync.setup_done) setupFlow(1);
+  if (!S.sync.setup_done) setupFlow(0);
   else dashboard();
 }
 

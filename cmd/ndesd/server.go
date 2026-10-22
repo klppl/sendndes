@@ -101,6 +101,17 @@ type inboxServer struct {
 	baseCtx  context.Context
 	slotMu   sync.Mutex
 	slots    map[string]int // uploads in progress per token label
+
+	pair       *pairing // nil: device pairing is not offered
+	pairReqRL  *ipRateLimiter
+	pairStatRL *ipRateLimiter
+}
+
+// setPairing turns on device pairing (see pairing.go).
+func (s *inboxServer) setPairing(p *pairing) {
+	s.pair = p
+	s.pairReqRL = newIPRateLimiter(5, 20*time.Second)
+	s.pairStatRL = newIPRateLimiter(60, 500*time.Millisecond)
 }
 
 // newInboxServer builds the handler. cfg may be nil unless opts.enableServerSealing is set; a token in
@@ -187,6 +198,9 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Nothing here may be cached by a proxy (an authenticated GET must never be served to someone else).
 	w.Header().Set("Cache-Control", "no-store")
 	key := s.clientKey(r)
+	if s.pair != nil && s.servePairPublic(w, r, key) {
+		return
+	}
 	role, label, ok := s.authenticate(r)
 	if !ok {
 		// A wrong or missing token costs the caller a point in its bucket; a valid token is never
@@ -207,6 +221,14 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
+	if s.pair != nil && (strings.HasPrefix(path, "/v1/pair/") || strings.HasPrefix(path, "/v1/devices")) {
+		if role != roleBoth {
+			forbidden(w)
+			return
+		}
+		s.servePairOwner(w, r)
+		return
+	}
 	switch {
 	case path == "/v1/ping":
 		if r.Method != http.MethodGet {
@@ -1033,4 +1055,127 @@ func (l *ipRateLimiter) allow(ip string, now time.Time) bool {
 	}
 	b.tokens -= 1
 	return true
+}
+
+// ---- device pairing endpoints ----
+
+// servePairPublic answers the two calls a device makes before it has a token. It reports whether it handled r.
+func (s *inboxServer) servePairPublic(w http.ResponseWriter, r *http.Request, key string) bool {
+	switch {
+	case r.URL.Path == "/v1/pair/request":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", "POST")
+			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return true
+		}
+		if !s.pairReqRL.allow(key, time.Now()) {
+			httpError(w, http.StatusTooManyRequests, "too many requests")
+			return true
+		}
+		var req struct {
+			Label      string `json:"label"`
+			Role       string `json:"role"`
+			SecretHash string `json:"secret_hash"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 2048)
+		if !readJSON(w, r, &req) {
+			return true
+		}
+		id, code, err := s.pair.request(req.Label, req.Role, req.SecretHash, key)
+		switch {
+		case errors.Is(err, errPairClosed):
+			apiErr(w, http.StatusForbidden, "this server is not accepting new devices right now; open the pairing window first")
+		case errors.Is(err, errPairBusy):
+			apiErr(w, http.StatusTooManyRequests, "too many pairing requests are waiting")
+		case err != nil:
+			apiErr(w, http.StatusBadRequest, "invalid pairing request")
+		default:
+			writeJSON(w, http.StatusCreated, map[string]any{"id": id, "code": code, "expires_in": int(pairRequestTTL.Seconds())})
+		}
+		return true
+	case strings.HasPrefix(r.URL.Path, "/v1/pair/status/"):
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return true
+		}
+		if !s.pairStatRL.allow(key, time.Now()) {
+			httpError(w, http.StatusTooManyRequests, "too many requests")
+			return true
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/v1/pair/status/")
+		if len(id) != 32 || r.URL.RawQuery != "" {
+			httpError(w, http.StatusNotFound, "not found")
+			return true
+		}
+		st, err := s.pair.status(id, r.Header.Get("X-Pair-Secret"))
+		if err != nil {
+			httpError(w, http.StatusNotFound, "not found")
+			return true
+		}
+		writeJSON(w, http.StatusOK, st)
+		return true
+	}
+	return false
+}
+
+// servePairOwner is for tokens with the role both (the owner's Mac).
+func (s *inboxServer) servePairOwner(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Path
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	switch {
+	case p == "/v1/pair/pending" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"open": s.pair.secondsOpen() > 0, "seconds_left": s.pair.secondsOpen(), "requests": s.pair.pending()})
+	case p == "/v1/pair/open" && r.Method == http.MethodPost:
+		var req struct {
+			Minutes int `json:"minutes"`
+		}
+		if !readJSON(w, r, &req) {
+			return
+		}
+		if req.Minutes < 1 || req.Minutes > int(pairMaxWindow.Minutes()) {
+			apiErr(w, http.StatusBadRequest, "minutes must be between 1 and 60")
+			return
+		}
+		s.pair.open(time.Duration(req.Minutes) * time.Minute)
+		writeJSON(w, http.StatusOK, map[string]any{"open": true, "seconds_left": s.pair.secondsOpen()})
+	case p == "/v1/pair/close" && r.Method == http.MethodPost:
+		s.pair.close()
+		writeJSON(w, http.StatusOK, map[string]any{"open": false})
+	case strings.HasPrefix(p, "/v1/pair/") && r.Method == http.MethodPost && (strings.HasSuffix(p, "/approve") || strings.HasSuffix(p, "/deny")):
+		parts := strings.Split(strings.TrimPrefix(p, "/v1/pair/"), "/")
+		if len(parts) != 2 || len(parts[0]) != 32 {
+			apiErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		var err error
+		if parts[1] == "approve" {
+			err = s.pair.approve(parts[0])
+		} else {
+			err = s.pair.deny(parts[0])
+		}
+		switch {
+		case errors.Is(err, errPairUnknown):
+			apiErr(w, http.StatusNotFound, "that request is gone (it may have expired)")
+		case err != nil:
+			apiErr(w, http.StatusInternalServerError, "could not save the new device")
+		default:
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		}
+	case p == "/v1/devices" && r.Method == http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"devices": s.pair.store.devices()})
+	case strings.HasPrefix(p, "/v1/devices/") && r.Method == http.MethodDelete:
+		label := strings.TrimPrefix(p, "/v1/devices/")
+		if validTokenLabel(label) != nil {
+			apiErr(w, http.StatusBadRequest, "invalid label")
+			return
+		}
+		if err := s.pair.store.remove(label); err != nil {
+			apiErr(w, http.StatusNotFound, "no such device")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	default:
+		apiErr(w, http.StatusNotFound, "not found")
+	}
 }

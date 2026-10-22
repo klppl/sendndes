@@ -25,6 +25,7 @@ var strictB64 = base64.StdEncoding.Strict()
 // serverConfig holds the cryptographic keys and bearer token for ndesd.
 // ndesd never reads vault.json and never holds VK or inbox_priv (SPEC 3, 6.2).
 type serverConfig struct {
+	HasKeys  bool // inbox_pub and k_auth are set (server-side sealing is possible)
 	InboxPub [core.KeySize]byte
 	KAuth    [core.KeySize]byte
 	Token    []byte
@@ -112,6 +113,12 @@ func loadServerConfig(configPath, tokenFilePath string, tokenOptional bool) (*se
 }
 
 func parseServerConfigBytes(data []byte) (*serverConfig, error) {
+	return parseServerConfig(data, true)
+}
+
+// parseServerConfig reads `key: value` lines. With keysRequired false (managed mode) inbox_pub and k_auth may both
+// be missing: the server then only stores sealed uploads and cannot seal anything itself.
+func parseServerConfig(data []byte, keysRequired bool) (*serverConfig, error) {
 	if !utf8.Valid(data) {
 		return nil, errors.New("config is not valid UTF-8")
 	}
@@ -156,14 +163,14 @@ func parseServerConfigBytes(data []byte) (*serverConfig, error) {
 			return nil, fmt.Errorf("unknown key %q", key)
 		}
 	}
-	if !seen["inbox_pub"] {
+	if seen["inbox_pub"] != seen["k_auth"] || (keysRequired && !seen["inbox_pub"]) {
 		cfg.Wipe()
+		if seen["inbox_pub"] {
+			return nil, errors.New("missing k_auth")
+		}
 		return nil, errors.New("missing inbox_pub")
 	}
-	if !seen["k_auth"] {
-		cfg.Wipe()
-		return nil, errors.New("missing k_auth")
-	}
+	cfg.HasKeys = seen["inbox_pub"]
 	return &cfg, nil
 }
 
@@ -223,4 +230,22 @@ func readLegacyTokenFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: %w", display(path), err)
 	}
 	return []byte(tok), nil
+}
+
+// loadManagedConfig reads <data>/server.conf for managed mode. A missing file, or one without keys, is fine: the
+// server then holds no key material.
+func loadManagedConfig(path string) (*serverConfig, error) {
+	data, err := readProtectedFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return &serverConfig{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer clear(data)
+	cfg, err := parseServerConfig(data, false)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", display(path), err)
+	}
+	return cfg, nil
 }

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klppl/sendndes/core"
@@ -112,6 +113,10 @@ type manager struct {
 	state   adminState
 	run     *runningSync
 	lastErr string
+
+	tokens  *tokenStore // <data>/tokens: hashes of every device that was approved
+	pair    *pairing
+	handler atomic.Pointer[inboxServer]
 }
 
 type runningSync struct {
@@ -135,6 +140,12 @@ func newManager(dataDir string, defaultListen string, ackDefault bool, stderr io
 		return nil, err
 	}
 	m := &manager{dataDir: dataDir, dir: dir, reg: newTempRegistry(), stderr: stderr}
+	m.tokens = newTokenStore(filepath.Join(dataDir, tokensFileName), nil, func(ts *tokenSet) {
+		if h := m.handler.Load(); h != nil {
+			h.setTokens(ts)
+		}
+	})
+	m.pair = newPairing(m.tokens)
 	m.state.Sync = defaultSyncSettings(defaultListen)
 	m.state.Sync.AckPlainHTTP = ackDefault
 	legacy := false
@@ -205,14 +216,20 @@ func (m *manager) saveStateLocked() error {
 	return m.writePrivate(stateFileName, append(data, '\n'))
 }
 
+// configured reports whether the vault's server keys were pasted (server-side sealing is then possible). The
+// server itself runs either way: devices pair with it and upload files they sealed themselves.
 func (m *manager) configured() bool {
-	_, err := os.Stat(m.path(confFileName))
-	return err == nil
+	cfg, err := m.readConfig()
+	if err != nil {
+		return false
+	}
+	defer cfg.Wipe()
+	return cfg.HasKeys
 }
 
-// readConfig loads server.conf.
+// readConfig loads server.conf, which may be missing or hold no keys.
 func (m *manager) readConfig() (*serverConfig, error) {
-	return loadServerConfig(m.path(confFileName), "", false)
+	return loadManagedConfig(m.path(confFileName))
 }
 
 func newToken() (string, error) {
@@ -226,8 +243,13 @@ func newToken() (string, error) {
 // writeConfig stores keys and token as server.conf.
 func (m *manager) writeConfig(cfg *serverConfig) error {
 	b64 := base64.StdEncoding
-	out := fmt.Sprintf("inbox_pub: %s\nk_auth: %s\ntoken: %s\n",
-		b64.EncodeToString(cfg.InboxPub[:]), b64.EncodeToString(cfg.KAuth[:]), cfg.Token)
+	out := ""
+	if cfg.HasKeys {
+		out += fmt.Sprintf("inbox_pub: %s\nk_auth: %s\n", b64.EncodeToString(cfg.InboxPub[:]), b64.EncodeToString(cfg.KAuth[:]))
+	}
+	if len(cfg.Token) > 0 {
+		out += fmt.Sprintf("token: %s\n", cfg.Token)
+	}
 	return m.writePrivate(confFileName, []byte(out))
 }
 
@@ -249,7 +271,8 @@ func (m *manager) setKeys(text string) error {
 		if old, err := m.readConfig(); err == nil {
 			token = append([]byte(nil), old.Token...)
 			old.Wipe()
-		} else {
+		}
+		if len(token) == 0 {
 			t, err := newToken()
 			if err != nil {
 				return err
@@ -276,7 +299,7 @@ func (m *manager) regenerateToken() (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cfg, err := m.readConfig()
-	if err != nil {
+	if err != nil || !cfg.HasKeys {
 		return "", errors.New("link your vault first")
 	}
 	defer cfg.Wipe()
@@ -302,6 +325,9 @@ func (m *manager) token() (string, error) {
 		return "", err
 	}
 	defer cfg.Wipe()
+	if len(cfg.Token) == 0 {
+		return "", errors.New("this server has no shared token: devices connect from the Devices card")
+	}
 	return string(cfg.Token), nil
 }
 
@@ -309,7 +335,7 @@ func (m *manager) token() (string, error) {
 // can see the server holds the keys of the vault they expect.
 func (m *manager) keyFingerprint() string {
 	cfg, err := m.readConfig()
-	if err != nil {
+	if err != nil || !cfg.HasKeys {
 		return ""
 	}
 	defer cfg.Wipe()
@@ -383,9 +409,6 @@ func (m *manager) startLocked() error {
 	}
 	cfg, err := m.readConfig()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("link your vault first")
-		}
 		return fail(err)
 	}
 	s := m.state.Sync
@@ -415,19 +438,20 @@ func (m *manager) startLocked() error {
 		maxInboxFiles:     s.MaxInboxFiles,
 		slotWaitTimeout:   defaultSlotWaitTimeout,
 
-		enableServerSealing: true, // the keys are in server.conf: the owner pasted them in the web GUI
+		// Only if the owner pasted the vault's keys (an advanced choice): otherwise the server holds none.
+		enableServerSealing: cfg.HasKeys,
 		clientIPHeader:      os.Getenv("NDESD_CLIENT_IP_HEADER"),
 	})
-	legacy := legacyTokenSet(cfg.Token)
-	cfg.Wipe()
-	extra, terr := m.readExtraTokens()
-	if terr == nil {
-		var merged *tokenSet
-		if merged, terr = mergeTokenSets(legacy, extra); terr == nil {
-			h.setTokens(merged)
-		}
+	var legacy *tokenSet
+	if len(cfg.Token) > 0 {
+		legacy = legacyTokenSet(cfg.Token)
 	}
-	if terr != nil {
+	cfg.Wipe()
+	m.tokens.setLegacy(legacy)
+	h.setPairing(m.pair)
+	m.handler.Store(h)
+	if terr := m.tokens.loadApply(); terr != nil {
+		m.handler.Store(nil)
 		cancel()
 		_ = ln.Close()
 		h.Wipe()
@@ -457,15 +481,6 @@ func (m *manager) startLocked() error {
 	return nil
 }
 
-// readExtraTokens reads <data>/tokens; a missing file means no extra tokens.
-func (m *manager) readExtraTokens() (*tokenSet, error) {
-	p := m.path(tokensFileName)
-	if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	return readTokensFile(p, true)
-}
-
 // reloadTokens re-reads server.conf's token and <data>/tokens into the running server (SIGHUP). On any
 // error the running server keeps what it has.
 func (m *manager) reloadTokens() error {
@@ -478,21 +493,17 @@ func (m *manager) reloadTokens() error {
 	if err != nil {
 		return err
 	}
-	legacy := legacyTokenSet(cfg.Token)
+	var legacy *tokenSet
+	if len(cfg.Token) > 0 {
+		legacy = legacyTokenSet(cfg.Token)
+	}
 	cfg.Wipe()
-	extra, err := m.readExtraTokens()
-	if err != nil {
-		return err
-	}
-	merged, err := mergeTokenSets(legacy, extra)
-	if err != nil {
-		return err
-	}
-	m.run.handler.setTokens(merged)
-	return nil
+	m.tokens.setLegacy(legacy)
+	return m.tokens.loadApply()
 }
 
 func (m *manager) stopLocked() {
+	m.handler.Store(nil)
 	r := m.run
 	if r == nil {
 		return
@@ -670,3 +681,13 @@ func (m *manager) readSetupCode() string {
 }
 
 func (m *manager) clearSetupCode() { _ = os.Remove(m.path(setupCodeFile)) }
+
+// pairingView is what the web page shows of device pairing.
+func (m *manager) pairingView() map[string]any {
+	return map[string]any{
+		"open":         m.pair.secondsOpen() > 0,
+		"seconds_left": m.pair.secondsOpen(),
+		"requests":     m.pair.pending(),
+		"devices":      m.tokens.devices(),
+	}
+}

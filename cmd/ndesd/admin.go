@@ -188,6 +188,49 @@ func (a *adminServer) routeAuthed(w http.ResponseWriter, r *http.Request, p, met
 			resp["warning"] = err.Error()
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case p == "/api/pairing" && method == http.MethodGet:
+		writeJSON(w, http.StatusOK, a.m.pairingView())
+	case p == "/api/pairing/open" && method == http.MethodPost:
+		var req struct{ Minutes int }
+		if !readJSON(w, r, &req) {
+			return
+		}
+		if req.Minutes < 1 || req.Minutes > int(pairMaxWindow.Minutes()) {
+			apiErr(w, http.StatusBadRequest, "minutes must be between 1 and 60")
+			return
+		}
+		a.m.pair.open(time.Duration(req.Minutes) * time.Minute)
+		writeJSON(w, http.StatusOK, a.m.pairingView())
+	case p == "/api/pairing/close" && method == http.MethodPost:
+		a.m.pair.close()
+		writeJSON(w, http.StatusOK, a.m.pairingView())
+	case strings.HasPrefix(p, "/api/pairing/") && method == http.MethodPost && (strings.HasSuffix(p, "/approve") || strings.HasSuffix(p, "/deny")):
+		parts := strings.Split(strings.TrimPrefix(p, "/api/pairing/"), "/")
+		if len(parts) != 2 || len(parts[0]) != 32 {
+			apiErr(w, http.StatusNotFound, "not found")
+			return
+		}
+		var err error
+		if parts[1] == "approve" {
+			err = a.m.pair.approve(parts[0])
+		} else {
+			err = a.m.pair.deny(parts[0])
+		}
+		if errors.Is(err, errPairUnknown) {
+			apiErr(w, http.StatusNotFound, "that request is gone (it may have expired)")
+			return
+		} else if err != nil {
+			apiErr(w, http.StatusInternalServerError, "could not save the new device")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.m.pairingView())
+	case strings.HasPrefix(p, "/api/devices/") && method == http.MethodDelete:
+		label := strings.TrimPrefix(p, "/api/devices/")
+		if validTokenLabel(label) != nil || a.m.pair.store.remove(label) != nil {
+			apiErr(w, http.StatusNotFound, "no such device")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.m.pairingView())
 	case p == "/api/settings" && method == http.MethodPost:
 		a.handleSettings(w, r)
 	case p == "/api/server/start" && method == http.MethodPost:
@@ -428,6 +471,7 @@ func (a *adminServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sync":       a.m.status(),
+		"pairing":    a.m.pairingView(),
 		"files":      files,
 		"file_count": count,
 		"file_bytes": total,

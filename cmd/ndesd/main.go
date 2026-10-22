@@ -41,6 +41,10 @@ Classic mode (no web GUI), flags:
                                    role upload, pull or both. "ndes sender-config" prints a line to add. Reloaded on
                                    SIGHUP (systemctl reload ndesd); a broken file keeps the old tokens.
   --inbox <dir>                    inbox storage directory
+  --pairing                        let devices pair by approval (Mac app: Settings > Server > Connect; phone: QR code):
+                                   needs --tokens-file in a folder ndesd may write to; the window is opened from the
+                                   Mac app, or at start with --pairing-open-minutes
+  --pairing-open-minutes <n>       open the pairing window for n minutes right at start (first device)
   --client-ip-header <name>        trust this header (for example CF-Connecting-IP) for the address behind a proxy on
                                    this host, only when the TCP peer is loopback and the header is exactly one IP
                                    (default: off; X-Forwarded-For is never used)
@@ -86,6 +90,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		tokensPath     string
 		enableSealing  bool
 		clientIPHdr    string
+		pairingOn      bool
+		pairingOpen    int
 		maxSealedBytes int64
 		inboxPath      string
 		listenAddr     string
@@ -109,6 +115,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&tokenFile, "token-file", "", "bearer token file")
 	fs.StringVar(&tokensPath, "tokens-file", "", "accepted tokens (role, label, sha256)")
 	fs.BoolVar(&enableSealing, "enable-server-sealing", false, "enable server-side sealing (PUT /inbox with headers)")
+	fs.BoolVar(&pairingOn, "pairing", false, "let devices pair by approval")
+	fs.IntVar(&pairingOpen, "pairing-open-minutes", 0, "open the pairing window at start")
 	fs.StringVar(&clientIPHdr, "client-ip-header", "", "header with the client IP behind a loopback proxy")
 	fs.Int64Var(&maxSealedBytes, "max-sealed-bytes", defaultMaxSealedBytes, "largest sealed upload")
 	fs.StringVar(&inboxPath, "inbox", "", "inbox directory")
@@ -165,6 +173,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ndesd: no tokens: give --tokens-file (see ndesd --help)")
 		return 1
 	}
+	if pairingOn && tokensPath == "" {
+		fmt.Fprintln(stderr, "ndesd: --pairing needs --tokens-file (the new devices are written there)")
+		return 1
+	}
+	if pairingOpen < 0 || pairingOpen > int(pairMaxWindow.Minutes()) || (pairingOpen > 0 && !pairingOn) {
+		fmt.Fprintln(stderr, "ndesd: --pairing-open-minutes needs --pairing and a value from 1 to 60")
+		return 1
+	}
 	if maxSealedBytes <= 0 {
 		fmt.Fprintln(stderr, "ndesd: --max-sealed-bytes must be positive")
 		return 1
@@ -218,6 +234,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	var fileTokens *tokenSet
 	if tokensPath != "" {
+		if pairingOn {
+			// The first device creates the file by pairing.
+			if _, err := os.Lstat(tokensPath); errors.Is(err, os.ErrNotExist) {
+				if err := os.WriteFile(tokensPath, nil, 0o600); err != nil {
+					fmt.Fprintf(stderr, "ndesd: cannot create the tokens file: %v\n", err)
+					return 1
+				}
+			}
+		}
 		t, err := readTokensFile(tokensPath, true)
 		if err != nil {
 			fmt.Fprintf(stderr, "ndesd: %v\n", err)
@@ -264,16 +289,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "ndesd: %v\n", err)
 		return 1
 	}
-	if len(merged.entries) == 0 {
+	if len(merged.entries) == 0 && !pairingOn {
 		fmt.Fprintln(stderr, "ndesd: no tokens: the tokens file has no entries")
 		return 1
 	}
 	srvHandler.setTokens(merged)
+	var store *tokenStore
+	if pairingOn {
+		store = newTokenStore(tokensPath, legacySet, srvHandler.setTokens)
+		pair := newPairing(store)
+		srvHandler.setPairing(pair)
+		if pairingOpen > 0 {
+			pair.open(time.Duration(pairingOpen) * time.Minute)
+			fmt.Fprintf(stderr, "ndesd: pairing window open for %d minutes\n", pairingOpen)
+		}
+	}
 	// SIGHUP reloads the tokens file (an empty file revokes everything in it). Without one there is nothing to
 	// reload, but the signal still must not stop the server (systemctl reload).
 	stopReload := installReload(stderr, func() error {
 		if tokensPath == "" {
 			return errNothingToReload
+		}
+		if store != nil {
+			return store.loadApply()
 		}
 		t, err := readTokensFile(tokensPath, true)
 		if err != nil {

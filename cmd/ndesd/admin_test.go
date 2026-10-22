@@ -340,3 +340,90 @@ func TestAdminSetupDone(t *testing.T) {
 		t.Fatal("linked install without the field should load as set up")
 	}
 }
+
+// A server with no vault keys at all: devices pair by approval and upload sealed files; nothing is pasted or copied.
+func TestAdminKeylessServerPairsADevice(t *testing.T) {
+	e := newAdminEnv(t)
+	e.m.setPassword("correct horse battery")
+	e.ok("POST", "/api/login", map[string]string{"password": "correct horse battery"})
+	e.ok("POST", "/api/settings", map[string]any{"listen": freeAddr(t), "max_upload_bytes": 10 << 20, "max_inbox_files": 5, "max_concurrent_uploads": 2})
+	w := e.ok("POST", "/api/server/start", nil)
+	var st syncStatus
+	json.Unmarshal(w.Body.Bytes(), &st)
+	if !st.Running || st.Linked {
+		t.Fatalf("a keyless server must run and not be 'linked': %+v", st)
+	}
+	if _, err := os.Stat(e.m.path(confFileName)); err == nil {
+		t.Fatal("a keyless server wrote server.conf")
+	}
+	base := "http://" + st.Addr
+	post := func(path, hdrSecret string, body any) (int, []byte) {
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", base+path, strings.NewReader(string(b)))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, data
+	}
+	// Window closed: refused.
+	if c, _ := post("/v1/pair/request", "", map[string]string{"label": "mac", "role": "both", "secret_hash": secretHash("s")}); c != 403 {
+		t.Fatalf("closed window: %d", c)
+	}
+	e.ok("POST", "/api/pairing/open", map[string]int{"minutes": 5})
+	c, data := post("/v1/pair/request", "", map[string]string{"label": "mac", "role": "both", "secret_hash": secretHash("s")})
+	var rr reqResp
+	json.Unmarshal(data, &rr)
+	if c != 201 {
+		t.Fatalf("request: %d %s", c, data)
+	}
+	// The admin page lists it with the same code the device was told.
+	var view struct {
+		Requests []pendingInfo `json:"requests"`
+	}
+	json.Unmarshal(e.ok("GET", "/api/pairing", nil).Body.Bytes(), &view)
+	if len(view.Requests) != 1 || view.Requests[0].Code != rr.Code {
+		t.Fatalf("admin view: %+v (device code %s)", view, rr.Code)
+	}
+	e.ok("POST", "/api/pairing/"+rr.ID+"/approve", nil)
+	req, _ := http.NewRequest("GET", base+"/v1/pair/status/"+rr.ID, nil)
+	req.Header.Set("X-Pair-Secret", "s")
+	resp, _ := http.DefaultClient.Do(req)
+	var ps pairStatus
+	json.NewDecoder(resp.Body).Decode(&ps)
+	resp.Body.Close()
+	if ps.State != pairApproved || len(ps.Token) != 43 {
+		t.Fatalf("status: %+v", ps)
+	}
+	ping := func(tok string) int {
+		rq, _ := http.NewRequest("GET", base+"/v1/ping", nil)
+		rq.Header.Set("Authorization", "Bearer "+tok)
+		rp, err := http.DefaultClient.Do(rq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rp.Body.Close()
+		return rp.StatusCode
+	}
+	if ping(ps.Token) != 204 {
+		t.Fatal("the new token does not work on the running server")
+	}
+	// The approved token survives a restart of the sync server (it is in the tokens file).
+	e.ok("POST", "/api/server/restart", nil)
+	if ping(ps.Token) != 204 {
+		t.Fatal("the token did not survive a restart")
+	}
+	// Revoke from the page.
+	e.ok("DELETE", "/api/devices/mac", nil)
+	if ping(ps.Token) != 401 {
+		t.Fatal("a revoked device still works")
+	}
+	// Server-side sealing is not on without keys.
+	rq, _ := http.NewRequest("PUT", base+"/inbox", strings.NewReader("x"))
+	rq.Header.Set("Authorization", "Bearer "+ps.Token)
+	if rp, _ := http.DefaultClient.Do(rq); rp != nil {
+		rp.Body.Close()
+	}
+}

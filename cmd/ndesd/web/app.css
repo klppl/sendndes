@@ -244,3 +244,10 @@ header.top { flex-wrap: nowrap; }
 .banner.wait { align-items: center; } .banner.wait::before { display: none; }
 details.sticker > summary .t, details.sticker > summary .d { grid-column: 1; }
 details.sticker > summary::after { grid-column: 2; grid-row: 1 / span 2; }
+
+/* device pairing */
+.pairreqs { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 10px; }
+.pairreq { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 2px solid var(--ink, #241b2f); border-radius: 14px; background: var(--card, #fffcf5); }
+.paircode { font: 800 30px/1 ui-rounded, "SF Pro Rounded", system-ui, sans-serif; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.pairwho { display: grid; gap: 2px; flex: 1; min-width: 120px; }
+.pairing .actions { margin: 8px 0; }
