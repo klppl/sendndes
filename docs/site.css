@@ -159,6 +159,7 @@ section { scroll-margin-top: 16px; }
 .ticks li::before { content: ""; position: absolute; left: 0; top: 3px; width: 22px; height: 22px; border-radius: 9px; border: 2.5px solid var(--ink); background: var(--mint); }
 .ticks li::after { content: ""; position: absolute; left: 7px; top: 7px; width: 6px; height: 10px; border: solid var(--on-accent); border-width: 0 3px 3px 0; transform: rotate(45deg); }
 .ticks b { font-weight: 900; }
+.soon { display: inline-block; vertical-align: middle; margin-left: 10px; padding: 3px 10px; border: 2.5px solid var(--ink); border-radius: 999px; background: var(--mint); color: var(--on-accent); font-size: 12px; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
 
 .contact-sheet { position: relative; aspect-ratio: 4 / 3; }
 .contact-sheet img, .server-shots img { position: absolute; border: 3px solid var(--ink); border-radius: 16px; box-shadow: 7px 7px 0 var(--ink); background: var(--card); }

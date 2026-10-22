@@ -17,7 +17,7 @@
 |---|---|
 | **Vault** | A folder of encrypted files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
 | **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
-| **iPhone app** (`ios/`) | Send-only: share photos and files from any app to your inbox. Encrypts on the phone, retries in the background. Build it yourself with Xcode ([ios/README](coordination/README-ios.md)). |
+| **iPhone app** (`ios/`) | *Coming soon.* Send-only: share photos and files from any app to your inbox. Encrypts on the phone, retries in the background. |
 | **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It can never read the vault. Devices connect by approving a code on its page. |
 | **CLI** (`ndes`) | Everything the app does, plus verify, recover and change the passphrase. |
 
@@ -110,7 +110,7 @@ docker compose up -d
 docker compose logs ndesd            # shows the one-time setup code
 ```
 
-Open <http://127.0.0.1:8080> and follow the setup. The iPhone app is built separately (see [coordination/README-ios.md](coordination/README-ios.md)). To pull from the command line instead of the Mac app:
+Open <http://127.0.0.1:8080> and follow the setup. To pull from the command line instead of the Mac app:
 
 ```bash
 ./ndes pull --server http://<tailscale-ip>:8485 --token-file token.txt
