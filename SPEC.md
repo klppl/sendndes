@@ -365,10 +365,12 @@ Do not start step N+1 until step N passes its tests. The owner has decided not t
 
 ## 12. Open questions
 
-- Deletion semantics: tombstones vs plain delete, and what happens when sync resurrects a deleted file.
-- Whether the Mac app uses loopback WebDAV or a File Provider (iOS needs a File Provider regardless).
-- Conflict policy when two devices rewrite the same file_id (use `rev`; probably keep both, surface to the user).
-- K_auth rotation (inbox epochs, section 3).
+All four are deferred by the owner (D-DF1). None is needed for the current single-device Mac app plus VPS inbox. They stay open, with no code or format change planned.
+
+- Deletion semantics: tombstones vs plain delete, and what happens when sync resurrects a deleted file. Revisit when a second device (the iPhone) can write to the vault.
+- Conflict policy when two devices rewrite the same file_id (use `rev`; probably keep both, surface to the user). Revisit when a second device (the iPhone) can write to the vault.
+- K_auth rotation (inbox epochs, section 3). Revisit after a suspected leak of K_auth. (The trigger "when client-sealed upload exists" has already been met: the Mac app now holds K_auth and seals on the device, section 8.)
+- Whether the Mac app uses loopback WebDAV or a File Provider (iOS needs a File Provider regardless). Revisit only when the iPhone app starts; no Mac integration work before then.
 
 ## 13. Resolved decisions
 
