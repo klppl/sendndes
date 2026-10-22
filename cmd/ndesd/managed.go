@@ -27,13 +27,18 @@ import (
 // from the admin web GUI instead of flags.
 //
 //	<data>/server.conf   inbox_pub, k_auth, token (mode 0600)
+//	<data>/tokens        optional: more tokens with roles, one "<role> <label> <sha256-hex>" per line (mode 0600);
+//	                     reloaded on SIGHUP. Managed mode holds inbox_pub and k_auth (they are pasted in the web
+//	                     GUI), so it always has server-side sealing; for a server that holds no keys, use
+//	                     classic mode with --tokens-file.
 //	<data>/admin.json    admin password hash and sync settings (mode 0600)
 //	<data>/inbox/        the sealed .inb files
 const (
-	confFileName  = "server.conf"
-	stateFileName = "admin.json"
-	inboxDirName  = "inbox"
-	setupCodeFile = "setup-code"
+	confFileName   = "server.conf"
+	stateFileName  = "admin.json"
+	inboxDirName   = "inbox"
+	setupCodeFile  = "setup-code"
+	tokensFileName = "tokens"
 )
 
 // syncSettings are the owner-editable settings of the sync (Mode B) server.
@@ -207,7 +212,7 @@ func (m *manager) configured() bool {
 
 // readConfig loads server.conf.
 func (m *manager) readConfig() (*serverConfig, error) {
-	return loadServerConfig(m.path(confFileName), "")
+	return loadServerConfig(m.path(confFileName), "", false)
 }
 
 func newToken() (string, error) {
@@ -409,8 +414,25 @@ func (m *manager) startLocked() error {
 		maxConcurrentReqs: defaultMaxConcurrentReqs,
 		maxInboxFiles:     s.MaxInboxFiles,
 		slotWaitTimeout:   defaultSlotWaitTimeout,
+
+		enableServerSealing: true, // the keys are in server.conf: the owner pasted them in the web GUI
+		clientIPHeader:      os.Getenv("NDESD_CLIENT_IP_HEADER"),
 	})
+	legacy := legacyTokenSet(cfg.Token)
 	cfg.Wipe()
+	extra, terr := m.readExtraTokens()
+	if terr == nil {
+		var merged *tokenSet
+		if merged, terr = mergeTokenSets(legacy, extra); terr == nil {
+			h.setTokens(merged)
+		}
+	}
+	if terr != nil {
+		cancel()
+		_ = ln.Close()
+		h.Wipe()
+		return fail(fmt.Errorf("tokens file: %w", terr))
+	}
 	srv := newHTTPServer(h)
 	r := &runningSync{srv: srv, handler: h, cancel: cancel, done: make(chan struct{}), addr: ln.Addr().String(), tls: useTLS}
 	m.run = r
@@ -432,6 +454,41 @@ func (m *manager) startLocked() error {
 		}
 	}()
 	fmt.Fprintf(m.stderr, "ndesd: sync server listening on %s\n", r.addr)
+	return nil
+}
+
+// readExtraTokens reads <data>/tokens; a missing file means no extra tokens.
+func (m *manager) readExtraTokens() (*tokenSet, error) {
+	p := m.path(tokensFileName)
+	if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return readTokensFile(p, true)
+}
+
+// reloadTokens re-reads server.conf's token and <data>/tokens into the running server (SIGHUP). On any
+// error the running server keeps what it has.
+func (m *manager) reloadTokens() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.run == nil {
+		return errNothingToReload
+	}
+	cfg, err := m.readConfig()
+	if err != nil {
+		return err
+	}
+	legacy := legacyTokenSet(cfg.Token)
+	cfg.Wipe()
+	extra, err := m.readExtraTokens()
+	if err != nil {
+		return err
+	}
+	merged, err := mergeTokenSets(legacy, extra)
+	if err != nil {
+		return err
+	}
+	m.run.handler.setTokens(merged)
 	return nil
 }
 

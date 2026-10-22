@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -24,7 +23,11 @@ import (
 )
 
 const (
-	defaultMaxUploadBytes    = 4 << 30 // 4 GiB
+	defaultMaxUploadBytes = 4 << 30 // 4 GiB
+	// maxPlaintextBytes is the per-file limit the phone app enforces (90 MiB); a sealed upload is that plus
+	// padding, tags and the header, so the server's limit for it is one MiB more.
+	maxPlaintextBytes        = 90 << 20
+	defaultMaxSealedBytes    = maxPlaintextBytes + 1<<20
 	defaultIOTimeout         = 30 * time.Second
 	defaultWriteTimeout      = 30 * time.Second
 	defaultReadHeaderTimeout = 10 * time.Second
@@ -55,6 +58,10 @@ type serverOpts struct {
 	minFreeBytes      int64         // 0 = no margin
 	minUploadRate     int64         // bytes/s: deadline = uploadBase + length/rate (L3)
 	uploadBase        time.Duration // fixed part of that deadline (default uploadBaseTimeout)
+
+	maxSealedBytes      int64  // largest PUT /inbox/{id} body (default defaultMaxSealedBytes)
+	enableServerSealing bool   // PUT /inbox with X-Ndes-* headers; needs inbox_pub and k_auth (off by default)
+	clientIPHeader      string // header that names the client behind a loopback proxy (empty = ignore headers)
 }
 
 func defaultServerOpts() serverOpts {
@@ -69,29 +76,39 @@ func defaultServerOpts() serverOpts {
 		maxInboxBytes:     defaultMaxInboxBytes,
 		minFreeBytes:      defaultMinFreeBytes,
 		minUploadRate:     defaultMinUploadRate,
+		maxSealedBytes:    defaultMaxSealedBytes,
+
+		enableServerSealing: true, // tests only: main and managed mode set their own options
 	}
 }
 
 // inboxServer implements the SPEC 8 Mode B HTTP API.
-// It holds only inbox_pub, k_auth, and the bearer token digest, and never
-// logs filenames, metadata, sizes, contents, or tokens (SPEC 10 rule 4).
+// It holds the SHA-256 of each accepted token and, only when server-side sealing is
+// enabled, inbox_pub and k_auth. It never logs filenames, metadata, sizes,
+// contents, or tokens (SPEC 10 rule 4).
 type inboxServer struct {
-	dir       *dirHandle
-	reg       *tempRegistry
-	inboxPub  [core.KeySize]byte
-	kAuth     [core.KeySize]byte
-	token     []byte
-	tokenHash [32]byte
-	opts      serverOpts
-	putSem    chan struct{}
-	reqSem    chan struct{}
-	quotaMu   sync.Mutex
-	bytes     byteQuota // guarded by quotaMu
-	authRL    *ipRateLimiter
-	baseCtx   context.Context
+	dir      *dirHandle
+	reg      *tempRegistry
+	inboxPub [core.KeySize]byte // only with opts.enableServerSealing
+	kAuth    [core.KeySize]byte // only with opts.enableServerSealing
+	tokens   atomic.Pointer[tokenSet]
+	opts     serverOpts
+	putSem   chan struct{}
+	reqSem   chan struct{}
+	quotaMu  sync.Mutex
+	bytes    byteQuota // guarded by quotaMu
+	authRL   *ipRateLimiter
+	baseCtx  context.Context
+	slotMu   sync.Mutex
+	slots    map[string]int // uploads in progress per token label
 }
 
+// newInboxServer builds the handler. cfg may be nil unless opts.enableServerSealing is set; a token in
+// cfg (the legacy single token) is accepted with the role both. Further tokens come from setTokens.
 func newInboxServer(baseCtx context.Context, dir *dirHandle, reg *tempRegistry, cfg *serverConfig, opts serverOpts) *inboxServer {
+	if opts.maxSealedBytes <= 0 {
+		opts.maxSealedBytes = defaultMaxSealedBytes
+	}
 	if opts.maxUploadBytes <= 0 {
 		opts.maxUploadBytes = defaultMaxUploadBytes
 	}
@@ -125,30 +142,36 @@ func newInboxServer(baseCtx context.Context, dir *dirHandle, reg *tempRegistry, 
 	if opts.uploadBase <= 0 {
 		opts.uploadBase = uploadBaseTimeout
 	}
-	tokCopy := make([]byte, len(cfg.Token))
-	copy(tokCopy, cfg.Token)
 	s := &inboxServer{
-		bytes:     byteQuota{max: opts.maxInboxBytes, minFree: opts.minFreeBytes},
-		dir:       dir,
-		reg:       reg,
-		inboxPub:  cfg.InboxPub,
-		kAuth:     cfg.KAuth,
-		token:     tokCopy,
-		tokenHash: sha256.Sum256(tokCopy),
-		opts:      opts,
-		putSem:    make(chan struct{}, opts.maxConcurrentPUTs),
-		reqSem:    make(chan struct{}, opts.maxConcurrentReqs),
-		authRL:    newIPRateLimiter(authRateBurst, authRateRefillInterval),
-		baseCtx:   baseCtx,
+		bytes:   byteQuota{max: opts.maxInboxBytes, minFree: opts.minFreeBytes},
+		dir:     dir,
+		reg:     reg,
+		opts:    opts,
+		putSem:  make(chan struct{}, opts.maxConcurrentPUTs),
+		reqSem:  make(chan struct{}, opts.maxConcurrentReqs),
+		authRL:  newIPRateLimiter(authRateBurst, authRateRefillInterval),
+		baseCtx: baseCtx,
+	}
+	if cfg != nil {
+		if opts.enableServerSealing {
+			s.inboxPub, s.kAuth = cfg.InboxPub, cfg.KAuth
+		}
+		if len(cfg.Token) > 0 {
+			s.tokens.Store(legacyTokenSet(cfg.Token))
+		}
+	}
+	if s.tokens.Load() == nil {
+		s.tokens.Store(&tokenSet{})
 	}
 	return s
 }
 
+// setTokens swaps the accepted tokens atomically (startup, SIGHUP reload).
+func (s *inboxServer) setTokens(t *tokenSet) { s.tokens.Store(t) }
+
 func (s *inboxServer) Wipe() {
 	clear(s.inboxPub[:])
 	clear(s.kAuth[:])
-	clear(s.token)
-	clear(s.tokenHash[:])
 }
 
 func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -161,9 +184,14 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	remoteIP := clientIP(r.RemoteAddr)
-	if !s.authenticate(r, remoteIP) {
-		if !s.authRL.allow(remoteIP, time.Now()) {
+	// Nothing here may be cached by a proxy (an authenticated GET must never be served to someone else).
+	w.Header().Set("Cache-Control", "no-store")
+	key := s.clientKey(r)
+	role, label, ok := s.authenticate(r)
+	if !ok {
+		// A wrong or missing token costs the caller a point in its bucket; a valid token is never
+		// looked at by the limiter (S4), so a flood of bad guesses cannot lock out the real client.
+		if !s.authRL.allow(key, time.Now()) {
 			httpError(w, http.StatusTooManyRequests, "too many failed authentication attempts")
 			return
 		}
@@ -180,11 +208,32 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Path
 	switch {
+	case path == "/v1/ping":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	case path == "/inbox":
 		switch r.Method {
 		case http.MethodPut:
+			if !s.opts.enableServerSealing {
+				httpError(w, http.StatusNotFound, "not found")
+				return
+			}
+			// Server-side sealing makes files that ingest accepts (it holds k_auth), so an upload-only token must
+			// not reach it: only a token that may also pull (the owner's) can.
+			if role != roleBoth {
+				forbidden(w)
+				return
+			}
 			s.handlePutInbox(w, r)
 		case http.MethodGet:
+			if !role.canPull() {
+				forbidden(w)
+				return
+			}
 			s.handleListInbox(w, r)
 		default:
 			w.Header().Set("Allow", "GET, PUT")
@@ -198,10 +247,28 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
+			if !role.canPull() {
+				forbidden(w)
+				return
+			}
 			s.handleGetInboxFile(w, r, idStr)
 		case http.MethodDelete:
+			if !role.canPull() {
+				forbidden(w)
+				return
+			}
 			s.handleDeleteInboxFile(w, r, idStr)
 		case http.MethodPut:
+			if !role.canUpload() {
+				forbidden(w)
+				return
+			}
+			release, ok := s.acquireTokenSlot(label)
+			if !ok {
+				httpError(w, http.StatusTooManyRequests, "too many uploads in progress for this token")
+				return
+			}
+			defer release()
 			s.handlePutClientSealedInbox(w, r, idStr)
 		default:
 			w.Header().Set("Allow", "GET, DELETE, PUT")
@@ -212,27 +279,87 @@ func (s *inboxServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// authenticate checks the Authorization: Bearer <token> header in constant
-// time. Per review recommendation #2 (D-R2), it enforces len(token) <= 512
-// before hashing.
-func (s *inboxServer) authenticate(r *http.Request, _ string) bool {
+func forbidden(w http.ResponseWriter) {
+	httpError(w, http.StatusForbidden, "this token may not do that")
+}
+
+// clientKey names the caller for the failed-authentication limiter: the TCP peer, or, only when
+// --client-ip-header is set AND the peer is loopback (a proxy or tunnel on this host) AND the header
+// holds exactly one IP address, that address. X-Forwarded-For is never used.
+func (s *inboxServer) clientKey(r *http.Request) string {
+	peer := clientIP(r.RemoteAddr)
+	if s.opts.clientIPHeader == "" {
+		return limiterKey(peer)
+	}
+	if ip := net.ParseIP(peer); ip == nil || !ip.IsLoopback() {
+		return limiterKey(peer)
+	}
+	vals := r.Header.Values(s.opts.clientIPHeader)
+	if len(vals) != 1 {
+		return limiterKey(peer)
+	}
+	v := strings.TrimSpace(vals[0])
+	if strings.ContainsAny(v, ", %") {
+		return limiterKey(peer)
+	}
+	if ip := net.ParseIP(v); ip != nil {
+		return limiterKey(ip.String())
+	}
+	return limiterKey(peer)
+}
+
+// limiterKey is the address the failed-attempt limiter counts: an IPv6 client is counted per /64 (one
+// customer's whole prefix), so rotating through addresses of one prefix does not give a fresh bucket.
+func limiterKey(addr string) string {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return addr
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+}
+
+// authenticate checks the Authorization: Bearer <token> header against the accepted tokens in
+// constant time and returns the token's role. len(token) <= 512 is enforced before hashing (D-R2).
+func (s *inboxServer) authenticate(r *http.Request) (tokenRole, string, bool) {
 	vals := r.Header.Values("Authorization")
 	if len(vals) != 1 {
-		return false
+		return 0, "", false
 	}
 	auth := vals[0]
 	const prefix = "Bearer "
 	if !strings.HasPrefix(auth, prefix) {
-		return false
+		return 0, "", false
 	}
 	got := auth[len(prefix):]
 	if len(got) == 0 || len(got) > maxTokenLen {
-		return false
+		return 0, "", false
 	}
-	gotHash := sha256.Sum256([]byte(got))
-	hashMatch := subtle.ConstantTimeCompare(gotHash[:], s.tokenHash[:])
-	lenMatch := subtle.ConstantTimeEq(int32(len(got)), int32(len(s.token)))
-	return (hashMatch & lenMatch) == 1
+	return s.tokens.Load().lookup(got)
+}
+
+// maxUploadsPerToken keeps one token (a phone, or someone holding its token) from taking every upload slot.
+const maxUploadsPerToken = 2
+
+func (s *inboxServer) acquireTokenSlot(label string) (func(), bool) {
+	s.slotMu.Lock()
+	defer s.slotMu.Unlock()
+	if s.slots == nil {
+		s.slots = map[string]int{}
+	}
+	if s.slots[label] >= maxUploadsPerToken {
+		return nil, false
+	}
+	s.slots[label]++
+	return func() {
+		s.slotMu.Lock()
+		defer s.slotMu.Unlock()
+		if s.slots[label]--; s.slots[label] <= 0 {
+			delete(s.slots, label)
+		}
+	}, true
 }
 
 // knownNdesHeaders lists every X-Ndes-* header accepted by PUT /inbox.
@@ -489,8 +616,8 @@ func (s *inboxServer) handlePutClientSealedInbox(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Reject known Content-Length exceeding maxUploadBytes immediately.
-	if r.ContentLength > s.opts.maxUploadBytes {
+	// Reject known Content-Length exceeding the sealed-upload limit immediately.
+	if r.ContentLength > s.opts.maxSealedBytes {
 		httpError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size")
 		return
 	}
@@ -509,7 +636,7 @@ func (s *inboxServer) handlePutClientSealedInbox(w http.ResponseWriter, r *http.
 	}
 
 	rc := http.NewResponseController(w)
-	limitedBody := http.MaxBytesReader(w, r.Body, s.opts.maxUploadBytes)
+	limitedBody := http.MaxBytesReader(w, r.Body, s.opts.maxSealedBytes)
 	defer limitedBody.Close()
 
 	bodyReader := &streamBodyReader{
@@ -569,14 +696,18 @@ func (s *inboxServer) handlePutClientSealedInbox(w http.ResponseWriter, r *http.
 		return id, n, nil
 	})
 	if err != nil {
-		// If writeInboxAt raced with a concurrent upload of the same ID:
+		// Two uploads of one id raced and this one lost: identical bytes are a successful retry.
 		if errors.Is(err, errExists) {
-			if raceFile, _, rErr := s.dir.openFile(name); rErr == nil {
-				defer raceFile.Close()
-				// We already consumed bodyReader, but since it exists now, return 409 or conflict.
-				httpError(w, http.StatusConflict, "file_id already exists")
+			if errors.Is(err, errExistsIdentical) {
+				_ = rc.SetWriteDeadline(time.Now().Add(s.opts.writeTimeout))
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Content-Type-Options", "nosniff")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"id":"`+id.String()+`"}`+"\n")
 				return
 			}
+			httpError(w, http.StatusConflict, "file_id already exists with different content")
+			return
 		}
 		status, msg := putErrorResponse(err)
 		httpError(w, status, msg)
@@ -872,14 +1003,21 @@ func (l *ipRateLimiter) allow(ip string, now time.Time) bool {
 	b, ok := l.buckets[ip]
 	if !ok {
 		if len(l.buckets) >= maxRateLimiterTrackedIPs {
-			// Evict expired entries; if still full, clear map to bound memory.
+			// Evict expired entries; if still full, drop the least recently seen one (never everyone's).
 			for k, v := range l.buckets {
 				if now.Sub(v.lastTime) > time.Duration(l.burst)*l.refill {
 					delete(l.buckets, k)
 				}
 			}
 			if len(l.buckets) >= maxRateLimiterTrackedIPs {
-				clear(l.buckets)
+				oldest, first := "", true
+				var oldestT time.Time
+				for k, v := range l.buckets {
+					if first || v.lastTime.Before(oldestT) {
+						oldest, oldestT, first = k, v.lastTime, false
+					}
+				}
+				delete(l.buckets, oldest)
 			}
 		}
 		l.buckets[ip] = &rateBucket{tokens: l.burst - 1, lastTime: now}

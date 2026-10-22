@@ -138,7 +138,7 @@ final class Env {
     func startServerProcess(maxUploadBytes: Int64 = 64 << 20, extraArgs: [String] = []) throws {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: binDir + "/ndesd")
-        p.arguments = ["--config", tmp + "/server.conf", "--token-file", tmp + "/ndesd.token", "--inbox", inbox,
+        p.arguments = ["--enable-server-sealing", "--config", tmp + "/server.conf", "--token-file", tmp + "/ndesd.token", "--inbox", inbox,
                        "--listen", "127.0.0.1:\(port)", "--max-upload-bytes", String(maxUploadBytes)] + extraArgs
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try p.run()

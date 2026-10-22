@@ -260,10 +260,32 @@ func moveNoReplaceAt(d *dirHandle, tmp, name string) error {
 	if errors.Is(err, unix.EEXIST) {
 		return errExists
 	}
-	if _, serr := d.lstat(name); serr == nil {
-		return errExists
+	// Any other failure (for example a file system without hard links) is an error, never a rename that
+	// could replace a file that is already there.
+	return err
+}
+
+// errExistsIdentical accompanies errExists when the file that was already there has exactly the bytes
+// of the upload that lost the race, so the loser can answer 200 like any retry.
+var errExistsIdentical = errors.New("identical file already stored")
+
+// sameContent reports whether two regular files in d have identical bytes.
+func (d *dirHandle) sameContent(a, b string) bool {
+	fa, sa, err := d.openFile(a)
+	if err != nil {
+		return false
 	}
-	return unix.Renameat(d.fd(), tmp, d.fd(), name)
+	defer fa.Close()
+	fb, sb, err := d.openFile(b)
+	if err != nil {
+		return false
+	}
+	defer fb.Close()
+	if sa != sb {
+		return false
+	}
+	same, err := compareStreams(fa, sa, fb)
+	return err == nil && same
 }
 
 // byteQuota is the inbox byte budget (L2). reserved is the sum of the budgets of the uploads in
@@ -381,6 +403,9 @@ func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInbox
 	}
 	finalName := core.InboxName(id)
 	if err = moveNoReplaceAt(d, tmp, finalName); err != nil {
+		if errors.Is(err, errExists) && d.sameContent(tmp, finalName) {
+			err = fmt.Errorf("%w: %w", errExists, errExistsIdentical)
+		}
 		return core.FileID{}, err
 	}
 	_ = d.f.Sync()
@@ -431,9 +456,15 @@ func (r *tempRegistry) cleanupAll() {
 
 var handledSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
 
-func installSignalCleanup(reg *tempRegistry, exit func(int)) func() {
+// installSignalCleanup removes temp files and exits on SIGINT, SIGTERM, SIGQUIT and, unless the caller
+// reloads on SIGHUP, SIGHUP.
+func installSignalCleanup(reg *tempRegistry, exit func(int), hupReloads bool) func() {
+	sigs := handledSignals
+	if hupReloads {
+		sigs = []os.Signal{syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT}
+	}
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, handledSignals...)
+	signal.Notify(ch, sigs...)
 	done := make(chan struct{})
 	go func() {
 		select {

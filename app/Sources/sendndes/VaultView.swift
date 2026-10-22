@@ -26,11 +26,13 @@ struct VaultBrowser: View {
     @State private var targeted = false
     @State private var quickLook: URL?
     @State private var confirmOpen: FileEntry?
+    /// The folder being browsed ("" = the top of the vault). A search shows matches from every folder.
+    @State private var folder = ""
     @AppStorage(Prefs.skipOpenWarning) private var skipOpenWarning = false
 
     private var visible: [FileEntry] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return model.entries }
+        guard !q.isEmpty else { return FolderTree.files(in: folder, of: model.entries) }
         return model.entries.filter { $0.name.localizedCaseInsensitiveContains(q) || $0.dir.localizedCaseInsensitiveContains(q) }
     }
 
@@ -56,6 +58,11 @@ struct VaultBrowser: View {
                     }
                     .buttonStyle(.chunkyQuiet).disabled(model.busy)
                     .help("Refresh the list (⌘R)").accessibilityLabel("Refresh")
+                    Button { Task { await model.verifyVault() } } label: {
+                        Image(systemName: "checkmark.seal").frame(height: 20)
+                    }
+                    .buttonStyle(.chunkyQuiet).disabled(model.busy || model.verifying)
+                    .help("Check that every file is intact and authentic").accessibilityLabel("Verify vault")
                     Button { FilePanels.addToVault(model) } label: { Label("Add files…", systemImage: "plus") }
                         .buttonStyle(.chunkyPrimary).disabled(model.adding)
                 }
@@ -64,6 +71,7 @@ struct VaultBrowser: View {
             }
             banners
             if !model.addItems.isEmpty { addingList }
+            folderBar
             table(shown, arrived: arrived)
             selectionBar
         }
@@ -77,6 +85,8 @@ struct VaultBrowser: View {
         } isTargeted: { targeted = $0 }
         .searchable(text: $query, placement: .toolbar, prompt: "Search names and folders")
         .onChange(of: query) { _, _ in selection = selection.intersection(Set(visible.map(\.id))) }
+        .onChange(of: folder) { _, _ in selection = selection.intersection(Set(visible.map(\.id))) }
+        .onChange(of: model.entries) { _, e in if !FolderTree.exists(folder, in: e) { folder = "" } }
         .onChange(of: model.adding) { _, _ in clearWhenSealed() }
         .onAppear { clearWhenSealed() }
         .quickLookPreview($quickLook)
@@ -132,8 +142,10 @@ struct VaultBrowser: View {
 
     @ViewBuilder private var banners: some View {
         inboxBanner
-        if model.listingProblems > 0 {
-            Banner(kind: .warn, text: "\(model.listingProblems) \(plural(model.listingProblems, "file has a problem", "files have problems")). Run `ndes verify` in Terminal for details.")
+        verifyBanner
+        if model.listingProblems > 0 && model.verifyReport == nil {
+            Banner(kind: .warn, text: "\(model.listingProblems) \(plural(model.listingProblems, "file has a problem", "files have problems")). Verify the vault to check every file.",
+                   actionTitle: model.verifying ? nil : "Verify now") { Task { await model.verifyVault() } }
         }
         if model.listingStale { Banner(kind: .info, text: "The list may be out of date.", actionTitle: "Refresh") { Task { await model.rebuildListing() } } }
         ForEach(model.addNotes, id: \.self) { Banner(kind: .info, text: $0) }
@@ -143,6 +155,63 @@ struct VaultBrowser: View {
             Banner(kind: .success, text: m,
                    actionTitle: model.exportFolder == nil ? nil : "Show in Finder",
                    action: { if let f = model.exportFolder { NSWorkspace.shared.open(URL(fileURLWithPath: f)) } })
+        }
+    }
+
+    /// The result of the last Verify. File names are not shown; `ndes verify` in Terminal lists them.
+    @ViewBuilder private var verifyBanner: some View {
+        if model.verifying {
+            Banner(kind: .info, text: "Checking every file in the vault. This reads all of them, so it can take a while.")
+        } else if let r = model.verifyReport {
+            let n = r.objects + r.inboxFiles
+            if r.clean {
+                Banner(kind: .success, text: "Checked \(n) \(plural(n, "file", "files")): all intact and authentic."
+                       + (r.warnings > 0 ? " \(r.warnings) \(plural(r.warnings, "note", "notes")) (run `ndes verify` in Terminal)." : ""))
+            } else {
+                Banner(kind: .error, text: "\(r.problems) of \(n) \(plural(n, "file", "files")) failed the check. Run `ndes verify` in Terminal to see which, and keep a backup copy.")
+            }
+        } else if let m = model.verifyMessage {
+            Banner(kind: .error, text: m)
+        }
+    }
+
+    // MARK: Folders
+
+    /// Breadcrumbs and the folders one level down. Hidden while searching, and when the vault has no folders.
+    @ViewBuilder private var folderBar: some View {
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        let kids = FolderTree.children(of: folder, in: model.entries)
+        if !searching, !folder.isEmpty || !kids.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Button { folder = "" } label: { Label("Vault", systemImage: "archivebox") }
+                        .buttonStyle(.chunkyQuietSmall).disabled(folder.isEmpty)
+                    ForEach(FolderTree.crumbs(folder)) { c in
+                        Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Theme.inkSoft)
+                        Button { folder = c.path } label: { Text(verbatim: c.name) }
+                            .buttonStyle(.chunkyQuietSmall).disabled(c.path == folder)
+                    }
+                    Spacer()
+                    if !folder.isEmpty {
+                        Button { folder = FolderTree.parent(of: folder) } label: { Label("Up", systemImage: "arrow.up") }
+                            .buttonStyle(.chunkyQuietSmall).keyboardShortcut(.upArrow, modifiers: .command)
+                            .help("Go up one folder (⌘↑)")
+                    }
+                }
+                if !kids.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(kids) { k in
+                                Button { folder = k.path } label: {
+                                    Label { Text(verbatim: "\(k.name) · \(k.fileCount)") } icon: { Image(systemName: "folder.fill") }
+                                }
+                                .buttonStyle(.chunkySmall)
+                            }
+                        }
+                        .padding(.vertical, 2).padding(.trailing, 6)
+                    }
+                }
+            }
         }
     }
 
@@ -225,6 +294,9 @@ struct VaultBrowser: View {
             if model.entries.isEmpty {
                 Text("Nothing in here yet").display(20).foregroundStyle(Theme.ink)
                 Text("Drop files anywhere in this window, or press ⌘O.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
+            } else if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("No files directly in this folder").display(20).foregroundStyle(Theme.ink)
+                Text("Open one of the folders above.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)
             } else {
                 Text("No matches").display(20).foregroundStyle(Theme.ink)
                 Text(verbatim: "Nothing in the vault matches “\(query)”.").label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft)

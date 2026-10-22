@@ -1,0 +1,4 @@
+// Copy to Local.xcconfig (ignored by git) and fill in. Never commit the real file.
+DEVELOPMENT_TEAM = ABCDE12345
+// Optional: a different bundle id prefix if se.klippel.sendndes is not yours to sign.
+CODE_SIGN_STYLE = Automatic

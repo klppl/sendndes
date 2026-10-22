@@ -74,7 +74,7 @@ func readProtectedFile(p string) ([]byte, error) {
 
 // loadServerConfig parses the server config file (inbox_pub, k_auth, and
 // optionally token) and optional separate token file.
-func loadServerConfig(configPath, tokenFilePath string) (*serverConfig, error) {
+func loadServerConfig(configPath, tokenFilePath string, tokenOptional bool) (*serverConfig, error) {
 	data, err := readProtectedFile(configPath)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func loadServerConfig(configPath, tokenFilePath string) (*serverConfig, error) {
 			return nil, fmt.Errorf("%s: %w", display(tokenFilePath), err)
 		}
 		cfg.Token = []byte(tok)
-	} else if len(cfg.Token) == 0 {
+	} else if len(cfg.Token) == 0 && !tokenOptional {
 		cfg.Wipe()
 		return nil, fmt.Errorf("%s: missing token (add 'token: <secret>' or pass --token-file)", display(configPath))
 	}
@@ -195,4 +195,32 @@ func validateToken(s string) error {
 		}
 	}
 	return nil
+}
+
+// readTokensFile reads and parses a tokens file (mode 0600, SPEC 8). Nothing it returns or says holds a token.
+func readTokensFile(path string, allowEmpty bool) (*tokenSet, error) {
+	data, err := readProtectedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(data)
+	set, err := parseTokensFile(data, allowEmpty)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", display(path), err)
+	}
+	return set, nil
+}
+
+// readLegacyTokenFile reads a file holding one plaintext token.
+func readLegacyTokenFile(path string) ([]byte, error) {
+	data, err := readProtectedFile(path)
+	if err != nil {
+		return nil, err
+	}
+	tok := strings.TrimRight(string(data), "\r\n")
+	clear(data)
+	if err := validateToken(tok); err != nil {
+		return nil, fmt.Errorf("%s: %w", display(path), err)
+	}
+	return []byte(tok), nil
 }

@@ -38,6 +38,55 @@ final class IntegrationTests: XCTestCase {
         XCTAssertEqual(again, key)
     }
 
+    func testVerifyVaultReportsCountsAndProblems() async throws {
+        let m = env.model
+        await m.verifyVault()
+        XCTAssertNil(m.verifyReport, "locked")
+        await env.unlock()
+        m.addToVault(urls: [env.writeSource("v.txt", Data("verify me".utf8))])
+        await m.waitForAdds()
+        await m.verifyVault()
+        XCTAssertNil(m.verifyMessage)
+        XCTAssertEqual(m.verifyReport, VerifyReport(objects: 1, inboxFiles: 0, problems: 0, junk: 0, warnings: 0))
+        XCTAssertEqual(m.verifyReport?.clean, true)
+        // Damage the stored object: verify reports it.
+        let objects = env.vault + "/objects"
+        let file = try XCTUnwrap(FileManager.default.enumerator(atPath: objects)?.compactMap { $0 as? String }.first { $0.hasSuffix(".obj") })
+        var data = try Data(contentsOf: URL(fileURLWithPath: objects + "/" + file))
+        data[data.count - 1] ^= 1
+        try data.write(to: URL(fileURLWithPath: objects + "/" + file))
+        await m.verifyVault()
+        XCTAssertEqual(m.verifyReport?.problems, 1)
+        XCTAssertEqual(m.verifyReport?.clean, false)
+        m.lock()
+        XCTAssertNil(m.verifyReport, "lock clears the result")
+    }
+
+    func testChangePassphraseKeepsTheVaultReadable() async throws {
+        let m = env.model
+        await env.unlock()
+        m.addToVault(urls: [env.writeSource("p.txt", Data("passphrase test".utf8))])
+        await m.waitForAdds()
+        m.enableTouchID()
+        let newPass = "a brand new passphrase"
+        var ok = await m.changePassphrase(current: "wrong", new: newPass, repeated: newPass)
+        XCTAssertFalse(ok); XCTAssertEqual(m.passphraseMessage, "The current passphrase is wrong.")
+        ok = await m.changePassphrase(current: passphrase, new: newPass, repeated: "different")
+        XCTAssertFalse(ok); XCTAssertEqual(m.passphraseMessage, "The two new passphrases are different.")
+        ok = await m.changePassphrase(current: passphrase, new: "short", repeated: "short")
+        XCTAssertFalse(ok); XCTAssertEqual(m.passphraseMessage, "Use at least 12 characters.")
+        ok = await m.changePassphrase(current: passphrase, new: newPass, repeated: newPass)
+        XCTAssertTrue(ok, m.passphraseMessage ?? "nil")
+        XCTAssertEqual(env.biometric.saved[m.vaultPath], newPass, "Touch ID holds the new passphrase")
+        // The vault key is unchanged: the object is still there, and only the new passphrase opens the vault.
+        m.lock()
+        await m.unlock(passphrase: passphrase)
+        XCTAssertEqual(m.lockState, .locked)
+        await m.unlock(passphrase: newPass)
+        XCTAssertEqual(m.lockState, .unlocked)
+        XCTAssertEqual(m.entries.map(\.name), ["p.txt"])
+    }
+
     func testTouchIDUnlock() async throws {
         let m = env.model
         XCTAssertFalse(m.touchIDEnabled)

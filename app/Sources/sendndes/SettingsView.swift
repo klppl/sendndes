@@ -11,6 +11,7 @@ struct SettingsView: View {
         TabView {
             GeneralTab(model: model).tabItem { Label("General", systemImage: "gearshape") }
             ServerTab(model: model).tabItem { Label("Server", systemImage: "network") }
+            DevicesTab(model: model).tabItem { Label("Devices", systemImage: "iphone") }
             SecurityTab(model: model).tabItem { Label("Security", systemImage: "lock.shield") }
         }
         .frame(width: 540)
@@ -125,6 +126,14 @@ private struct SecurityTab: View {
                 }
             }
             Section {
+                ChangePassphrase(model: model)
+            } header: {
+                Text("Passphrase")
+            } footer: {
+                Text("Changing the passphrase does not change your files or your recovery key: only the lock on the vault key is replaced. Old copies of vault.json (backups, cloud history) still open with the old passphrase.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
                 RecoveryReveal(model: model)
             } header: {
                 Text("Recovery key")
@@ -188,6 +197,42 @@ struct RecoveryReveal: View {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 if !Task.isCancelled { hide() }
             }
+        }
+    }
+}
+
+
+/// Change the vault passphrase (`ndes passwd`). Asks for the current one again.
+struct ChangePassphrase: View {
+    @Bindable var model: AppModel
+    @State private var current = ""
+    @State private var new = ""
+    @State private var again = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if model.lockState != .unlocked {
+                Text("Unlock the vault to change its passphrase.").foregroundStyle(.secondary)
+            } else {
+                SecureField("Current passphrase", text: $current)
+                SecureField("New passphrase (at least \(AppModel.minPassphraseCharacters) characters)", text: $new)
+                SecureField("New passphrase again", text: $again).onSubmit { change() }
+                HStack {
+                    Button(model.changingPassphrase ? "Changing…" : "Change passphrase") { change() }
+                        .disabled(current.isEmpty || new.isEmpty || again.isEmpty || model.changingPassphrase)
+                    if model.touchIDEnabled { Text("The saved Touch ID passphrase is replaced too.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            if let m = model.passphraseMessage { Text(verbatim: m).font(.callout) }
+        }
+        .onChange(of: model.lockState) { _, _ in current = ""; new = ""; again = "" }
+        .onDisappear { current = ""; new = ""; again = "" }
+    }
+
+    private func change() {
+        let (c, n, a) = (current, new, again)
+        Task {
+            if await model.changePassphrase(current: c, new: n, repeated: a) { current = ""; new = ""; again = "" }
         }
     }
 }

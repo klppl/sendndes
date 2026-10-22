@@ -631,7 +631,7 @@ func TestConfigPermissionsAndListenGuards(t *testing.T) {
 	openCfg := filepath.Join(tmp, "open.conf")
 	_ = os.WriteFile(openCfg, []byte(cfgContent), 0o644)
 	var out, errb bytes.Buffer
-	if code := run([]string{"--config", openCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "permissions") {
+	if code := run([]string{"--enable-server-sealing", "--config", openCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "permissions") {
 		t.Fatalf("0644 config accepted: code=%d stderr=%s", code, errb.String())
 	}
 
@@ -641,13 +641,13 @@ func TestConfigPermissionsAndListenGuards(t *testing.T) {
 	symCfg := filepath.Join(tmp, "sym.conf")
 	_ = os.Symlink(goodCfg, symCfg)
 	errb.Reset()
-	if code := run([]string{"--config", symCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "symlink") {
+	if code := run([]string{"--enable-server-sealing", "--config", symCfg, "--inbox", inboxDir}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "symlink") {
 		t.Fatalf("symlink config accepted: code=%d stderr=%s", code, errb.String())
 	}
 
 	// 3. Non-loopback address without TLS or --allow-insecure-http must be refused.
 	errb.Reset()
-	if code := run([]string{"--config", goodCfg, "--inbox", inboxDir, "--listen", "0.0.0.0:0"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "non-loopback") {
+	if code := run([]string{"--enable-server-sealing", "--config", goodCfg, "--inbox", inboxDir, "--listen", "0.0.0.0:0"}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "non-loopback") {
 		t.Fatalf("non-loopback plain HTTP accepted without flag: code=%d stderr=%s", code, errb.String())
 	}
 
@@ -656,7 +656,7 @@ func TestConfigPermissionsAndListenGuards(t *testing.T) {
 	_ = os.Mkdir(vaultRoot, 0o700)
 	_ = os.WriteFile(filepath.Join(vaultRoot, "vault.json"), []byte("{}"), 0o600)
 	errb.Reset()
-	if code := run([]string{"--config", goodCfg, "--inbox", vaultRoot}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "vault.json") {
+	if code := run([]string{"--enable-server-sealing", "--config", goodCfg, "--inbox", vaultRoot}, &out, &errb); code == 0 || !strings.Contains(errb.String(), "vault.json") {
 		t.Fatalf("vault root accepted as Mode B inbox: code=%d stderr=%s", code, errb.String())
 	}
 
@@ -674,7 +674,7 @@ func TestConfigPermissionsAndListenGuards(t *testing.T) {
 	_ = f.Close()
 	reg.register(tmpName, func() { _ = d.unlink(tmpName) })
 	exited := make(chan int, 1)
-	stop := installSignalCleanup(reg, func(code int) { exited <- code })
+	stop := installSignalCleanup(reg, func(code int) { exited <- code }, false)
 	defer stop()
 	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 	select {

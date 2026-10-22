@@ -11,3 +11,9 @@ build/
 .impeccable/questions/
 .impeccable/tmp/
 .impeccable/hook.cache.json
+
+# binaries built inside the command folders
+/cmd/*/ndes
+/cmd/*/ndesd
+
+build/ios-derived/

@@ -264,6 +264,9 @@ struct AppCommands: Commands {
             Button("Refresh") { Task { await model.rebuildListing() } }
                 .keyboardShortcut("r")
                 .disabled(model.lockState != .unlocked || model.busy)
+            Button("Verify Vault") { Task { await model.verifyVault() } }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(model.lockState != .unlocked || model.busy || model.verifying)
             Button("Check Inbox") { Task { await model.pullAndRefresh() } }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(model.lockState != .unlocked || model.pullRunning || !model.serverConfigured)

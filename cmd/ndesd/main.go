@@ -19,7 +19,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -35,9 +37,21 @@ With no --config/--inbox, ndesd runs with a web GUI for setup (managed mode):
                                    after setup, change it in the web GUI
 
 Classic mode (no web GUI), flags:
-  --config <file>                  server config file (mode 0600, with inbox_pub, k_auth, and token)
-  --token-file <file>              bearer token file (mode 0600, if token is not in --config)
+  --tokens-file <file>             accepted tokens (mode 0600): one line per token, "<role> <label> <sha256-hex>" with the
+                                   role upload, pull or both. "ndes sender-config" prints a line to add. Reloaded on
+                                   SIGHUP (systemctl reload ndesd); a broken file keeps the old tokens.
   --inbox <dir>                    inbox storage directory
+  --client-ip-header <name>        trust this header (for example CF-Connecting-IP) for the address behind a proxy on
+                                   this host, only when the TCP peer is loopback and the header is exactly one IP
+                                   (default: off; X-Forwarded-For is never used)
+  --max-sealed-bytes <n>           largest PUT /inbox/{id} body (default 95420416, the 90 MiB phone limit plus 1 MiB)
+
+Server-side sealing (the old PUT /inbox with X-Ndes-* headers) is off. It makes this server see plaintext, and
+needs inbox_pub and k_auth, which a sealed-upload server must not hold:
+  --enable-server-sealing          turn it on; needs --config
+  --config <file>                  server config file (mode 0600, with inbox_pub and k_auth, and token); only with
+                                   --enable-server-sealing, otherwise ndesd refuses to start
+  --token-file <file>              one plaintext bearer token (mode 0600), role both; deprecated, use --tokens-file
   --listen <addr>                  listen address (default 127.0.0.1:8485)
   --tls-cert <file>                TLS certificate file (enables HTTPS)
   --tls-key <file>                 TLS private key file (mode 0600)
@@ -69,6 +83,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var (
 		configPath     string
 		tokenFile      string
+		tokensPath     string
+		enableSealing  bool
+		clientIPHdr    string
+		maxSealedBytes int64
 		inboxPath      string
 		listenAddr     string
 		tlsCert        string
@@ -89,6 +107,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	)
 	fs.StringVar(&configPath, "config", "", "server config file")
 	fs.StringVar(&tokenFile, "token-file", "", "bearer token file")
+	fs.StringVar(&tokensPath, "tokens-file", "", "accepted tokens (role, label, sha256)")
+	fs.BoolVar(&enableSealing, "enable-server-sealing", false, "enable server-side sealing (PUT /inbox with headers)")
+	fs.StringVar(&clientIPHdr, "client-ip-header", "", "header with the client IP behind a loopback proxy")
+	fs.Int64Var(&maxSealedBytes, "max-sealed-bytes", defaultMaxSealedBytes, "largest sealed upload")
 	fs.StringVar(&inboxPath, "inbox", "", "inbox directory")
 	fs.StringVar(&listenAddr, "listen", "127.0.0.1:8485", "listen address")
 	fs.StringVar(&tlsCert, "tls-cert", "", "TLS certificate file")
@@ -126,8 +148,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return runManaged(dataDir, adminListen, adminPublic, adminProxy, syncListen, stderr)
 	}
-	if configPath == "" || inboxPath == "" {
-		fmt.Fprintln(stderr, "ndesd: --config and --inbox are required (see ndesd --help)")
+	if inboxPath == "" {
+		fmt.Fprintln(stderr, "ndesd: --inbox is required (see ndesd --help)")
+		return 1
+	}
+	if configPath != "" && !enableSealing {
+		fmt.Fprintln(stderr, "ndesd: --config holds inbox_pub and k_auth, which this server must not hold unless it seals files itself; "+
+			"use --tokens-file for a server that only stores sealed uploads, or add --enable-server-sealing (see ndesd --help)")
+		return 1
+	}
+	if enableSealing && configPath == "" {
+		fmt.Fprintln(stderr, "ndesd: --enable-server-sealing needs --config with inbox_pub and k_auth")
+		return 1
+	}
+	if configPath == "" && tokensPath == "" && tokenFile == "" {
+		fmt.Fprintln(stderr, "ndesd: no tokens: give --tokens-file (see ndesd --help)")
+		return 1
+	}
+	if maxSealedBytes <= 0 {
+		fmt.Fprintln(stderr, "ndesd: --max-sealed-bytes must be positive")
+		return 1
+	}
+	if clientIPHdr != "" && !validHeaderName(clientIPHdr) {
+		fmt.Fprintln(stderr, "ndesd: --client-ip-header is not a valid header name")
 		return 1
 	}
 	if maxInboxBytes <= 0 || minFreeBytes < 0 || minUploadRate <= 0 {
@@ -150,12 +193,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	cfg, err := loadServerConfig(configPath, tokenFile)
-	if err != nil {
-		fmt.Fprintf(stderr, "ndesd: %v\n", err)
-		return 1
+	var cfg *serverConfig
+	if configPath != "" {
+		c, err := loadServerConfig(configPath, tokenFile, tokensPath != "")
+		if err != nil {
+			fmt.Fprintf(stderr, "ndesd: %v\n", err)
+			return 1
+		}
+		cfg = c
+	} else {
+		cfg = &serverConfig{}
+		if tokenFile != "" {
+			tok, err := readLegacyTokenFile(tokenFile)
+			if err != nil {
+				fmt.Fprintf(stderr, "ndesd: %v\n", err)
+				return 1
+			}
+			cfg.Token = tok
+		}
 	}
 	defer cfg.Wipe()
+	if len(cfg.Token) > 0 {
+		fmt.Fprintln(stderr, "ndesd: warning: a plaintext token (--token-file, or `token:` in --config) is deprecated; it is accepted with the role both. Use --tokens-file")
+	}
+	var fileTokens *tokenSet
+	if tokensPath != "" {
+		t, err := readTokensFile(tokensPath, true)
+		if err != nil {
+			fmt.Fprintf(stderr, "ndesd: %v\n", err)
+			return 1
+		}
+		fileTokens = t
+	}
 
 	dir, err := openInboxDir(inboxPath, stderr)
 	if err != nil {
@@ -179,9 +248,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		maxInboxBytes:     maxInboxBytes,
 		minFreeBytes:      minFreeBytes,
 		minUploadRate:     minUploadRate,
+
+		maxSealedBytes:      maxSealedBytes,
+		enableServerSealing: enableSealing,
+		clientIPHeader:      clientIPHdr,
 	}
 	srvHandler := newInboxServer(ctx, dir, reg, cfg, opts)
 	defer srvHandler.Wipe()
+	var legacySet *tokenSet
+	if len(cfg.Token) > 0 {
+		legacySet = legacyTokenSet(cfg.Token)
+	}
+	merged, err := mergeTokenSets(legacySet, fileTokens)
+	if err != nil {
+		fmt.Fprintf(stderr, "ndesd: %v\n", err)
+		return 1
+	}
+	if len(merged.entries) == 0 {
+		fmt.Fprintln(stderr, "ndesd: no tokens: the tokens file has no entries")
+		return 1
+	}
+	srvHandler.setTokens(merged)
+	// SIGHUP reloads the tokens file (an empty file revokes everything in it). Without one there is nothing to
+	// reload, but the signal still must not stop the server (systemctl reload).
+	stopReload := installReload(stderr, func() error {
+		if tokensPath == "" {
+			return errNothingToReload
+		}
+		t, err := readTokensFile(tokensPath, true)
+		if err != nil {
+			return err
+		}
+		m, err := mergeTokenSets(legacySet, t)
+		if err != nil {
+			return err
+		}
+		srvHandler.setTokens(m)
+		return nil
+	})
+	defer stopReload()
 
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
@@ -197,7 +302,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		srvHandler.Wipe()
 		cfg.Wipe()
 	})
-	stopSig := installSignalCleanup(reg, os.Exit)
+	stopSig := installSignalCleanup(reg, os.Exit, true)
 	defer stopSig()
 
 	if !useTLS && !isLoopbackListen(listenAddr) {
@@ -246,4 +351,46 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// validHeaderName accepts a plain HTTP header name (token characters only).
+func validHeaderName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+var errNothingToReload = errors.New("nothing to reload")
+
+// installReload runs reload on every SIGHUP. A failure is reported without any detail beyond the
+// parser's message (which never holds a token or hash) and the old configuration stays in force.
+func installReload(stderr io.Writer, reload func() error) func() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-ch:
+				if err := reload(); errors.Is(err, errNothingToReload) {
+					fmt.Fprintln(stderr, "ndesd: nothing to reload (no --tokens-file)")
+				} else if err != nil {
+					fmt.Fprintf(stderr, "ndesd: reload failed, keeping the previous tokens: %v\n", err)
+				} else {
+					fmt.Fprintln(stderr, "ndesd: tokens reloaded")
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { signal.Stop(ch); close(done) }
 }

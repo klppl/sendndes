@@ -53,6 +53,21 @@ public final class AppModel {
     public private(set) var exportFolder: String?
     public var openMessage: String?
 
+    // Verify and change passphrase
+    public private(set) var verifying = false
+    public private(set) var verifyReport: VerifyReport?
+    public var verifyMessage: String?
+    public private(set) var changingPassphrase = false
+    public var passphraseMessage: String?
+
+    // Add device (QR pairing for the phone app)
+    public private(set) var pairing: DevicePairing?
+    public private(set) var pairingBusy = false
+    public var pairingMessage: String?
+    /// How long a pairing stays on screen. Injectable for tests.
+    var pairingLifetime: TimeInterval = 60
+    private var pairingTask: Task<Void, Never>?
+
     // Touch ID
     public private(set) var touchIDAvailable = false
     public private(set) var touchIDEnabled = false     // a passphrase is saved for the current vault
@@ -335,6 +350,137 @@ public final class AppModel {
         return zip(x, y).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0
     }
 
+    // MARK: Add device
+
+    /// The helper's arguments for a pairing. Nothing secret goes on the command line: the passphrase is
+    /// written to the helper's stdin, and the payload comes back on its stdout.
+    static func senderConfigArguments(vault: String, server: String, label: String) -> [String] {
+        ["sender-config", "--json", "--passphrase-stdin", "--vault=\(vault)", "--server=\(server)", "--label=\(label)"]
+    }
+
+    /// Makes a new upload token and the QR payload for a phone (`ndes sender-config`). The pairing is kept in
+    /// memory only, and cleared after `pairingLifetime` seconds, on lock, and when the app is deactivated.
+    /// The server must still be given `pairing.tokenLine` (Add device shows the steps).
+    @discardableResult
+    public func createPairing(label: String, serverURL: String) async -> Bool {
+        pairingMessage = nil
+        guard lockState == .unlocked, !pairingBusy, !vaultPath.isEmpty else { pairingMessage = "Unlock the vault first."; return false }
+        let label = label.trimmingCharacters(in: .whitespaces)
+        let server = serverURL.trimmingCharacters(in: .whitespaces)
+        guard (1...32).contains(label.utf8.count), label.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) else {
+            pairingMessage = "Name the device with 1 to 32 characters, without spaces (letters, digits, - _ . are fine)."; return false
+        }
+        guard let u = URL(string: server), u.scheme == "https", u.host != nil, u.user == nil, u.password == nil,
+              u.query == nil, u.fragment == nil, (u.path.isEmpty || u.path == "/") else {
+            pairingMessage = "The phone needs the https address of your server, like https://inbox.example.com."; return false
+        }
+        clearPairing()
+        let gen = generation
+        pairingBusy = true
+        defer { if gen == generation { pairingBusy = false } }
+        let acc = PairingAccumulator()
+        let expires = Date().addingTimeInterval(pairingLifetime)
+        do {
+            let o = try await runner.run(
+                args: Self.senderConfigArguments(vault: vaultPath, server: server, label: label),
+                passphrase: { [box] in box.get() },
+                onLine: { acc.feed($0) })
+            guard gen == generation else { return false }
+            guard !o.outputViolation, o.exitStatus == 0, let p = acc.result(label: label, server: server, expires: expires) else {
+                pairingMessage = acc.errorCode == "bad-argument"
+                    ? "The server address or device name was not accepted."
+                    : "The pairing could not be created. Nothing was changed."
+                return false
+            }
+            pairing = p
+        } catch {
+            pairingMessage = Self.message(for: error); return false
+        }
+        pairingTask = Task { [weak self, lifetime = pairingLifetime] in
+            try? await Task.sleep(nanoseconds: UInt64(lifetime * 1_000_000_000))
+            if !Task.isCancelled { self?.clearPairing() }
+        }
+        return true
+    }
+
+    /// Drops the payload from memory: the 60 s timer, Close, lock, and the app losing focus all end up here.
+    public func clearPairing() {
+        pairingTask?.cancel()
+        pairingTask = nil
+        pairing = nil
+    }
+
+    // MARK: Verify
+
+    /// Authenticates every object and inbox file in the vault (`ndes verify`). Reads each file once, so a
+    /// big vault on a "stream" cloud folder can take a while and make the sync client download everything.
+    public func verifyVault() async {
+        guard lockState == .unlocked, !verifying, !busy else { return }
+        let gen = generation
+        verifying = true
+        verifyReport = nil
+        verifyMessage = nil
+        let acc = VerifyAccumulator()
+        do {
+            let o = try await runner.run(
+                args: ["verify", "--passphrase-stdin", "--vault=\(vaultPath)"],
+                passphrase: { [box] in box.get() },
+                onLine: { acc.feed($0) })
+            guard gen == generation else { return }
+            verifying = false
+            if o.outputViolation { verifyMessage = "The helper produced unexpected output."; return }
+            guard let r = acc.report else { verifyMessage = "The check did not finish (the helper failed, exit \(o.exitStatus))."; return }
+            verifyReport = r
+        } catch {
+            guard gen == generation else { return }
+            verifying = false
+            verifyMessage = Self.message(for: error)
+        }
+    }
+
+    // MARK: Change passphrase
+
+    /// `ndes passwd`: the vault key stays the same, only vault.json is rewritten, so every object and the
+    /// recovery key keep working. The current passphrase is typed again to confirm; the saved Touch ID
+    /// passphrase, if any, is replaced.
+    @discardableResult
+    public func changePassphrase(current: String, new: String, repeated: String) async -> Bool {
+        passphraseMessage = nil
+        guard lockState == .unlocked, !changingPassphrase, !busy, let held = box.get() else {
+            passphraseMessage = "Unlock the vault first."; return false
+        }
+        guard Self.sameSecret(current, held) else { passphraseMessage = "The current passphrase is wrong."; return false }
+        guard new == repeated else { passphraseMessage = "The two new passphrases are different."; return false }
+        guard !new.contains("\n"), !new.contains("\r") else { passphraseMessage = "The passphrase can't contain line breaks."; return false }
+        guard new.precomposedStringWithCanonicalMapping.unicodeScalars.count >= Self.minPassphraseCharacters else {
+            passphraseMessage = "Use at least \(Self.minPassphraseCharacters) characters."; return false
+        }
+        guard !Self.sameSecret(new, held) else { passphraseMessage = "That is the passphrase you already use."; return false }
+        let gen = generation
+        changingPassphrase = true
+        defer { if gen == generation { changingPassphrase = false } }
+        let lines = LineCollector()
+        do {
+            // The helper reads the current passphrase, then the new one twice, one per line.
+            let o = try await runner.run(
+                args: ["passwd", "--passphrase-stdin", "--vault=\(vaultPath)"],
+                passphrase: { "\(held)\n\(new)\n\(new)" },
+                onLine: { lines.add($0) })
+            guard gen == generation else { return false }
+            guard !o.outputViolation, o.exitStatus == 0, lines.values == ["Passphrase changed."] else {
+                passphraseMessage = "The passphrase could not be changed. Nothing was written."; return false
+            }
+        } catch {
+            passphraseMessage = Self.message(for: error); return false
+        }
+        box.set(new)
+        if touchIDEnabled, let b = biometric {
+            do { try b.save(passphrase: new, vault: vaultPath) } catch { b.remove(vault: vaultPath); refreshTouchID() }
+        }
+        passphraseMessage = "Passphrase changed. The recovery key is the same."
+        return true
+    }
+
     // MARK: Add files straight into the vault
 
     /// Files and folders are encrypted one by one with `ndes add`. Each run re-derives the key (about half a
@@ -517,7 +663,7 @@ public final class AppModel {
     public func noteActivity() { lastActivity = Date() }
 
     /// True while something that uses the passphrase or the network is running.
-    public var workRunning: Bool { pullRunning || busy || adding || exporting || creating || !sendQueue.isIdle }
+    public var workRunning: Bool { pullRunning || busy || adding || exporting || creating || verifying || changingPassphrase || pairingBusy || !sendQueue.isIdle }
 
     /// Called every few seconds. Locks after `autoLockMinutes` without input, but not while work is running
     /// (the lock then comes on the first tick after it finishes). Sleep, screen lock and session resign
@@ -550,6 +696,13 @@ public final class AppModel {
         exportFolder = nil
         exporting = false
         openMessage = nil
+        clearPairing()
+        pairingMessage = nil
+        verifying = false
+        verifyReport = nil
+        verifyMessage = nil
+        changingPassphrase = false
+        passphraseMessage = nil
         entries = []
         listingProblems = 0
         listingStale = false
@@ -730,4 +883,39 @@ final class LineCollector: @unchecked Sendable {
         lines.append(s); return true
     }
     var values: [String] { lock.lock(); defer { lock.unlock() }; return lines }
+}
+
+/// The result of `ndes verify`: the summary line plus how many FAIL and warn lines came before it.
+public struct VerifyReport: Equatable, Sendable {
+    public let objects: Int
+    public let inboxFiles: Int
+    public let problems: Int
+    public let junk: Int
+    public let warnings: Int
+    public var clean: Bool { problems == 0 }
+}
+
+/// Reads `verify` output without keeping names: counts `warn  ` lines and parses the exact summary line.
+final class VerifyAccumulator: @unchecked Sendable {
+    private let lock = NSLock()
+    private var warn = 0
+    private var last: String?
+    private static let summary = try! NSRegularExpression(
+        pattern: #"^checked (\d+) object\(s\) and (\d+) inbox file\(s\): (\d+) problem\(s\), (\d+) junk file\(s\) ignored$"#)
+    func feed(_ d: Data) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let s = String(data: d, encoding: .utf8) else { return false }
+        if s.hasPrefix("warn  ") { warn += 1 }
+        last = s
+        return true
+    }
+    var report: VerifyReport? {
+        lock.lock(); defer { lock.unlock() }
+        guard let l = last else { return nil }
+        let r = NSRange(l.startIndex..., in: l)
+        guard let m = Self.summary.firstMatch(in: l, range: r), m.numberOfRanges == 5 else { return nil }
+        func n(_ i: Int) -> Int? { Range(m.range(at: i), in: l).flatMap { Int(l[$0]) } }
+        guard let o = n(1), let i = n(2), let p = n(3), let j = n(4) else { return nil }
+        return VerifyReport(objects: o, inboxFiles: i, problems: p, junk: j, warnings: warn)
+    }
 }

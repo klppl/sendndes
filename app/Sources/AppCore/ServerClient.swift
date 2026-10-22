@@ -5,11 +5,13 @@ import NdesCore
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
     case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute, dateOutOfRange, serverOutOfSpace, uploadRejected
+    /// The server has server-side sealing off (it holds no keys): files must be sealed here first.
+    case sealingNeeded
 
     /// Failures after which the next file would fail the same way: the queue pauses.
     public var pausesQueue: Bool {
         switch self {
-        case .tokenRejected, .rateLimited, .inboxFull, .serverOutOfSpace, .unreachable, .timedOut, .notTailscaleRoute: return true
+        case .tokenRejected, .rateLimited, .inboxFull, .serverOutOfSpace, .unreachable, .timedOut, .notTailscaleRoute, .sealingNeeded: return true
         default: return false
         }
     }
@@ -32,6 +34,7 @@ public enum UploadFailure: Error, Equatable {
         case .notTailscaleRoute: return RouteGuard.routeMessage
         case .serverOutOfSpace: return "The server is out of space."
         case .uploadRejected: return "The server could not store this file."
+        case .sealingNeeded: return "This server only accepts files sealed on your Mac. Add the server keys in Settings > Server."
         case .dateOutOfRange: return "This file's modification date is out of range (before 1677 or after 2262)."
         }
     }
@@ -177,6 +180,7 @@ public struct ServerClient {
                 }
                 return .success(id)
             case 401, 403: return .failure(.tokenRejected)
+            case 404: return .failure(.sealingNeeded)
             case 413: return .failure(.tooLarge)
             case 429: return .failure(.rateLimited)
             case 507:

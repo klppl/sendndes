@@ -49,6 +49,8 @@ commands:
                                          rebuild vault.json from the recovery key
   recovery-key                           print the recovery key (needs the passphrase)
   server-config                          print the inbox server's inbox_pub and K_auth
+  sender-config --server <https-url> --label <name> [--json]
+                                         pair a phone: print a QR payload and the server tokens-file line
 
 get writes to a temp file and moves it into place only after the whole file
 has been authenticated. It never writes inside the vault directory.
@@ -103,6 +105,7 @@ func (a *app) run(args []string) int {
 		"recover":       a.cmdRecover,
 		"recovery-key":  a.cmdRecoveryKey,
 		"server-config": a.cmdServerConfig,
+		"sender-config": a.cmdSenderConfig,
 	}
 	name := args[0]
 	if name == "help" || name == "-h" || name == "--help" {

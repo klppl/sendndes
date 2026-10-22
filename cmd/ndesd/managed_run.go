@@ -45,8 +45,10 @@ func runManaged(dataDir, adminListen string, allowPublic, behindProxy bool, sync
 	defer ln.Close()
 
 	m.reg.addHook(m.shutdown)
-	stopSig := installSignalCleanup(m.reg, os.Exit)
+	stopSig := installSignalCleanup(m.reg, os.Exit, true)
 	defer stopSig()
+	stopReload := installReload(stderr, m.reloadTokens)
+	defer stopReload()
 
 	if m.configured() && !m.state.Stopped {
 		if err := m.start(); err != nil {
