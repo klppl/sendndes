@@ -15,6 +15,7 @@ public struct SenderRootView: View {
             case .welcome: WelcomeView(model: model)
             case .scanning: ScannerScreen(model: model)
             case .confirm(let p): ConfirmView(model: model, payload: p)
+            case .waiting(let code, let host): WaitingView(model: model, code: code, host: host)
             case .home: HomeView(model: model)
             }
         }
@@ -81,6 +82,32 @@ struct ConfirmView: View {
             Text(k).label(.caption, weight: .bold).foregroundStyle(Theme.inkSoft)
             Text(verbatim: v).font(mono ? .system(.title2, design: .monospaced).bold() : .system(.title3, design: .rounded, weight: .bold))
                 .foregroundStyle(Theme.ink).textSelection(.disabled)
+        }
+    }
+}
+
+struct WaitingView: View {
+    @Bindable var model: SenderModel
+    let code: String
+    let host: String
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                Aster(mood: .working, size: 100).padding(.top, 28)
+                Text(code.isEmpty ? "Asking the server…" : "Approve this code on your Mac").display(24).foregroundStyle(Theme.ink).multilineTextAlignment(.center)
+                if !code.isEmpty {
+                    Text(verbatim: code).font(.system(size: 48, weight: .heavy, design: .rounded)).monospacedDigit().foregroundStyle(Theme.ink)
+                        .padding(.horizontal, 22).padding(.vertical, 10).sticker(radius: 18, shadow: 4)
+                        .accessibilityLabel("Code " + code.filter(\.isNumber).map(String.init).joined(separator: " "))
+                    Text("On your Mac the QR window shows the same code. Press Approve there. Or approve it on the server's web page (Devices).")
+                        .label(.callout, weight: .medium).foregroundStyle(Theme.inkSoft).multilineTextAlignment(.center)
+                    Text(verbatim: "Server: " + host).label(.caption, weight: .medium).foregroundStyle(Theme.inkSoft)
+                    Note(text: "If the codes differ, or you did not just scan your own code, cancel.")
+                }
+                Button("Cancel") { model.cancelServerPairing() }.buttonStyle(.chunky)
+            }
+            .padding(24)
         }
     }
 }

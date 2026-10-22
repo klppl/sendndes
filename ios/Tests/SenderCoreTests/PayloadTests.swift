@@ -10,6 +10,32 @@ import Testing
         #expect(p.label == "iphone-1")
         #expect(p.fingerprint == fingerprint(f.pub))
         #expect(p.inboxPub == f.pub && p.kAuth == f.auth && p.token == f.token)
+        #expect("\(p)".contains("iphone-1") && !"\(p)".contains(f.token))
+    }
+
+    @Test func pairingCodeHasNoToken() throws {
+        var f = Fixture(); f.pairing = true
+        let p = try SenderPayload.parse(f.payload())
+        #expect(p.token == nil && p.server.canonical == "https://inbox.example.com" && p.fingerprint == fingerprint(f.pub))
+        let withTok = p.withToken("t" + String(repeating: "x", count: 42))
+        #expect(withTok.token?.count == 43 && withTok.inboxPub == p.inboxPub)
+        // A version 2 code that smuggles a token, a version 1 code without one, and mismatched prefix and version.
+        var smuggled = f; smuggled.extra = #","token":"\#(f.token)""#
+        #expect(throws: SenderPayload.Failure.badJSON) { _ = try SenderPayload.parse(smuggled.payload()) }
+        let v1WithoutToken = SenderPayload.prefix + b64url(Data(f.json().replacingOccurrences(of: #""v":2"#, with: #""v":1"#).utf8))
+        #expect(throws: SenderPayload.Failure.badJSON) { _ = try SenderPayload.parse(v1WithoutToken) }
+        let v2Prefix1Json = SenderPayload.pairPrefix + b64url(Data(Fixture().json().utf8))
+        #expect(throws: SenderPayload.Failure.self) { _ = try SenderPayload.parse(v2Prefix1Json) }
+        // The same URL, address-check and fingerprint rules apply.
+        var bad = f; bad.url = "http://inbox.example.com"
+        #expect(throws: SenderPayload.Failure.badURL(.notHTTPS)) { _ = try SenderPayload.parse(bad.payload()) }
+        bad = f; bad.fp = "00000000"
+        #expect(throws: SenderPayload.Failure.fingerprintMismatch) { _ = try SenderPayload.parse(bad.payload()) }
+        // The store refuses to save a code that has no token yet.
+        let store = PairingStore(directory: tempDir("v2"), secrets: MemorySecrets())
+        #expect(throws: SecretStoreError.self) { try store.save(p) }
+        try store.save(withTok)
+        #expect(store.load()?.token == withTok.token)
     }
 
     @Test func rejectsWrongPrefixAndEncodings() {
@@ -91,7 +117,7 @@ import Testing
             }
             if let s = String(bytes: m, encoding: .utf8), let p = try? SenderPayload.parse(s) {
                 accepted += 1
-                #expect(p.server.canonical.hasPrefix("https://") && p.token.count >= 43 && p.fingerprint.count == 8)
+                #expect(p.server.canonical.hasPrefix("https://") && (p.token?.count ?? 0) >= 43 && p.fingerprint.count == 8)
             }
         }
         #expect(accepted < 20_000)

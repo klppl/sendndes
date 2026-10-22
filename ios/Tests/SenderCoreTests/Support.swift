@@ -25,17 +25,20 @@ struct Fixture {
     var version = 1
     var fp: String?
     var extra = ""
+    /// A pairing code (version 2): no token inside, the phone asks the server for one.
+    var pairing = false
 
     func json() -> String {
         let f = fp ?? fingerprint(pub)
-        return #"{"v":\#(version),"url":"\#(url)","inbox_pub":"\#(Data(pub).base64EncodedString())","k_auth":"\#(Data(auth).base64EncodedString())","token":"\#(token)","label":"\#(label)","fp":"\#(f)"\#(extra)}"#
+        let tok = pairing ? "" : #""token":"\#(token)","#
+        return #"{"v":\#(pairing ? 2 : version),"url":"\#(url)","inbox_pub":"\#(Data(pub).base64EncodedString())","k_auth":"\#(Data(auth).base64EncodedString())",\#(tok)"label":"\#(label)","fp":"\#(f)"\#(extra)}"#
     }
-    func payload() -> String { SenderPayload.prefix + b64url(Data(json().utf8)) }
+    func payload() -> String { (pairing ? SenderPayload.pairPrefix : SenderPayload.prefix) + b64url(Data(json().utf8)) }
 }
 
 func pairing(_ f: Fixture = Fixture()) throws -> Pairing {
     let p = try SenderPayload.parse(f.payload())
-    return Pairing(server: p.server, label: p.label, fingerprint: p.fingerprint, inboxPub: p.inboxPub, kAuth: p.kAuth, token: p.token)
+    return Pairing(server: p.server, label: p.label, fingerprint: p.fingerprint, inboxPub: p.inboxPub, kAuth: p.kAuth, token: p.token!)
 }
 
 /// Pseudo-random bytes, repeatable.

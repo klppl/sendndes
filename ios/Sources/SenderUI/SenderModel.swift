@@ -5,7 +5,7 @@ import SenderCore
 /// What the app shows and does. All rules live in SenderCore; this holds screen state.
 @MainActor @Observable
 public final class SenderModel {
-    public enum Screen: Equatable { case welcome, scanning, confirm(SenderPayload), home }
+    public enum Screen: Equatable { case welcome, scanning, confirm(SenderPayload), waiting(code: String, host: String), home }
 
     public private(set) var screen: Screen
     public private(set) var items: [SealedItem] = []
@@ -132,7 +132,58 @@ public final class SenderModel {
         }
     }
 
+    private var pairTask: Task<Void, Never>?
+    var pairPollInterval: TimeInterval = 2
+
+    /// A pairing code without a token: ask the server to connect this phone. The owner compares the code shown here
+    /// with the one on the Mac and approves; the token then arrives here and goes straight into the Keychain.
+    func beginServerPairing(_ p: SenderPayload) {
+        guard pairTask == nil else { return }
+        screen = .waiting(code: "", host: p.server.host)
+        let interval = pairPollInterval
+        pairTask = Task { [weak self] in
+            defer { self?.pairTask = nil }
+            let fail: (String) -> Void = { msg in self?.pairingError = msg; self?.screen = self?.pairedInfo == nil ? .welcome : .home }
+            let req: PairRequest
+            switch await PairClient.request(server: p.server, label: p.label) {
+            case .failure(let f): fail(f.message); return
+            case .success(let r): req = r
+            }
+            self?.screen = .waiting(code: req.spacedCode, host: p.server.host)
+            let deadline = Date().addingTimeInterval(5 * 60)
+            var failures = 0
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { return }
+                switch await PairClient.status(server: p.server, request: req) {
+                case .success(.pending): failures = 0
+                case .success(.approved(let token)):
+                    guard let self else { return }
+                    do {
+                        try self.store.save(p.withToken(token))
+                        self.reloadPairing()
+                        self.pingResult = nil
+                        self.screen = .home
+                        self.startUploads()
+                    } catch { fail("The pairing could not be saved on this phone.") }
+                    return
+                case .failure(let f):
+                    if f == .unreachable || f == .busy { failures += 1; if failures < 5 { continue } }
+                    fail(f.message); return
+                }
+            }
+            if !Task.isCancelled { fail(PairFailure.expired.message) }
+        }
+    }
+
+    public func cancelServerPairing() {
+        pairTask?.cancel()
+        pairTask = nil
+        screen = pairedInfo == nil ? .welcome : .home
+    }
+
     public func confirm(_ p: SenderPayload) {
+        if p.token == nil { beginServerPairing(p); return }
         do {
             try store.save(p)
             reloadPairing()

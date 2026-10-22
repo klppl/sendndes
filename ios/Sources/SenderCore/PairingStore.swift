@@ -35,11 +35,12 @@ public final class PairingStore: @unchecked Sendable {
     private var publicURL: URL { directory.appendingPathComponent(Self.fileName) }
 
     public func save(_ p: SenderPayload) throws {
+        guard let token = p.token else { throw SecretStoreError(status: -50) }   // a pairing code has no token yet
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         // The saved address and check value go last: a failure half way leaves a pairing `state()` rejects
         // (the check value must match the key), never new keys with an old address.
         try? FileManager.default.removeItem(at: publicURL)
-        try secrets.write(.token, Data(p.token.utf8))
+        try secrets.write(.token, Data(token.utf8))
         try secrets.write(.kAuth, Data(p.kAuth))
         try secrets.write(.inboxPub, Data(p.inboxPub))
         let pub = PublicPairing(url: p.server.canonical, label: p.label, fp: p.fingerprint)

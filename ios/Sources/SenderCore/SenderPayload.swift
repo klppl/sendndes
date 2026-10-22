@@ -6,12 +6,16 @@ import Foundation
 public struct SenderPayload: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public var description: String { "SenderPayload(\(server.host), \(label), check \(fingerprint))" }
     public var debugDescription: String { description }
+    /// A code that carries a token made on the Mac (older flow).
     public static let prefix = "ndes-sender1:"
+    /// A code without a token: the phone asks the server to pair and the owner approves.
+    public static let pairPrefix = "ndes-sender2:"
 
     public let server: ServerURL
     public let inboxPub: [UInt8]
     public let kAuth: [UInt8]
-    public let token: String
+    /// nil in a pairing code (version 2): the phone gets its token from the server after approval.
+    public let token: String?
     public let label: String
     /// First 8 hex characters of SHA-256(inbox_pub), shown on both screens so the owner can compare them.
     public let fingerprint: String
@@ -23,7 +27,13 @@ public struct SenderPayload: Equatable, Sendable, CustomStringConvertible, Custo
         case badURL(ServerURL.Failure)
     }
 
-    private static let keys: Set<String> = ["v", "url", "inbox_pub", "k_auth", "token", "label", "fp"]
+    private static let keys1: Set<String> = ["v", "url", "inbox_pub", "k_auth", "token", "label", "fp"]
+    private static let keys2: Set<String> = ["v", "url", "inbox_pub", "k_auth", "label", "fp"]
+
+    /// The same payload with the token the server gave this phone.
+    public func withToken(_ t: String) -> SenderPayload {
+        SenderPayload(server: server, inboxPub: inboxPub, kAuth: kAuth, token: t, label: label, fingerprint: fingerprint)
+    }
 
     public static func parse(_ text: String) throws -> SenderPayload {
         try parse(text, urlParser: ServerURL.parse)
@@ -34,14 +44,15 @@ public struct SenderPayload: Equatable, Sendable, CustomStringConvertible, Custo
     }
 
     private static func parse(_ text: String, urlParser: (String) throws -> ServerURL) throws -> SenderPayload {
-        guard text.hasPrefix(prefix) else { throw Failure.notAPairingCode }
+        let v2 = text.hasPrefix(pairPrefix)
+        guard text.hasPrefix(prefix) || v2 else { throw Failure.notAPairingCode }
         guard text.utf8.count <= SenderLimits.maxPayloadCharacters else { throw Failure.tooLarge }
         let body = String(text.dropFirst(prefix.count))
         guard let raw = base64URLDecode(body) else { throw Failure.badEncoding }
         let obj: [String: StrictJSON.Value]
         do { obj = try StrictJSON.parseFlatObject(raw) } catch { throw Failure.badJSON }
-        guard Set(obj.keys) == keys else { throw Failure.badJSON }
-        guard case .int(1)? = obj["v"] else { throw Failure.unsupportedVersion }
+        guard Set(obj.keys) == (v2 ? keys2 : keys1) else { throw Failure.badJSON }
+        guard case .int(let ver)? = obj["v"], ver == (v2 ? 2 : 1) else { throw Failure.unsupportedVersion }
         func str(_ k: String) throws -> String {
             guard case .string(let s)? = obj[k] else { throw Failure.badField(k) }
             return s
@@ -50,11 +61,15 @@ public struct SenderPayload: Equatable, Sendable, CustomStringConvertible, Custo
         do { server = try urlParser(try str("url")) } catch let f as ServerURL.Failure { throw Failure.badURL(f) }
         let pub = try key32(try str("inbox_pub"), "inbox_pub")
         let auth = try key32(try str("k_auth"), "k_auth")
-        let token = try str("token")
-        // 32 random bytes in base64url is 43 characters; longer is fine, shorter is not.
-        guard token.utf8.count >= 43, token.utf8.count <= 512,
-              token.utf8.allSatisfy({ ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2D || $0 == 0x5F }) else {
-            throw Failure.badField("token")
+        var token: String?
+        if !v2 {
+            let t = try str("token")
+            // 32 random bytes in base64url is 43 characters; longer is fine, shorter is not.
+            guard t.utf8.count >= 43, t.utf8.count <= 512,
+                  t.utf8.allSatisfy({ ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x30 && $0 <= 0x39) || $0 == 0x2D || $0 == 0x5F }) else {
+                throw Failure.badField("token")
+            }
+            token = t
         }
         let label = try str("label")
         guard (1...32).contains(label.utf8.count), label.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7F }) else { throw Failure.badField("label") }

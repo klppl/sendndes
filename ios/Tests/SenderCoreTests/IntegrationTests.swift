@@ -16,9 +16,10 @@ final class Env: @unchecked Sendable {
     let pairing: Pairing
     let uploadToken: String
     let pullTokenFile: URL
+    var ownerToken: String { (try? String(contentsOf: pullTokenFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
     let tokensLine: String
 
-    init?() throws {
+    init?(pairing wantsPairing: Bool = false) throws {
         guard let b = ProcessInfo.processInfo.environment["NDES_TEST_BIN"] else { return nil }
         bin = b
         dir = tempDir("integ")
@@ -33,8 +34,8 @@ final class Env: @unchecked Sendable {
         let payload = try SenderPayload.parse(fields["payload"]!)
         // The same keys and token, but pointed at the loopback server (https is not available here).
         pairing = Pairing(server: try ServerURL.parseForTests("http://127.0.0.1:\(port)"), label: payload.label, fingerprint: payload.fingerprint,
-                          inboxPub: payload.inboxPub, kAuth: payload.kAuth, token: payload.token)
-        uploadToken = payload.token
+                          inboxPub: payload.inboxPub, kAuth: payload.kAuth, token: payload.token!)
+        uploadToken = payload.token!
         tokensLine = fields["token-line"]!
         // A pull token for the Mac side.
         let mac = b64url(Data((0..<32).map { _ in UInt8.random(in: 0...255) }))
@@ -48,6 +49,7 @@ final class Env: @unchecked Sendable {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: b + "/ndesd")
         p.arguments = ["--tokens-file", tokensFile.path, "--inbox", inbox.path, "--listen", "127.0.0.1:\(port)"]
+            + (wantsPairing ? ["--pairing", "--pairing-open-minutes", "5"] : [])
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         try p.run()
         server = p
@@ -99,6 +101,45 @@ final class Env: @unchecked Sendable {
 }
 
 @Suite(.serialized) struct IntegrationTests {
+    /// A phone pairs by approval: a code on the phone, the same code for the owner, approve, token arrives once.
+    @Test func aPhonePairsByApprovalAgainstARealServer() async throws {
+        guard let env = try Env(pairing: true) else { return }
+        // The Mac makes a pairing code (no token inside).
+        let sc = try Env.run(env.bin + "/ndes", ["sender-config", "--pair", "--vault", env.vault.path, "--passphrase-stdin", "--server", "https://inbox.example.com", "--label", "iphone-x"], stdin: env.pass + "\n").ok()
+        let payloadLine = try #require(sc.out.split(separator: "\n").first { $0.hasPrefix("payload: ") }).dropFirst(9)
+        let payload = try SenderPayload.parse(String(payloadLine))
+        #expect(payload.token == nil && payload.label == "iphone-x")
+        let server = env.pairing.server   // the loopback address stands in for the https one
+        guard case .success(let req) = await PairClient.request(server: server, label: payload.label) else { Issue.record("request refused"); return }
+        #expect(req.code.count == 6)
+        // The owner sees the same code and approves.
+        func owner(_ method: String, _ path: String) async throws -> (Int, Data) {
+            var r = URLRequest(url: URL(string: server.canonical + path)!)
+            r.httpMethod = method
+            r.setValue("Bearer " + env.ownerToken, forHTTPHeaderField: "Authorization")
+            let (d, resp) = try await URLSession.shared.data(for: r)
+            return ((resp as! HTTPURLResponse).statusCode, d)
+        }
+        let (c1, pending) = try await owner("GET", "/v1/pair/pending")
+        #expect(c1 == 200 && String(decoding: pending, as: UTF8.self).contains(req.code))
+        guard case .success(.pending) = await PairClient.status(server: server, request: req) else { Issue.record("not pending"); return }
+        #expect(try await owner("POST", "/v1/pair/\(req.id)/approve").0 == 200)
+        guard case .success(.approved(let token)) = await PairClient.status(server: server, request: req) else { Issue.record("not approved"); return }
+        #expect(token.count == 43)
+        // The token works for uploading and for nothing else, and is released only once.
+        var ping = UploadRequest.ping(server: server, token: token)!
+        ping.timeoutInterval = 10
+        #expect(((try await URLSession.shared.data(for: ping)).1 as! HTTPURLResponse).statusCode == 204)
+        var list = URLRequest(url: URL(string: server.canonical + "/inbox")!)
+        list.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        #expect(((try await URLSession.shared.data(for: list)).1 as! HTTPURLResponse).statusCode == 403)
+        if case .success = await PairClient.status(server: server, request: req) { Issue.record("the token was released twice") }
+        // Save it like the app does, and the phone can seal and upload.
+        let store = PairingStore(directory: env.dir.appendingPathComponent("cfg"), secrets: MemorySecrets())
+        try store.save(payload.withToken(token))
+        #expect(store.load()?.token == token)
+    }
+
     @Test func swiftSealedFilesArePulledAndReadBackByteIdentical() async throws {
         guard let env = try Env() else { return }
         let outbox = try Outbox(directory: env.dir.appendingPathComponent("outbox"))
