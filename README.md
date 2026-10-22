@@ -46,7 +46,7 @@ Runs on macOS and Linux (not Windows), plus iOS for the phone app. The format ha
   </tr>
   <tr>
     <td><b>Unlocked.</b> Drop files in, press Space for Quick Look, export when you need a copy. Files that arrived from the inbox are tagged <i>new</i>.</td>
-    <td><b>Send.</b> Works while the vault is locked: connect your inbox server once, then drop files.</td>
+    <td><b>Connect.</b> Enter the server address, press Connect and approve the code on the server's page. Sending then works while the vault is locked.</td>
   </tr>
 </table>
 
