@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,10 +45,13 @@ const (
 
 // syncSettings are the owner-editable settings of the sync (Mode B) server.
 type syncSettings struct {
-	Listen               string `json:"listen"`
-	TLSCert              string `json:"tls_cert,omitempty"`
-	TLSKey               string `json:"tls_key,omitempty"`
-	AckPlainHTTP         bool   `json:"ack_plain_http,omitempty"`
+	Listen       string `json:"listen"`
+	TLSCert      string `json:"tls_cert,omitempty"`
+	TLSKey       string `json:"tls_key,omitempty"`
+	AckPlainHTTP bool   `json:"ack_plain_http,omitempty"`
+	// PublicURL is only shown to the owner as the address devices should type
+	// (for a proxy or tunnel name). The server never uses it.
+	PublicURL            string `json:"public_url,omitempty"`
 	MaxUploadBytes       int64  `json:"max_upload_bytes"`
 	MaxInboxFiles        int    `json:"max_inbox_files"`
 	MaxConcurrentUploads int    `json:"max_concurrent_uploads"`
@@ -79,6 +83,13 @@ func (s syncSettings) validate() error {
 	}
 	if s.TLSCert == "" && !isLoopbackListen(s.Listen) && !s.AckPlainHTTP {
 		return errors.New("plain HTTP on a non-loopback address needs the confirmation box ticked (or a TLS certificate)")
+	}
+	if s.PublicURL != "" {
+		u, err := url.Parse(s.PublicURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+			(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.User != nil {
+			return errors.New("the public address must look like https://vault.example.com")
+		}
 	}
 	if s.MaxUploadBytes < 1<<20 {
 		return errors.New("max upload size must be at least 1 MiB")

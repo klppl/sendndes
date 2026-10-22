@@ -230,6 +230,8 @@ function isLoop(host) { return host === "127.0.0.1" || host === "localhost" || h
 
 // The address devices use. A wildcard listen uses the name this page was opened with.
 function connectURL() {
+  const pub = (S.sync.settings.public_url || "").replace(/\/$/, "");
+  if (pub) return { url: pub, guessed: false, loopback: false };
   const [host, port] = splitListen(S.sync.settings.listen);
   let name = host, guessed = false;
   if (host === "0.0.0.0" || host === "::" || host === "") { name = location.hostname; guessed = true; }
@@ -303,6 +305,8 @@ function reachForm(opts) {
   const ackRow = h("label", { class: "check", for: "ack" }, ack,
     h("span", {}, "I understand traffic to this address isn't encrypted by send n*des, and I trust this network (or there's HTTPS in front)."));
   const port = h("input", { id: "port", type: "number", min: "1", max: "65535", value: curPort });
+  const pubIn = h("input", { id: "pub", type: "text", spellcheck: "false", autocomplete: "off",
+    placeholder: "https://vault.example.com", value: st.public_url || "" });
   const out = h("div", {});
   const list = h("div", { class: "choices", role: "radiogroup", "aria-label": "Reachability" });
 
@@ -328,6 +332,7 @@ function reachForm(opts) {
       listen: host + ":" + port.value,
       ack_plain_http: pick.ack === "implicit" || (pick.ack === "ask" && ack.checked),
       tls_cert: now.tls_cert || "", tls_key: now.tls_key || "",
+      public_url: pubIn.value.trim(),
     }));
     if (!S.sync.running && !S.sync.stopped) await api("POST", "/api/server/start").catch(() => {});
     await refresh();
@@ -336,6 +341,8 @@ function reachForm(opts) {
   }, out));
   draw();
   return h("div", {}, list,
+    h("label", { class: "field", for: "pub" }, h("span", { class: "field-label" }, "Address your devices use (optional)"), pubIn,
+      h("span", { class: "soft small" }, "Behind a proxy or tunnel? Put the name devices type, like https://vault.example.com. Leave empty to show this machine's address and port.")),
     h("details", { class: "plain" }, h("summary", {}, "Port"),
       h("label", { class: "field", for: "port" }, h("span", { class: "field-label" }, "Sync port (not this page's port)"), port)),
     out, h("div", { class: "actions" }, opts.back || null, h("span", { class: "grow" }), save));
