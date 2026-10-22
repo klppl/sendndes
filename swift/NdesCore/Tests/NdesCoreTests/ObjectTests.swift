@@ -71,7 +71,7 @@ import Testing
         let nfdVector = ObjectTests.objects.first { $0["warn_non_nfc"] as? Bool == true }!
         let stored = storedMetadata(nfdVector["meta"] as! JSONObject)
         let written = try Metadata(nameUTF8: stored.nameUTF8, dirUTF8: stored.dirUTF8, mtime: stored.mtime,
-                                   mimeUTF8: stored.mimeUTF8, rev: stored.rev)
+                                   mimeUTF8: stored.mimeUTF8, rev: stored.rev, size: stored.size)
         #expect(written.isNFC)
         #expect(written.nameUTF8 != stored.nameUTF8)
     }
@@ -122,14 +122,28 @@ import Testing
         }
     }
 
+    /// ct_total for a stored plaintext length p.
+    private func ct(_ p: Int64) -> Int64 { p + 16 * ((p + 65535) / 65536) }
+
     @Test func structuralCheck() throws {
-        for ok: Int64 in [16, 17, 65552, 65552 + 100, 65552 * 2, 65552 + 17] {
+        for ok: Int64 in [ct(4096), ct(4352), ct(65536), ct(65536 + 2048), ct(3 * 65536)] {
             #expect(throws: Never.self, "\(ok)") { _ = try ChunkLayout(ctTotal: ok) }
         }
-        for bad: Int64 in [-1, 0, 15, 65552 + 1, 65552 + 15, 65552 + 16, 65552 * 3 + 16, Int64.max] {
+        for bad: Int64 in [-1, 0, 15, 16, 17, ct(4095), ct(4097), ct(65536) + 1, ct(65536) + 15, ct(65536) + 16,
+                           ct(65537), 65552 * 3 + 16, Int64.max] {
             #expect(errorClass { _ = try ChunkLayout(ctTotal: bad) } == "malformed", "\(bad)")
         }
-        let l = try ChunkLayout(ctTotal: 65552 * 3 + 17)
-        #expect(l.chunkCount == 4 && l.plaintextLength == 65536 * 3 + 1)
+        let l = try ChunkLayout(ctTotal: ct(3 * 65536 + 4096))
+        #expect(l.chunkCount == 4 && l.storedPlaintextLength == 65536 * 3 + 4096)
+    }
+
+    @Test func paddedSizes() {
+        for (size, padded) in [(0, 4096), (1, 4096), (4096, 4096), (4097, 4352), (197842, 200704)] as [(Int64, Int64)] {
+            #expect(paddedSize(size) == padded, "\(size)")
+        }
+        for l in stride(from: Int64(4096), to: 300_000, by: 997) {
+            let p = paddedSize(l)
+            #expect(p >= l && padme(p) == p && Double(p - l) <= 0.125 * Double(l), "\(l)")
+        }
     }
 }

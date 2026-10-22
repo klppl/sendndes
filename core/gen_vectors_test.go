@@ -181,6 +181,7 @@ func fillEncrypted(e *encryptedFile, file []byte, headerLen int, plain []byte, i
 		FileHex:         smallHex(file),
 		PlaintextFile:   e.PlaintextFile,
 		PlaintextLen:    int64(len(plain)),
+		PaddedLen:       PaddedSize(int64(len(plain))),
 		PlaintextSHA256: sha(plain),
 		PlaintextHex:    smallHex(plain),
 		FileID:          id[:],
@@ -201,7 +202,7 @@ func fillEncrypted(e *encryptedFile, file []byte, headerLen int, plain []byte, i
 // makeObjectRaw encrypts plain with fixed values derived from label.
 func (g *generator) makeObjectRaw(label string, metaPlain, plain []byte) []byte {
 	var buf bytes.Buffer
-	err := encryptObject(&buf, g.keys, metaPlain, bytes.NewReader(plain), fixedID(label+"/file_id"),
+	err := encryptObject(&buf, g.keys, metaPlain, bytes.NewReader(plain), int64(len(plain)), fixedID(label+"/file_id"),
 		fixed32(label+"/fk"), fixed(label+"/wrap_nonce", NonceSize), fixed(label+"/meta_nonce", NonceSize))
 	if err != nil {
 		g.t.Fatal(err)
@@ -216,16 +217,16 @@ func (g *generator) genObjects() {
 		plain                 []byte
 		raw                   bool // write meta as given, bypassing NFC normalization
 	}{
-		{"tiny", "Tiny object (13 bytes, one final chunk)", "hello.txt in the root",
+		{"tiny", "Tiny object: 13 bytes, padded to 4096 (one final chunk)", "hello.txt in the root",
 			Metadata{Name: "hello.txt", Dir: "", MTime: mtimeNow, MIME: "text/plain", Rev: 1},
 			[]byte("Hello, Valv!\n"), false},
-		{"multi", "Multi-chunk object: 3 full chunks plus a 1234-byte partial chunk", "Räkning åäö.pdf in Dokument/Kvitton 2026",
+		{"multi", "Multi-chunk object: 197842 bytes (3 full chunks plus 1234), padded to 200704 (3 full chunks plus a 4096-byte final chunk)", "Räkning åäö.pdf in Dokument/Kvitton 2026",
 			Metadata{Name: "Räkning åäö.pdf", Dir: "Dokument/Kvitton 2026", MTime: mtimeNow + 1, MIME: "application/pdf", Rev: 3},
 			pattern(3*ChunkSize+1234, 0), false},
-		{"exact", "Exact multiple of the chunk size: 2 full chunks, the second is final", "café.bin in Photos/한국",
+		{"exact", "Exact multiple of the chunk size: 131072 bytes, already a padded size, 2 full chunks, the second is final", "café.bin in Photos/한국",
 			Metadata{Name: "café.bin", Dir: "Photos/한국", MTime: mtimeNow + 2, MIME: "application/octet-stream", Rev: 1},
 			pattern(2*ChunkSize, 7), false},
-		{"empty", "Empty file: one empty final chunk (16 bytes, just the tag)", "empty in a/b/c",
+		{"empty", "Empty file: 0 bytes, padded to 4096 (one final chunk)", "empty in a/b/c",
 			Metadata{Name: "empty", Dir: "a/b/c", MTime: mtimeNow + 3, MIME: "", Rev: 1},
 			nil, false},
 		{"nfd_name", "Name and dir stored in NFD by another writer: readers accept it, tools warn", "Räksmörgås.txt in Kök, in NFD",
@@ -233,6 +234,7 @@ func (g *generator) genObjects() {
 			[]byte("NFD"), true},
 	}
 	for _, s := range specs {
+		s.meta.Size = int64(len(s.plain))
 		metaPlain, meta, err := EncodeMetadata(s.meta)
 		if s.raw {
 			meta = s.meta
@@ -265,7 +267,7 @@ func (g *generator) genObjects() {
 func (g *generator) genInbox() {
 	const label = "inbox"
 	plain := pattern(ChunkSize+5, 3)
-	meta := Metadata{Name: "scan-0001.pdf", Dir: "Inbox", MTime: mtimeNow + 4, MIME: "application/pdf", Rev: 1}
+	meta := Metadata{Name: "scan-0001.pdf", Dir: "Inbox", MTime: mtimeNow + 4, MIME: "application/pdf", Rev: 1, Size: int64(len(plain))}
 	metaPlain, meta, err := EncodeMetadata(meta)
 	if err != nil {
 		g.t.Fatal(err)
@@ -274,7 +276,7 @@ func (g *generator) genInbox() {
 	ephPriv := fixed32(label + "/eph_priv")
 	metaNonce := fixed(label+"/meta_nonce", NonceSize)
 	var buf bytes.Buffer
-	if err := sealInbox(&buf, &g.keys.InboxPub, g.keys.InboxAuth[:], metaPlain, bytes.NewReader(plain), id, ephPriv, metaNonce); err != nil {
+	if err := sealInbox(&buf, &g.keys.InboxPub, g.keys.InboxAuth[:], metaPlain, bytes.NewReader(plain), int64(len(plain)), id, ephPriv, metaNonce); err != nil {
 		g.t.Fatal(err)
 	}
 	file := buf.Bytes()
@@ -285,7 +287,7 @@ func (g *generator) genInbox() {
 	fk := inboxFK(dh, g.keys.InboxAuth[:], &ep, &g.keys.InboxPub)
 
 	v := inboxVector{}
-	v.Description = "Inbox file sealed to inbox_pub: one full chunk plus a 5-byte final chunk"
+	v.Description = "Inbox file sealed to inbox_pub: 65541 bytes, padded to 67584 (one full chunk plus a 2048-byte final chunk)"
 	v.File = "inbox/inbox.inb"
 	v.Path = InboxDir + "/" + InboxName(id)
 	v.PlaintextFile = "inbox/inbox.plain"
@@ -350,6 +352,8 @@ func (g *generator) genMetadata() {
 	ok("Escapes: quote, backslash, control characters; DEL and / are literal",
 		Metadata{Name: "say \"hi\" \\ back\n\ttab\x1f\x7f", Dir: "a/b", MTime: mtimeNow, MIME: "text/x-weird/é", Rev: 1}, "")
 	ok("Negative mtime and the largest rev", Metadata{Name: "old.txt", MTime: -1, Rev: 9223372036854775807}, "")
+	ok("Size 1 TiB", Metadata{Name: "big.bin", MTime: mtimeNow, MIME: "application/octet-stream", Rev: 1, Size: 1 << 40}, "")
+	ok("Largest size, 2^60", Metadata{Name: "max.bin", MTime: 0, Rev: 1, Size: MaxPlaintextSize}, "")
 	empty := Metadata{Name: "", MTime: 0, Rev: 1}
 	base := len(canonicalMetadataJSON(&empty))
 	ok("Canonical JSON exactly 512 bytes: no padding added",
@@ -369,6 +373,8 @@ func (g *generator) genMetadata() {
 	bad("Dir has a .. component", m("x", "a/../b"))
 	bad("Dir has a . component", m("x", "./a"))
 	bad("rev 0", Metadata{Name: "x", MTime: mtimeNow, Rev: 0})
+	bad("Negative size", Metadata{Name: "x", MTime: mtimeNow, Rev: 1, Size: -1})
+	bad("Size above 2^60", Metadata{Name: "x", MTime: mtimeNow, Rev: 1, Size: MaxPlaintextSize + 1})
 	bad("Padded metadata larger than 65536 bytes", m(strings.Repeat("a", MaxMetaPadded), ""))
 }
 
@@ -433,7 +439,7 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	vault("vault_inbox_pub_mismatch", "wrapped_vk opens (inbox_pub is in its AAD) but inbox_pub is not the one derived from VK",
 		"inbox_key_mismatch", mismatch.Marshal(), testPassphrase)
 
-	// Objects. multi = 3 full chunks + 1250-byte final chunk.
+	// Objects. multi = 197842 bytes padded to 200704: 3 full chunks + a 4096-byte final chunk.
 	tiny, multi, exact := g.objectBytes(0), g.objectBytes(1), g.objectBytes(2)
 	h := len(g.out.Objects[1].Header)
 	obj := func(name, desc, expect string, data []byte) { g.negative(name, "object", desc, expect, data) }
@@ -441,15 +447,16 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	obj("obj_flipped_meta_bit", "One bit flipped in meta_blob ciphertext", "auth", flip(multi, objectFixedHeader+20))
 	obj("obj_flipped_wrapped_fk", "One bit flipped in wrapped_fk", "auth", flip(multi, 40))
 	obj("obj_wrong_file_id", "file_id in the header changed (it is in wrap_aad)", "auth", flip(multi, 6))
-	obj("obj_tampered_version", "Header version byte set to 2", "unsupported", setByte(multi, 4, 2))
+	obj("obj_tampered_version", "Header version byte set to 3", "unsupported", setByte(multi, 4, 3))
 	obj("obj_tampered_kind", "Header kind byte set to 2 (inbox)", "malformed", setByte(multi, 5, 2))
 	obj("obj_tampered_magic", "Magic changed", "malformed", setByte(multi, 0, 'X'))
 	obj("obj_bad_meta_len", "meta_len + 1: not 28 plus a multiple of 512", "malformed", addMetaLen(multi, 82, 1))
-	obj("obj_meta_len_shifted", "meta_len + 512: passes the bounds check, meta_blob then fails", "auth", addMetaLen(multi, 82, 512))
-	obj("obj_truncated_final_chunk", "Last 10 bytes removed (final chunk still >= 16 bytes)", "auth", multi[:len(multi)-10])
-	obj("obj_truncated_at_chunk_boundary", "Final chunk removed: chunk 2 becomes last but has the final flag clear", "auth",
+	obj("obj_meta_len_shifted", "meta_len + 512 with 512 bytes appended: passes the bounds and structural checks, meta_blob then fails", "auth",
+		addMetaLen(concat(multi, make([]byte, 512)), 82, 512))
+	obj("obj_truncated_final_chunk", "Last 10 bytes removed: the stored length is no longer a padded size", "malformed", multi[:len(multi)-10])
+	obj("obj_truncated_at_chunk_boundary", "Final chunk removed: 196608 is a padded size, but not the one the metadata size (197842) gives", "malformed",
 		multi[:h+3*StoredChunkSize])
-	obj("obj_dropped_middle_chunk", "Chunk 1 removed", "auth",
+	obj("obj_dropped_middle_chunk", "Chunk 1 removed: the stored length no longer matches the metadata size", "malformed",
 		concat(multi[:h+StoredChunkSize], multi[h+2*StoredChunkSize:]))
 	obj("obj_swapped_chunks", "Chunks 0 and 1 swapped", "auth",
 		concat(multi[:h], multi[h+StoredChunkSize:h+2*StoredChunkSize], multi[h:h+StoredChunkSize], multi[h+2*StoredChunkSize:]))
@@ -458,11 +465,12 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	obj("obj_ct_zero", "Structural: header only, ct_total = 0 (< 16)", "malformed", tiny[:th])
 	obj("obj_ct_residue_5", "Structural: 2 full chunks + 5 bytes (ct_total mod 65552 = 5)", "malformed",
 		concat(exact, fixed("negative/residue", 5)))
+	g.negativePadding(obj)
 	obj("obj_empty_final_after_full", "Structural: one full chunk then a correctly encrypted empty final chunk (ct_total mod 65552 = 16)",
 		"malformed", g.emptyFinalAfterFull())
 
 	// Metadata, each in an otherwise valid object.
-	j := `{"name":"a.txt","dir":"","mtime":1792310400000000000,"mime":"text/plain","rev":1}`
+	j := `{"name":"a.txt","dir":"","mtime":1792310400000000000,"mime":"text/plain","rev":1,"size":1}`
 	meta := func(name, desc, plainJSON string, padTo int, padByte byte) {
 		p := []byte(plainJSON)
 		if padTo == 0 {
@@ -480,9 +488,10 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	}
 	meta("meta_duplicate_key", "name appears twice", sub(`"dir"`, `"name":"b.txt","dir"`), 0, ' ')
 	meta("meta_invalid_utf8", "Invalid UTF-8 byte in name", sub("a.txt", "a\xff.txt"), 0, ' ')
-	meta("meta_wrong_key_order", "dir before name", `{"dir":"","name":"a.txt","mtime":1792310400000000000,"mime":"text/plain","rev":1}`, 0, ' ')
-	meta("meta_extra_key", "Unknown key x", sub(`"rev":1}`, `"rev":1,"x":1}`), 0, ' ')
-	meta("meta_missing_key", "No rev", sub(`,"rev":1}`, `}`), 0, ' ')
+	meta("meta_wrong_key_order", "dir before name", `{"dir":"","name":"a.txt","mtime":1792310400000000000,"mime":"text/plain","rev":1,"size":1}`, 0, ' ')
+	meta("meta_extra_key", "Unknown key x", sub(`"size":1}`, `"size":1,"x":1}`), 0, ' ')
+	meta("meta_missing_key", "No size", sub(`,"size":1}`, `}`), 0, ' ')
+	meta("meta_missing_rev", "No rev", sub(`,"rev":1`, ``), 0, ' ')
 	meta("meta_escaped_slash", "dir written as a\\/b", sub(`"dir":""`, `"dir":"a\/b"`), 0, ' ')
 	meta("meta_uppercase_escape", "\\u001F with uppercase hex", sub("a.txt", `a\u001Fb`), 0, ' ')
 	meta("meta_needless_escape", "\\u0041 for A", sub("a.txt", "\\u0041.txt"), 0, ' ')
@@ -498,6 +507,9 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	meta("meta_dotdot_dir", "dir component ..", sub(`"dir":""`, `"dir":"a/../b"`), 0, ' ')
 	meta("meta_rev_zero", "rev 0", sub(`"rev":1`, `"rev":0`), 0, ' ')
 	meta("meta_rev_negative", "rev -1", sub(`"rev":1`, `"rev":-1`), 0, ' ')
+	meta("meta_size_negative", "size -1", sub(`"size":1`, `"size":-1`), 0, ' ')
+	meta("meta_size_too_large", "size 2^60 + 1", sub(`"size":1`, `"size":1152921504606846977`), 0, ' ')
+	meta("meta_size_before_rev", "size and rev swapped", `{"name":"a.txt","dir":"","mtime":1792310400000000000,"mime":"text/plain","size":1,"rev":1}`, 0, ' ')
 
 	// Paths (SPEC 4.1), using the valid tiny object.
 	tinyID := fixedID("tiny/file_id")
@@ -531,17 +543,63 @@ func (g *generator) genNegative(vaultJSON []byte) {
 	in("inb_flipped_eph_pub", "One bit flipped in eph_pub: different FK, meta_blob fails", "auth", flip(inb, 30))
 	in("inb_zero_eph_pub", "eph_pub all zeros: X25519 result is all zero", "malformed", zeroRange(inb, 22, 54))
 	in("inb_tampered_kind", "Header kind byte set to 1 (object)", "malformed", setByte(inb, 5, 1))
-	in("inb_ct_residue_11", "Structural: last 10 bytes removed, final chunk is 11 bytes", "malformed", inb[:len(inb)-10])
+	in("inb_ct_residue_11", "Structural: last 10 bytes removed, the final chunk is 2038 bytes and the stored length is not a padded size", "malformed", inb[:len(inb)-10])
 	in("path_renamed_inbox", "Valid inbox file stored under another file_id's name", "path", inb).Path =
 		InboxDir + "/" + InboxName(renamedID)
+}
+
+// sealedObject builds an object with the fixed values for label whose stored
+// plaintext is exactly stored (no padding is added) and whose metadata says
+// size. finalFlag decides each chunk's nonce flag (nil: the last chunk).
+func (g *generator) sealedObject(label string, size int64, stored []byte, finalFlag func(i, n int) bool) []byte {
+	metaPlain, _, err := EncodeMetadata(Metadata{Name: "x", MTime: mtimeNow, Rev: 1, Size: size})
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	head := g.makeObjectRaw(label, metaPlain, nil)[:objectFixedHeader+len(metaPlain)+metaOverhead]
+	fkeys := deriveFileKeys(fixed32(label + "/fk"))
+	id := fixedID(label + "/file_id")
+	out := bytes.Clone(head)
+	n := (len(stored) + ChunkSize - 1) / ChunkSize
+	for i := 0; i < n; i++ {
+		final := i == n-1
+		if finalFlag != nil {
+			final = finalFlag(i, n)
+		}
+		nonce := chunkNonce(uint64(i), final)
+		out = append(out, seal(&fkeys.content, nonce[:], stored[i*ChunkSize:min(len(stored), (i+1)*ChunkSize)], id[:])...)
+	}
+	return out
+}
+
+// negativePadding adds the padding rules (SPEC 5.3): each file is otherwise
+// well formed and correctly encrypted.
+func (g *generator) negativePadding(obj func(name, desc, expect string, data []byte)) {
+	zeros := func(n int) []byte { return make([]byte, n) }
+	obj("obj_final_flag_clear", "Correct padded layout, but the only chunk was encrypted with the final flag clear", "auth",
+		g.sealedObject("negative/obj_final_flag_clear", 5, zeros(4096), func(int, int) bool { return false }))
+	obj("obj_unpadded_below_min", "Content stored without padding: 100 bytes, below the 4096-byte minimum", "malformed",
+		g.sealedObject("negative/obj_unpadded_below_min", 100, pattern(100, 5), nil))
+	obj("obj_unpadded_not_padme", "Content stored without padding: 5000 bytes is not a padded size (the next one is 5120)", "malformed",
+		g.sealedObject("negative/obj_unpadded_not_padme", 5000, pattern(5000, 5), nil))
+	obj("obj_size_bucket_mismatch", "Stored length 4096 is a padded size, but the metadata size 5000 pads to 5120", "malformed",
+		g.sealedObject("negative/obj_size_bucket_mismatch", 5000, zeros(4096), nil))
+	nz := zeros(4096)
+	nz[4000] = 1
+	obj("obj_nonzero_padding", "Metadata size 100, one non-zero byte at offset 4000 in the padding", "malformed",
+		g.sealedObject("negative/obj_nonzero_padding", 100, nz, nil))
+	nz = zeros(4096)
+	nz[100] = 1
+	obj("obj_nonzero_padding_after_content", "Metadata size 100, one non-zero byte at offset 100, the first padding byte", "malformed",
+		g.sealedObject("negative/obj_nonzero_padding_after_content", 100, nz, nil))
 }
 
 // forgedInbox seals a valid-looking inbox file with kAuth instead of the
 // vault's K_auth (nil: none at all).
 func (g *generator) forgedInbox(label string, kAuth []byte) []byte {
-	metaPlain, _, _ := EncodeMetadata(Metadata{Name: "invoice.pdf", MTime: mtimeNow, MIME: "application/pdf", Rev: 1})
+	metaPlain, _, _ := EncodeMetadata(Metadata{Name: "invoice.pdf", MTime: mtimeNow, MIME: "application/pdf", Rev: 1, Size: 100})
 	var buf bytes.Buffer
-	err := sealInbox(&buf, &g.keys.InboxPub, kAuth, metaPlain, bytes.NewReader(pattern(100, 9)),
+	err := sealInbox(&buf, &g.keys.InboxPub, kAuth, metaPlain, bytes.NewReader(pattern(100, 9)), 100,
 		fixedID(label+"/file_id"), fixed32(label+"/eph_priv"), fixed(label+"/meta_nonce", NonceSize))
 	if err != nil {
 		g.t.Fatal(err)
@@ -598,7 +656,7 @@ func (g *generator) genRecoveryKeys(vk [KeySize]byte) {
 // chunk followed by a correctly encrypted empty final chunk.
 func (g *generator) emptyFinalAfterFull() []byte {
 	const label = "negative/obj_empty_final_after_full"
-	metaPlain, _, _ := EncodeMetadata(Metadata{Name: "x", MTime: mtimeNow, Rev: 1})
+	metaPlain, _, _ := EncodeMetadata(Metadata{Name: "x", MTime: mtimeNow, Rev: 1, Size: ChunkSize})
 	plain := pattern(ChunkSize, 1)
 	full := g.makeObjectRaw(label, metaPlain, plain)
 	h := objectFixedHeader + len(metaPlain) + metaOverhead

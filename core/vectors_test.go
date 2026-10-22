@@ -125,8 +125,11 @@ func checkEncryptedFile(t *testing.T, e *encryptedFile, file []byte, plain []byt
 	if err != nil || !bytes.Equal(metaPlain, e.MetaPlaintext) {
 		t.Error("meta_plaintext")
 	}
-	if size, err := PlaintextSize(e.CtTotal); err != nil || size != e.PlaintextLen {
-		t.Errorf("PlaintextSize(%d) = %d, %v", e.CtTotal, size, err)
+	if size, err := StoredPlaintextSize(e.CtTotal); err != nil || size != e.PaddedLen || size != PaddedSize(e.PlaintextLen) {
+		t.Errorf("StoredPlaintextSize(%d) = %d, %v; padded_len %d", e.CtTotal, size, err, e.PaddedLen)
+	}
+	if m, err := e.Meta.metadata(); err != nil || m.Size != e.PlaintextLen {
+		t.Errorf("meta size %d, plaintext_len %d: %v", m.Size, e.PlaintextLen, err)
 	}
 	if n, _ := chunkCount(e.CtTotal); int(n) != len(e.Chunks) {
 		t.Errorf("chunk count %d, vectors list %d", n, len(e.Chunks))
@@ -177,7 +180,7 @@ func TestVectorObjects(t *testing.T) {
 			var fk [KeySize]byte
 			copy(fk[:], o.FK)
 			var re bytes.Buffer
-			if err := encryptObject(&re, keys, o.MetaPlaintext, bytes.NewReader(want), id, &fk, o.WrapNonce, o.MetaNonce); err != nil {
+			if err := encryptObject(&re, keys, o.MetaPlaintext, bytes.NewReader(want), int64(len(want)), id, &fk, o.WrapNonce, o.MetaNonce); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(re.Bytes(), file) {
@@ -220,7 +223,7 @@ func TestVectorInbox(t *testing.T) {
 			copy(ephPriv[:], iv.EphPriv)
 			copy(inboxPub[:], iv.InboxPub)
 			var re bytes.Buffer
-			if err := sealInbox(&re, &inboxPub, iv.KAuth, iv.MetaPlaintext, bytes.NewReader(plain), id, &ephPriv, iv.MetaNonce); err != nil {
+			if err := sealInbox(&re, &inboxPub, iv.KAuth, iv.MetaPlaintext, bytes.NewReader(plain), int64(len(plain)), id, &ephPriv, iv.MetaNonce); err != nil {
 				t.Fatal(err)
 			}
 			if !bytes.Equal(re.Bytes(), file) {

@@ -276,9 +276,9 @@ func TestNdesdEndToEndAndEmptyUpload(t *testing.T) {
 			if getResp.StatusCode != http.StatusOK {
 				t.Fatalf("GET /inbox/%s: status %d", putResp.ID, getResp.StatusCode)
 			}
-			// For empty file: header (58 + 540 = 598) + 16-byte tag = 614 bytes.
-			if len(tc.plain) == 0 && len(inbBytes) != 58+540+16 {
-				t.Fatalf("empty file .inb length = %d, want %d", len(inbBytes), 58+540+16)
+			// For empty file: header (58 + 540 = 598) + 4096 bytes of padding + 16-byte tag = 4710 bytes.
+			if len(tc.plain) == 0 && len(inbBytes) != 58+540+4096+16 {
+				t.Fatalf("empty file .inb length = %d, want %d", len(inbBytes), 58+540+4096+16)
 			}
 			var objBuf bytes.Buffer
 			meta, err := core.IngestInbox(bytes.NewReader(inbBytes), int64(len(inbBytes)), id, env.keys, &objBuf)
@@ -479,10 +479,10 @@ func TestHostileStreams(t *testing.T) {
 		t.Fatalf("known oversized PUT: got %d, want 413", resp.StatusCode)
 	}
 
-	// 2. Oversized chunked upload (ContentLength == -1).
+	// 2. Chunked upload (ContentLength == -1): refused, the size must be declared up front.
 	resp, _ = env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Ndes-Name": {"big-chunked.bin"}}, io.LimitReader(bytes.NewReader(make([]byte, 200*1024)), 200*1024), -1)
-	if resp.StatusCode != http.StatusRequestEntityTooLarge {
-		t.Fatalf("chunked oversized PUT: got %d, want 413", resp.StatusCode)
+	if resp.StatusCode != http.StatusLengthRequired {
+		t.Fatalf("chunked PUT: got %d, want 411", resp.StatusCode)
 	}
 	assertNoPartFiles(t, env.inboxDir)
 
@@ -511,6 +511,7 @@ func TestHostileStreams(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		req, _ := http.NewRequest(http.MethodPut, env.baseURL+"/inbox", pr)
+		req.ContentLength = 1000 // declared, but the pipe stalls
 		req.Header.Set("Authorization", "Bearer "+testBearerToken)
 		req.Header.Set("X-Ndes-Name", "slow.bin")
 		res, err := env.client.Do(req)
@@ -759,6 +760,7 @@ func TestConcurrentUploadQuotaEnforcement(t *testing.T) {
 				t.Errorf("NewRequest: %v", err)
 				return
 			}
+			req.ContentLength = int64(len("payload"))
 			req.Header.Set("Authorization", "Bearer "+testBearerToken)
 			req.Header.Set("X-Ndes-Name", fmt.Sprintf("concurrent-%d.bin", idx))
 			res, err := env.client.Do(req)
@@ -868,14 +870,13 @@ func TestByteQuotaIsAtomicUnderConcurrency(t *testing.T) {
 	assertNoPartFiles(t, env.inboxDir)
 }
 
-func TestChunkedUploadStopsAtItsBudget(t *testing.T) {
-	opts := defaultServerOpts()
-	opts.maxInboxBytes = 3 << 20 // a chunked upload gets what is left: 3 MiB
-	opts.minFreeBytes = 0
-	env := startTestServer(t, opts)
+// The stored content is padded, so the size goes into the metadata before the
+// content is read: an upload without Content-Length is refused.
+func TestChunkedUploadRefused(t *testing.T) {
+	env := startTestServer(t, defaultServerOpts())
 	resp, body := env.doReq(http.MethodPut, "/inbox", map[string][]string{"X-Ndes-Name": {"c.bin"}}, io.LimitReader(zeroReader{}, 5<<20), -1)
-	if resp.StatusCode != http.StatusInsufficientStorage || !strings.Contains(string(body), "inbox byte limit reached") {
-		t.Fatalf("chunked overshoot: %d %q", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusLengthRequired {
+		t.Fatalf("chunked: %d %q", resp.StatusCode, body)
 	}
 	assertNoPartFiles(t, env.inboxDir)
 	if ids, _, _ := env.dirH.listInboxIDs(); len(ids) != 0 {
@@ -1024,6 +1025,7 @@ func TestClientSealedUpload(t *testing.T) {
 	// 1. Create a client-sealed inbox file locally.
 	meta := core.Metadata{Name: "client_secret.txt", Dir: "docs", MTime: 1234567890, MIME: "text/plain", Rev: 1}
 	plain := []byte("this is a client-sealed secret plaintext that the server never sees in the clear")
+	meta.Size = int64(len(plain))
 	var inbBuf bytes.Buffer
 	id, err := core.SealInbox(&inbBuf, env.keys.InboxPub, env.keys.InboxAuth, meta, bytes.NewReader(plain))
 	if err != nil {

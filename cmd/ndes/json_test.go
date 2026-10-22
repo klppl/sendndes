@@ -103,7 +103,7 @@ func TestPullJSON(t *testing.T) {
 	srvURL := withPullHandler(t, mock)
 
 	var good bytes.Buffer
-	goodID, err := core.SealInbox(&good, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "a\nb.txt", MTime: 1, MIME: "text/plain"}, strings.NewReader("hi"))
+	goodID, err := sealSized(&good, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "a\nb.txt", MTime: 1, MIME: "text/plain"}, strings.NewReader("hi"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestPullJSON(t *testing.T) {
 	other := t.TempDir()
 	badKeys := openOtherKeys(t, other)
 	var bad bytes.Buffer
-	badID, err := core.SealInbox(&bad, badKeys.InboxPub, badKeys.InboxAuth, core.Metadata{Name: "x", MTime: 1}, strings.NewReader("x"))
+	badID, err := sealSized(&bad, badKeys.InboxPub, badKeys.InboxAuth, core.Metadata{Name: "x", MTime: 1}, strings.NewReader("x"))
 	if err != nil {
 		t.Fatal(err)
 	}

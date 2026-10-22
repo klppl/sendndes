@@ -101,7 +101,7 @@ func TestReviewM4SourceChangedWhileReading(t *testing.T) {
 	defer f.Close()
 	before, _ := f.Stat()
 
-	obj, _ := core.PrepareObject(core.Metadata{Name: "x", MTime: 1, Rev: 1})
+	obj, _ := core.PrepareObject(core.Metadata{Name: "x", MTime: 1, Rev: 1, Size: before.Size()})
 	// Another process appends while the file is being read.
 	other, _ := os.OpenFile(src, os.O_APPEND|os.O_WRONLY, 0)
 	other.Write([]byte("more"))
@@ -114,7 +114,7 @@ func TestReviewM4SourceChangedWhileReading(t *testing.T) {
 	f2, _ := os.Open(src)
 	defer f2.Close()
 	before2, _ := f2.Stat()
-	obj2, _ := core.PrepareObject(core.Metadata{Name: "x", MTime: 1, Rev: 1})
+	obj2, _ := core.PrepareObject(core.Metadata{Name: "x", MTime: 1, Rev: 1, Size: before2.Size()})
 	if err := encryptSource(io.Discard, obj2, keys, f2, before2); err != nil {
 		t.Fatal(err)
 	}

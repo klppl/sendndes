@@ -1,6 +1,6 @@
-# Independent Ndes v1 Decryptor & Validator
+# Independent Ndes Decryptor & Validator
 
-This directory contains a clean-room, independent Python 3 implementation of the **Ndes v1 wire format** decoder, validator, and decryptor. It was developed independently against `SPEC.md` without referencing the Go or Swift source code to provide an objective external verification tool.
+This directory contains a clean-room, independent Python 3 implementation of the **Ndes wire format (object and inbox format version 0x02)** decoder, validator, and decryptor. It was developed independently against `SPEC.md` without referencing the Go or Swift source code to provide an objective external verification tool.
 
 ---
 
@@ -23,7 +23,7 @@ pip install cryptography argon2-cffi
   - Strict canonical metadata JSON parsing and validation.
   - Chunked streaming ChaCha20-Poly1305 authenticated object and inbox decryption.
   - Sharded directory and file_id path validation (SPEC §4.1).
-- **`test_vectors.py`**: Test harness running all positive and 57 negative test vectors from `testvectors/vectors.json`.
+- **`test_vectors.py`**: Test harness running all positive and all negative test vectors from `testvectors/vectors.json`.
 - **`diff_fuzz.py`**: 3-way differential mutation fuzzer comparing the Go CLI (`ndes`), Swift tool (`ndes-swift-tool`), and Python `dec.py`.
 
 ---
@@ -42,7 +42,7 @@ This tests:
 3. Canonical metadata constraints and rejection of invalid names/dirs/mtimes.
 4. Positive object decryption byte-for-byte (`tiny.obj`, `multi.obj`, `exact.obj`, `empty.obj`, `nfd_name.obj`).
 5. Positive inbox decryption byte-for-byte (`inbox.inb` and ingested object).
-6. All 57 negative test vectors (tampered headers, wrong auth, bit flips, truncation, chunk reordering, bad path structures).
+6. All all negative test vectors (tampered headers, wrong auth, bit flips, truncation, chunk reordering, bad path structures).
 
 ---
 

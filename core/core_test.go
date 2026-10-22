@@ -31,35 +31,43 @@ func randomContent(n int) []byte {
 
 var testMeta = Metadata{Name: "file.bin", Dir: "x/y", MTime: 1792310400123456789, MIME: "application/octet-stream", Rev: 1}
 
+// msz is testMeta for a file of n bytes.
+func msz(n int) Metadata {
+	m := testMeta
+	m.Size = int64(n)
+	return m
+}
+
 func TestObjectRoundTrip(t *testing.T) {
 	keys := testKeys(t)
 	for _, n := range roundTripSizes {
 		plain := randomContent(n)
 		var file bytes.Buffer
 		// OneByteReader makes the lookahead work with short reads.
-		id, err := EncryptObject(&file, keys, testMeta, iotest.OneByteReader(bytes.NewReader(plain)))
+		id, err := EncryptObject(&file, keys, msz(n), iotest.OneByteReader(bytes.NewReader(plain)))
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
 		data := file.Bytes()
 		headerLen := objectFixedHeader + metaBlock + metaOverhead
-		chunks := max(1, (n+ChunkSize-1)/ChunkSize)
-		if len(data) != headerLen+n+TagSize*chunks {
-			t.Fatalf("%d: file is %d bytes, want %d", n, len(data), headerLen+n+TagSize*chunks)
+		padded := int(PaddedSize(int64(n)))
+		chunks := (padded + ChunkSize - 1) / ChunkSize
+		if len(data) != headerLen+padded+TagSize*chunks {
+			t.Fatalf("%d: file is %d bytes, want %d", n, len(data), headerLen+padded+TagSize*chunks)
 		}
-		if size, err := PlaintextSize(int64(len(data) - headerLen)); err != nil || size != int64(n) {
-			t.Fatalf("%d: PlaintextSize = %d, %v", n, size, err)
+		if size, err := StoredPlaintextSize(int64(len(data) - headerLen)); err != nil || size != int64(padded) {
+			t.Fatalf("%d: StoredPlaintextSize = %d, %v", n, size, err)
 		}
 		var out bytes.Buffer
 		meta, err := DecryptObject(bytes.NewReader(data), int64(len(data)), id, keys, &out)
 		if err != nil {
 			t.Fatalf("%d: %v", n, err)
 		}
-		if meta != testMeta || !bytes.Equal(out.Bytes(), plain) {
+		if meta != msz(n) || !bytes.Equal(out.Bytes(), plain) {
 			t.Fatalf("%d: round trip differs", n)
 		}
 		info, err := ReadObjectInfo(bytes.NewReader(data), int64(len(data)), id, keys)
-		if err != nil || info.ID != id || info.Meta != testMeta || info.PlaintextSize != int64(n) {
+		if err != nil || info.ID != id || info.Meta != msz(n) || info.PlaintextSize != int64(n) {
 			t.Fatalf("%d: ReadObjectInfo: %v", n, err)
 		}
 		var other FileID
@@ -74,7 +82,7 @@ func TestInboxRoundTrip(t *testing.T) {
 	keys := testKeys(t)
 	for _, n := range roundTripSizes {
 		plain := randomContent(n)
-		meta := testMeta
+		meta := msz(n)
 		meta.Rev = 7 // SealInbox must force rev 1
 		var inb bytes.Buffer
 		id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, meta, bytes.NewReader(plain))
@@ -117,7 +125,7 @@ func TestInboxRoundTrip(t *testing.T) {
 func TestValidateAndCopyInboxErrors(t *testing.T) {
 	keys := testKeys(t)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, strings.NewReader("hello world"))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, msz(11), strings.NewReader("hello world"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,27 +189,125 @@ func TestValidateAndCopyInboxErrors(t *testing.T) {
 func TestEncryptIsRandomized(t *testing.T) {
 	keys := testKeys(t)
 	var a, b bytes.Buffer
-	idA, _ := EncryptObject(&a, keys, testMeta, strings.NewReader("same"))
-	idB, _ := EncryptObject(&b, keys, testMeta, strings.NewReader("same"))
+	idA, _ := EncryptObject(&a, keys, msz(4), strings.NewReader("same"))
+	idB, _ := EncryptObject(&b, keys, msz(4), strings.NewReader("same"))
 	if idA == idB || bytes.Equal(a.Bytes()[22:], b.Bytes()[22:]) {
 		t.Fatal("two encryptions share file_id, FK or nonces")
 	}
 }
+
+// ctFor is ct_total for a stored plaintext length p.
+func ctFor(p int64) int64 { return p + TagSize*((p+ChunkSize-1)/ChunkSize) }
 
 func TestStructuralCheck(t *testing.T) {
 	cases := []struct {
 		ct int64
 		ok bool
 	}{
-		{0, false}, {15, false}, {16, true}, {17, true},
-		{StoredChunkSize, true}, {StoredChunkSize + 1, false}, {StoredChunkSize + 15, false},
-		{StoredChunkSize + 16, false}, {StoredChunkSize + 17, true}, {3 * StoredChunkSize, true},
-		{3*StoredChunkSize + 16, false}, {-1, false},
+		{0, false}, {15, false}, {16, false}, {17, false}, // empty or tiny: below MinPadded
+		{ctFor(4095), false}, {ctFor(4096), true}, {ctFor(4097), false}, {ctFor(4352), true},
+		{ctFor(ChunkSize), true}, {ctFor(ChunkSize) + 1, false}, {ctFor(ChunkSize) + 15, false},
+		{ctFor(ChunkSize) + 16, false}, // empty final chunk after a full one
+		{ctFor(ChunkSize + 1), false}, {ctFor(ChunkSize + 2048), true},
+		{ctFor(3 * ChunkSize), true}, {-1, false},
 	}
 	for _, c := range cases {
 		if _, err := chunkCount(c.ct); (err == nil) != c.ok {
 			t.Errorf("ct_total %d: err = %v, want ok = %v", c.ct, err, c.ok)
 		}
+	}
+}
+
+func TestPaddedSize(t *testing.T) {
+	prev := int64(0)
+	sizes := []int64{0, 1, 4095, 4096, 4097, 5000, 65535, 65536, 65537, 1 << 20, 1<<20 + 1, 123456789, 1 << 40, MaxPlaintextSize}
+	for l := int64(4096); l < 300000; l += 997 {
+		sizes = append(sizes, l)
+	}
+	for _, l := range sizes {
+		p := PaddedSize(l)
+		if p < l || p < MinPadded || padme(p) != p {
+			t.Errorf("PaddedSize(%d) = %d: too small or not a fixed point", l, p)
+		}
+		if l >= MinPadded && float64(p-l) > 0.125*float64(l) {
+			t.Errorf("PaddedSize(%d) = %d: overhead above 12.5%%", l, p)
+		}
+		if l > prev && PaddedSize(prev) > p {
+			t.Errorf("PaddedSize not monotone at %d", l)
+		}
+		prev = max(prev, l)
+	}
+	for _, c := range [][2]int64{{0, 4096}, {1, 4096}, {4096, 4096}, {4097, 4352}} {
+		if got := PaddedSize(c[0]); got != c[1] {
+			t.Errorf("PaddedSize(%d) = %d, want %d", c[0], got, c[1])
+		}
+	}
+}
+
+func TestContentSizeMustMatch(t *testing.T) {
+	keys := testKeys(t)
+	for _, c := range []struct{ declared, actual int }{{10, 9}, {10, 11}, {0, 1}, {ChunkSize + 5, ChunkSize + 4}, {5, 5 + ChunkSize}} {
+		var w bytes.Buffer
+		_, err := EncryptObject(&w, keys, msz(c.declared), bytes.NewReader(randomContent(c.actual)))
+		if !errors.Is(err, ErrContentSize) {
+			t.Errorf("declared %d, actual %d: %v", c.declared, c.actual, err)
+		}
+	}
+}
+
+// A reader must reject a file whose stored length is not a padded size, whose
+// metadata size does not match it, or whose padding is not zero.
+func TestPaddingRejected(t *testing.T) {
+	keys := testKeys(t)
+	fk := [KeySize]byte{7}
+	nonce := make([]byte, NonceSize)
+	id := newFileID()
+	build := func(meta Metadata, stored []byte) []byte {
+		mp, _, err := EncodeMetadata(meta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fkeys := deriveFileKeys(&fk)
+		h := &objectHeader{fileID: id, metaBlob: encryptMeta(mp, &fkeys.meta, id, nonce)}
+		copy(h.wrapNonce[:], nonce)
+		copy(h.wrappedFK[:], seal(&keys.Wrap, nonce, fk[:], wrapAAD(id)))
+		var w bytes.Buffer
+		w.Write(h.marshal())
+		// Seal the chunks as given, without adding any padding.
+		n := (len(stored) + ChunkSize - 1) / ChunkSize
+		for i := 0; i < n; i++ {
+			nonce := chunkNonce(uint64(i), i == n-1)
+			w.Write(seal(&fkeys.content, nonce[:], stored[i*ChunkSize:min(len(stored), (i+1)*ChunkSize)], id[:]))
+		}
+		return w.Bytes()
+	}
+	dec := func(data []byte) error {
+		_, err := DecryptObject(bytes.NewReader(data), int64(len(data)), id, keys, io.Discard)
+		return err
+	}
+	// Sanity: a correctly built file passes.
+	if err := dec(build(msz(100), make([]byte, 4096))); err != nil {
+		t.Fatalf("valid: %v", err)
+	}
+	// The raw 100 bytes with no padding at all (v1 layout).
+	if err := dec(build(msz(100), make([]byte, 100))); !errors.Is(err, ErrMalformed) {
+		t.Errorf("unpadded: %v", err)
+	}
+	// Padded to a valid length, but the metadata claims another bucket.
+	if err := dec(build(msz(5000), make([]byte, 4096))); !errors.Is(err, ErrMalformed) {
+		t.Errorf("size/length mismatch: %v", err)
+	}
+	// Non-zero byte inside the padding.
+	stored := make([]byte, 4096)
+	stored[4000] = 1
+	if err := dec(build(msz(100), stored)); !errors.Is(err, ErrMalformed) {
+		t.Errorf("non-zero padding: %v", err)
+	}
+	// Non-zero byte just after the content is padding too, not content.
+	stored = make([]byte, 4096)
+	stored[100] = 1
+	if err := dec(build(msz(100), stored)); !errors.Is(err, ErrMalformed) {
+		t.Errorf("non-zero padding right after content: %v", err)
 	}
 }
 
@@ -325,7 +431,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	keys := testKeys(t)
 	plain := randomContent(ChunkSize + 100)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(plain))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, msz(len(plain)), bytes.NewReader(plain))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +457,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed := testMeta
+	renamed := msz(len(plain))
 	renamed.Name, renamed.Rev = "renamed.bin", 2
 	metaPlain, _, _ := EncodeMetadata(renamed)
 	nonce := make([]byte, NonceSize)
@@ -367,8 +473,8 @@ func TestCheckAlreadyIngested(t *testing.T) {
 	var other bytes.Buffer
 	var fk [KeySize]byte
 	randomBytes(fk[:])
-	plainMeta, _, _ := EncodeMetadata(testMeta)
-	if err := encryptObject(&other, keys, plainMeta, bytes.NewReader(plain), o.hdr.fileID, &fk, nonce, nonce); err != nil {
+	plainMeta, _, _ := EncodeMetadata(msz(len(plain)))
+	if err := encryptObject(&other, keys, plainMeta, bytes.NewReader(plain), int64(len(plain)), o.hdr.fileID, &fk, nonce, nonce); err != nil {
 		t.Fatal(err)
 	}
 	if err := check(other.Bytes()); !errors.Is(err, ErrConflict) {
@@ -391,7 +497,7 @@ func TestCheckAlreadyIngested(t *testing.T) {
 func TestIngestWritesNothingAfterBadChunk(t *testing.T) {
 	keys := testKeys(t)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(2*ChunkSize+10)))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, msz(2*ChunkSize+10), bytes.NewReader(randomContent(2*ChunkSize+10)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +516,7 @@ func TestIngestWritesNothingAfterBadChunk(t *testing.T) {
 }
 
 func TestMetadataDecodeEdgeCases(t *testing.T) {
-	good, _, _ := EncodeMetadata(testMeta)
+	good, _, _ := EncodeMetadata(msz(0))
 	if _, err := DecodeMetadata(good); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +614,7 @@ func TestRecoverVault(t *testing.T) {
 		t.Fatal(err)
 	}
 	var obj bytes.Buffer
-	id, err := EncryptObject(&obj, keys, testMeta, strings.NewReader("x"))
+	id, err := EncryptObject(&obj, keys, msz(1), strings.NewReader("x"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,10 +631,10 @@ func TestRecoverVault(t *testing.T) {
 	damaged.Size = 10 // fails the structural check: not readable
 
 	var inb bytes.Buffer
-	inID, _ := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(ChunkSize+10)))
+	inID, _ := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, msz(ChunkSize+10), bytes.NewReader(randomContent(ChunkSize+10)))
 	genuine := InboxSample{Prefix: inb.Bytes(), Size: int64(inb.Len()), ID: inID}
 	var forged bytes.Buffer
-	forgedID, _ := SealInbox(&forged, keys.InboxPub, [KeySize]byte{1}, testMeta, strings.NewReader("planted"))
+	forgedID, _ := SealInbox(&forged, keys.InboxPub, [KeySize]byte{1}, msz(7), strings.NewReader("planted"))
 	planted := InboxSample{Prefix: forged.Bytes(), Size: int64(forged.Len()), ID: forgedID}
 	var garbageID FileID
 	randomBytes(garbageID[:])
@@ -600,7 +706,7 @@ func TestRecoverVault(t *testing.T) {
 func TestRecoverySampleOpensLikeAReader(t *testing.T) {
 	keys := testKeys(t)
 	var obj bytes.Buffer
-	id, _ := EncryptObject(&obj, keys, testMeta, strings.NewReader("hello"))
+	id, _ := EncryptObject(&obj, keys, msz(5), strings.NewReader("hello"))
 	good := sampleOf(t, obj.Bytes(), id)
 	if fk, err := good.unwrapFK(keys); err != nil {
 		t.Fatal(err)
@@ -630,7 +736,7 @@ func TestRecoverySampleOpensLikeAReader(t *testing.T) {
 // Encrypt would reuse the FK and nonces (ct1 XOR ct2 == pt1 XOR pt2).
 func TestNewObjectEncryptOnce(t *testing.T) {
 	keys := testKeys(t)
-	o, err := PrepareObject(testMeta)
+	o, err := PrepareObject(msz(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -663,7 +769,7 @@ func TestNewObjectEncryptOnce(t *testing.T) {
 func TestAlreadyIngestedNeedsIntactMetadata(t *testing.T) {
 	keys := testKeys(t)
 	var inb bytes.Buffer
-	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, testMeta, bytes.NewReader(randomContent(1000)))
+	id, err := SealInbox(&inb, keys.InboxPub, keys.InboxAuth, msz(1000), bytes.NewReader(randomContent(1000)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,14 +789,14 @@ func TestAlreadyIngestedNeedsIntactMetadata(t *testing.T) {
 // inbox_pub seals a file with a name of their choice. Ingest must reject it.
 func TestInboxNeedsKAuth(t *testing.T) {
 	keys := testKeys(t)
-	plain, _, _ := EncodeMetadata(Metadata{Name: "vault.json", MTime: 1, Rev: 1})
+	plain, _, _ := EncodeMetadata(Metadata{Name: "vault.json", MTime: 1, Rev: 1, Size: 2})
 	for name, kAuth := range map[string][]byte{"without K_auth": nil, "wrong K_auth": randomContent(KeySize)} {
 		var forged bytes.Buffer
 		var eph [KeySize]byte
 		randomBytes(eph[:])
 		id := newFileID()
 		nonce := randomContent(NonceSize)
-		if err := sealInbox(&forged, &keys.InboxPub, kAuth, plain, strings.NewReader("hi"), id, &eph, nonce); err != nil {
+		if err := sealInbox(&forged, &keys.InboxPub, kAuth, plain, strings.NewReader("hi"), 2, id, &eph, nonce); err != nil {
 			t.Fatal(err)
 		}
 		data := forged.Bytes()

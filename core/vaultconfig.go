@@ -59,7 +59,7 @@ func ParseConfig(data []byte) (*Config, error) {
 		raw.KDF.Alg == nil || raw.KDF.Salt == nil || raw.KDF.T == nil || raw.KDF.MKiB == nil || raw.KDF.P == nil {
 		return nil, fmt.Errorf("%w: vault.json: missing field", ErrMalformed)
 	}
-	if *raw.V != FormatVersion {
+	if *raw.V != VaultConfigVersion {
 		return nil, fmt.Errorf("%w: vault.json version %d", ErrUnsupported, *raw.V)
 	}
 	if *raw.KDF.Alg != kdfAlg || *raw.KDF.T != kdfT || *raw.KDF.MKiB != kdfMKiB || *raw.KDF.P != kdfP {
@@ -98,7 +98,7 @@ func (c *Config) Marshal() []byte {
 		"  \"wrapped_vk\": \"%s\",\n"+
 		"  \"inbox_pub\": \"%s\"\n"+
 		"}\n",
-		FormatVersion, kdfAlg, b64.EncodeToString(c.Salt[:]), kdfT, kdfMKiB, kdfP,
+		VaultConfigVersion, kdfAlg, b64.EncodeToString(c.Salt[:]), kdfT, kdfMKiB, kdfP,
 		b64.EncodeToString(c.WrappedVK[:]), b64.EncodeToString(c.InboxPub[:]))
 }
 

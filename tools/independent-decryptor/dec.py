@@ -445,7 +445,7 @@ def parse_and_validate_canonical_metadata(raw_padded_meta: bytes) -> Dict[str, A
             raise NdesError("metadata", f"Integer {val} is less than required minimum {min_val}")
         return val
 
-    # Schema: {"name":S,"dir":S,"mtime":I,"mime":S,"rev":I}
+    # Schema: {"name":S,"dir":S,"mtime":I,"mime":S,"rev":I,"size":I}
     consume('{"name":')
     name = parse_string()
     consume(',"dir":')
@@ -456,6 +456,10 @@ def parse_and_validate_canonical_metadata(raw_padded_meta: bytes) -> Dict[str, A
     mime = parse_string()
     consume(',"rev":')
     rev = parse_int64(min_val=1)
+    consume(',"size":')
+    size = parse_int64(min_val=0)
+    if size > MAX_PLAINTEXT_SIZE:
+        raise NdesError("metadata", f"size {size} is above 2^60")
     consume('}')
 
     if idx != len(json_str):
@@ -493,7 +497,7 @@ def parse_and_validate_canonical_metadata(raw_padded_meta: bytes) -> Dict[str, A
                 out.append(c)
         return "".join(out)
 
-    re_serialized = f'{{"name":"{canonical_escape(name)}","dir":"{canonical_escape(dir_str)}","mtime":{mtime},"mime":"{canonical_escape(mime)}","rev":{rev}}}'
+    re_serialized = f'{{"name":"{canonical_escape(name)}","dir":"{canonical_escape(dir_str)}","mtime":{mtime},"mime":"{canonical_escape(mime)}","rev":{rev},"size":{size}}}'
     if re_serialized.encode('utf-8') != stripped:
         raise NdesError("metadata", "Re-serialized metadata does not match stripped plaintext byte-for-byte")
 
@@ -503,33 +507,67 @@ def parse_and_validate_canonical_metadata(raw_padded_meta: bytes) -> Dict[str, A
         "mtime": mtime,
         "mime": mime,
         "rev": rev,
+        "size": size,
     }
 
 
-def structural_check(ct_total: int) -> int:
+MAX_PLAINTEXT_SIZE = 1 << 60
+MIN_PADDED = 4096
+
+
+def padme(length: int) -> int:
+    """Padme (SPEC 5.3) for length >= 2."""
+    e = length.bit_length() - 1          # floor(log2 L)
+    s_ = e.bit_length()                  # floor(log2 E) + 1
+    mask = (1 << (e - s_)) - 1
+    return (length + mask) & ~mask
+
+
+def padded_size(size: int) -> int:
+    return padme(max(size, MIN_PADDED))
+
+
+def structural_check(ct_total: int) -> Tuple[int, int]:
     """
-    Runs the structural check per SPEC 5.3:
-    Reject the file if:
+    Runs the structural check per SPEC 5.3. Returns (number of chunks, stored
+    plaintext length P). Rejects:
     - ct_total < 16
-    - ct_total mod 65552 is in [1, 15]
-    - ct_total mod 65552 == 16 and ct_total != 16
-    Returns number of chunks: ceil(ct_total / 65552).
+    - ct_total mod 65552 in [1, 15], or equal to 16
+    - P < 4096, P > 2^61, or padme(P) != P (the writer did not pad)
     """
     if ct_total < 16:
         raise NdesError("malformed", f"Structural check failed: ct_total {ct_total} < 16")
     residue = ct_total % 65552
     if 1 <= residue <= 15:
         raise NdesError("malformed", f"Structural check failed: residue {residue} in [1, 15]")
-    if residue == 16 and ct_total != 16:
-        raise NdesError("malformed", f"Structural check failed: residue is 16 with ct_total != 16")
+    if residue == 16:
+        raise NdesError("malformed", "Structural check failed: residue is 16")
 
     num_chunks = math.ceil(ct_total / 65552)
-    return num_chunks
+    stored = ct_total - 16 * num_chunks
+    if stored < MIN_PADDED or stored > 2 * MAX_PLAINTEXT_SIZE or padme(stored) != stored:
+        raise NdesError("malformed", f"Structural check failed: stored length {stored} is not a padded size")
+    return num_chunks, stored
+
+
+def check_size(meta: Dict[str, Any], stored: int) -> None:
+    """SPEC 5.3 size check: padded(size) must equal the stored length. Runs
+    right after the metadata is parsed, before any content is decrypted."""
+    if padded_size(meta["size"]) != stored:
+        raise NdesError("malformed", f"metadata size {meta['size']} does not match stored length {stored}")
+
+
+def unpad(meta: Dict[str, Any], content: bytes) -> bytes:
+    """Returns the first `size` bytes; every later stored byte must be zero."""
+    size = meta["size"]
+    if content[size:].strip(b"\x00"):
+        raise NdesError("malformed", "padding is not zero")
+    return content[:size]
 
 
 def decrypt_object_bytes(data: bytes, path: Optional[str], k_wrap: bytes) -> Tuple[Dict[str, Any], bytes]:
     """
-    Decrypts an object file (kind 0x01) per SPEC 5.
+    Decrypts an object file (kind 0x01, format version 0x02) per SPEC 5.
     Returns (metadata_dict, content_plaintext).
     """
     if len(data) < 86:
@@ -548,7 +586,7 @@ def decrypt_object_bytes(data: bytes, path: Optional[str], k_wrap: bytes) -> Tup
 
     if magic != b"NDES":
         raise NdesError("malformed", f"Invalid magic: {magic!r}")
-    if version != 0x01:
+    if version != 0x02:
         raise NdesError("unsupported", f"Unsupported version: {version}")
     if kind != 0x01:
         raise NdesError("malformed", f"Invalid object kind: {kind}")
@@ -565,7 +603,7 @@ def decrypt_object_bytes(data: bytes, path: Optional[str], k_wrap: bytes) -> Tup
     ct_total = len(data) - header_len
 
     # Structural check on chunks
-    num_chunks = structural_check(ct_total)
+    num_chunks, stored_len = structural_check(ct_total)
 
     # Decrypt wrapped_fk
     wrap_aad = data[:22]  # magic, version, kind, file_id
@@ -590,6 +628,7 @@ def decrypt_object_bytes(data: bytes, path: Optional[str], k_wrap: bytes) -> Tup
 
     # Validate metadata
     meta_dict = parse_and_validate_canonical_metadata(raw_padded_meta)
+    check_size(meta_dict, stored_len)
 
     # Decrypt content chunks
     aead_content = ChaCha20Poly1305(k_content)
@@ -612,7 +651,7 @@ def decrypt_object_bytes(data: bytes, path: Optional[str], k_wrap: bytes) -> Tup
             raise NdesError("auth", f"Chunk {i} authentication failed")
         content_chunks.append(pt)
 
-    full_content = b"".join(content_chunks)
+    full_content = unpad(meta_dict, b"".join(content_chunks))
     return meta_dict, full_content
 
 
@@ -636,7 +675,7 @@ def decrypt_inbox_bytes(data: bytes, path: Optional[str], inbox_priv: bytes, k_a
 
     if magic != b"NDES":
         raise NdesError("malformed", f"Invalid magic: {magic!r}")
-    if version != 0x01:
+    if version != 0x02:
         raise NdesError("unsupported", f"Unsupported version: {version}")
     if kind != 0x02:
         raise NdesError("malformed", f"Invalid inbox kind: {kind}")
@@ -653,7 +692,7 @@ def decrypt_inbox_bytes(data: bytes, path: Optional[str], inbox_priv: bytes, k_a
     ct_total = len(data) - header_len
 
     # Structural check on chunks
-    num_chunks = structural_check(ct_total)
+    num_chunks, stored_len = structural_check(ct_total)
 
     # Key agreement: X25519(inbox_priv, eph_pub)
     priv_key = X25519PrivateKey.from_private_bytes(inbox_priv)
@@ -685,6 +724,7 @@ def decrypt_inbox_bytes(data: bytes, path: Optional[str], inbox_priv: bytes, k_a
         raise NdesError("auth", "Inbox meta_blob authentication failed (wrong k_auth or corrupted)")
 
     meta_dict = parse_and_validate_canonical_metadata(raw_padded_meta)
+    check_size(meta_dict, stored_len)
 
     # Decrypt content chunks
     aead_content = ChaCha20Poly1305(k_content)
@@ -707,7 +747,7 @@ def decrypt_inbox_bytes(data: bytes, path: Optional[str], inbox_priv: bytes, k_a
             raise NdesError("auth", f"Inbox chunk {i} authentication failed")
         content_chunks.append(pt)
 
-    full_content = b"".join(content_chunks)
+    full_content = unpad(meta_dict, b"".join(content_chunks))
     return meta_dict, full_content
 
 

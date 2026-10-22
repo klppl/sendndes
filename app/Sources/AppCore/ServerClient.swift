@@ -45,6 +45,13 @@ public struct ServerClient {
     /// Test seam: runs after the file was opened and checked, before the body is sent.
     var beforeBody: (() -> Void)?
 
+    private static func changedSince(_ before: stat, fd: Int32) -> Bool {
+        var after = stat()
+        return fstat(fd, &after) != 0 || after.st_size != before.st_size || after.st_ino != before.st_ino
+            || after.st_dev != before.st_dev
+            || after.st_mtimespec.tv_sec != before.st_mtimespec.tv_sec || after.st_mtimespec.tv_nsec != before.st_mtimespec.tv_nsec
+    }
+
     public func upload(file: URL, name: String, dir: String, server: ServerURL, token: String, keys: ServerKeys? = nil) async -> Result<String, UploadFailure> {
         // H1: checked again for every file (the route can change after sleep); never falls back.
         guard route.allows(server) else { return .failure(.notTailscaleRoute) }
@@ -69,7 +76,7 @@ public struct ServerClient {
 
             let meta: Metadata
             do {
-                meta = try Metadata(name: name, dir: dir, mtime: ns, mime: mime ?? "", rev: 1)
+                meta = try Metadata(name: name, dir: dir, mtime: ns, mime: mime ?? "", rev: 1, size: Int64(before.st_size))
             } catch {
                 return .failure(.badName)
             }
@@ -92,14 +99,12 @@ public struct ServerClient {
                 let outHandle = FileHandle(fileDescriptor: outFD, closeOnDealloc: false)
                 fileID = try sealer.seal(plaintext: FileInput(inHandle), metadata: meta, to: FileOutput(outHandle))
             } catch {
-                return .failure(.uploadRejected)
+                // The size goes into the metadata first, so a file that grew or shrank while
+                // it was read fails the sealer; report that as a change, not a server problem.
+                return .failure(Self.changedSince(before, fd: fd) ? .fileChanged(deleted: false) : .uploadRejected)
             }
 
-            var after = stat()
-            let changed = fstat(fd, &after) != 0 || after.st_size != before.st_size || after.st_ino != before.st_ino
-                || after.st_dev != before.st_dev
-                || after.st_mtimespec.tv_sec != before.st_mtimespec.tv_sec || after.st_mtimespec.tv_nsec != before.st_mtimespec.tv_nsec
-            if changed {
+            if Self.changedSince(before, fd: fd) {
                 return .failure(.fileChanged(deleted: false))
             }
 

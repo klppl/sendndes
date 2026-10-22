@@ -599,10 +599,10 @@ final class ClientSealedUploadTests: XCTestCase {
         XCTAssertFalse(lowerHead.contains("x-ndes-mtime"), "no plaintext mtime header")
         XCTAssertFalse(lowerHead.contains("x-ndes-mime"), "no plaintext mime header")
 
-        // Verify body: it is a valid inbox file starting with NDES\x01\x02 and the 16-byte fileID matches receivedID
+        // Verify body: it is a valid inbox file starting with NDES\x02\x02 and the 16-byte fileID matches receivedID
         XCTAssertGreaterThan(cap.body.count, 58)
         XCTAssertEqual(Array(cap.body.prefix(4)), Array("NDES".utf8))
-        XCTAssertEqual(cap.body[4], 1) // version
+        XCTAssertEqual(cap.body[4], 2) // version
         XCTAssertEqual(cap.body[5], 2) // KindInbox
         let idHex = cap.body[6..<22].map { String(format: "%02x", $0) }.joined()
         XCTAssertEqual(idHex, cap.id)

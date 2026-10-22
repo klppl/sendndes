@@ -306,6 +306,7 @@ func (a *app) cmdAdd(args []string) (retErr error) {
 		MTime: before.ModTime().UnixNano(),
 		MIME:  mimeType(name),
 		Rev:   1,
+		Size:  before.Size(),
 	})
 	if err != nil {
 		return fmt.Errorf("%w (names must be non-empty, without / or NUL, not . or ..; --dir has no leading or trailing /)", err)
@@ -349,6 +350,9 @@ var errSourceChanged = errors.New("the file changed while it was being read; not
 func encryptSource(w io.Writer, obj *core.NewObject, keys *core.VaultKeys, src *os.File, before os.FileInfo) error {
 	bw := bufio.NewWriterSize(w, core.StoredChunkSize)
 	if err := obj.Encrypt(bw, keys, src); err != nil {
+		if errors.Is(err, core.ErrContentSize) {
+			return errSourceChanged
+		}
 		return err
 	}
 	if err := bw.Flush(); err != nil {

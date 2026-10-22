@@ -145,7 +145,7 @@ func TestPullEndToEndAndIdempotency(t *testing.T) {
 
 	// Seal 1: empty file (0 bytes, D-R2 #3).
 	var emptyInb bytes.Buffer
-	emptyID, err := core.SealInbox(&emptyInb, keys.InboxPub, keys.InboxAuth, core.Metadata{
+	emptyID, err := sealSized(&emptyInb, keys.InboxPub, keys.InboxAuth, core.Metadata{
 		Name:  "empty.txt",
 		Dir:   "",
 		MTime: 100,
@@ -159,7 +159,7 @@ func TestPullEndToEndAndIdempotency(t *testing.T) {
 	// Seal 2: multi-chunk file.
 	multiPlain := bytes.Repeat([]byte("pull-payload-"), 6000)
 	var multiInb bytes.Buffer
-	multiID, err := core.SealInbox(&multiInb, keys.InboxPub, keys.InboxAuth, core.Metadata{
+	multiID, err := sealSized(&multiInb, keys.InboxPub, keys.InboxAuth, core.Metadata{
 		Name:  "report.bin",
 		Dir:   "docs/2026",
 		MTime: 200,
@@ -251,7 +251,7 @@ func TestPullHostileServerNeverDeletesOnFailure(t *testing.T) {
 	var wrongKAuth [core.KeySize]byte
 	wrongKAuth[0] = 0xff
 	var forgedInb bytes.Buffer
-	forgedID, err := core.SealInbox(&forgedInb, keys.InboxPub, wrongKAuth, core.Metadata{Name: "forged.txt", MTime: 1}, strings.NewReader("forged"))
+	forgedID, err := sealSized(&forgedInb, keys.InboxPub, wrongKAuth, core.Metadata{Name: "forged.txt", MTime: 1}, strings.NewReader("forged"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestPullHostileServerNeverDeletesOnFailure(t *testing.T) {
 
 	// 2. Valid header, tampered chunk 1 byte.
 	var tamperedInb bytes.Buffer
-	tamperedID, err := core.SealInbox(&tamperedInb, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "tampered.bin", MTime: 1}, bytes.NewReader(bytes.Repeat([]byte("z"), core.ChunkSize+100)))
+	tamperedID, err := sealSized(&tamperedInb, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "tampered.bin", MTime: 1}, bytes.NewReader(bytes.Repeat([]byte("z"), core.ChunkSize+100)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestPullHostileServerNeverDeletesOnFailure(t *testing.T) {
 	// a corrupted/unauthenticated .inb with that same file_id.
 	// First, ingest a genuine inbox file into the vault so objects/<xx>/<q4ID>.obj exists.
 	var genuineInb bytes.Buffer
-	q4ID, err := core.SealInbox(&genuineInb, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "q4.txt", MTime: 1}, strings.NewReader("genuine-q4"))
+	q4ID, err := sealSized(&genuineInb, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "q4.txt", MTime: 1}, strings.NewReader("genuine-q4"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +675,7 @@ func TestPullChecksRouteAtStartAndBeforeEachFile(t *testing.T) {
 	var ids []string
 	for i := 0; i < 2; i++ {
 		var b bytes.Buffer
-		id, err := core.SealInbox(&b, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "f.txt", MTime: 1}, strings.NewReader("x"))
+		id, err := sealSized(&b, keys.InboxPub, keys.InboxAuth, core.Metadata{Name: "f.txt", MTime: 1}, strings.NewReader("x"))
 		if err != nil {
 			t.Fatal(err)
 		}

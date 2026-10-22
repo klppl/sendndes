@@ -72,7 +72,7 @@ func fileIDFromBytes(_ raw: [UInt8]) throws -> FileID {
 }
 
 func metaSummary(_ m: Metadata) -> Data {
-    let s = "\(m.name)|\(m.dir)|\(m.mtime)|\(m.mime)|\(m.rev)"
+    let s = "\(m.name)|\(m.dir)|\(m.mtime)|\(m.mime)|\(m.rev)|\(m.size)"
     return sha256(Data(s.utf8))
 }
 

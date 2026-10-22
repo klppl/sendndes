@@ -14,35 +14,38 @@ public struct Metadata: Equatable, Sendable {
     public let mtime: Int64  // Unix time in nanoseconds; any Int64
     public let mimeUTF8: [UInt8]
     public let rev: Int64    // >= 1
+    /// Plaintext length in bytes, 0 to 2^60. The stored content is padded (SPEC 5.3).
+    public let size: Int64
 
     public var name: String { String(decoding: nameUTF8, as: UTF8.self) }
     public var dir: String { String(decoding: dirUTF8, as: UTF8.self) }
     public var mime: String { String(decoding: mimeUTF8, as: UTF8.self) }
 
     /// Writer: normalizes `name` and `dir` to NFC, then checks the field rules.
-    public init(name: String, dir: String, mtime: Int64, mime: String, rev: Int64) throws {
+    public init(name: String, dir: String, mtime: Int64, mime: String, rev: Int64, size: Int64) throws {
         try self.init(nameUTF8: Array(name.utf8), dirUTF8: Array(dir.utf8), mtime: mtime,
-                      mimeUTF8: Array(mime.utf8), rev: rev)
+                      mimeUTF8: Array(mime.utf8), rev: rev, size: size)
     }
 
     /// Writer from raw bytes: checks valid UTF-8, normalizes `name` and `dir`
     /// to NFC, then checks the field rules.
-    public init<N: Sequence, D: Sequence, M: Sequence>(nameUTF8: N, dirUTF8: D, mtime: Int64, mimeUTF8: M, rev: Int64) throws
+    public init<N: Sequence, D: Sequence, M: Sequence>(nameUTF8: N, dirUTF8: D, mtime: Int64, mimeUTF8: M, rev: Int64, size: Int64) throws
     where N.Element == UInt8, D.Element == UInt8, M.Element == UInt8 {
         let n = [UInt8](nameUTF8), d = [UInt8](dirUTF8), m = [UInt8](mimeUTF8)
         guard isValidUTF8(n), isValidUTF8(d), isValidUTF8(m) else {
             throw NdesError.metadata("strings must be valid UTF-8")
         }
-        self.init(unchecked: Metadata.nfc(n), Metadata.nfc(d), mtime, m, rev)
+        self.init(unchecked: Metadata.nfc(n), Metadata.nfc(d), mtime, m, rev, size)
         try checkFieldRules()
     }
 
-    init(unchecked name: [UInt8], _ dir: [UInt8], _ mtime: Int64, _ mime: [UInt8], _ rev: Int64) {
+    init(unchecked name: [UInt8], _ dir: [UInt8], _ mtime: Int64, _ mime: [UInt8], _ rev: Int64, _ size: Int64) {
         self.nameUTF8 = name
         self.dirUTF8 = dir
         self.mtime = mtime
         self.mimeUTF8 = mime
         self.rev = rev
+        self.size = size
     }
 
     static func nfc(_ s: [UInt8]) -> [UInt8] {
@@ -59,7 +62,7 @@ public struct Metadata: Equatable, Sendable {
     public func nextRevision() throws -> Metadata {
         let (r, o) = rev.addingReportingOverflow(1)
         guard !o else { throw NdesError.metadata("rev overflow") }
-        return Metadata(unchecked: nameUTF8, dirUTF8, mtime, mimeUTF8, r)
+        return Metadata(unchecked: nameUTF8, dirUTF8, mtime, mimeUTF8, r, size)
     }
 
     // MARK: Field rules
@@ -82,11 +85,12 @@ public struct Metadata: Equatable, Sendable {
             }
         }
         guard rev >= 1 else { throw NdesError.metadata("rev must be at least 1") }
+        guard size >= 0, size <= Format.maxPlaintextSize else { throw NdesError.metadata("size out of range") }
     }
 
     // MARK: Canonical serialization
 
-    /// `{"name":S,"dir":S,"mtime":I,"mime":S,"rev":I}` without padding.
+    /// `{"name":S,"dir":S,"mtime":I,"mime":S,"rev":I,"size":I}` without padding.
     public func canonicalJSON() -> [UInt8] {
         var o = [UInt8]()
         o.reserveCapacity(64 + nameUTF8.count + dirUTF8.count + mimeUTF8.count)
@@ -95,6 +99,7 @@ public struct Metadata: Equatable, Sendable {
         o += Array(#","mtime":"#.utf8); o += Array(String(mtime).utf8)
         o += Array(#","mime":"#.utf8); Metadata.appendString(mimeUTF8, to: &o)
         o += Array(#","rev":"#.utf8); o += Array(String(rev).utf8)
+        o += Array(#","size":"#.utf8); o += Array(String(size).utf8)
         o.append(UInt8(ascii: "}"))
         return o
     }
@@ -154,10 +159,12 @@ public struct Metadata: Equatable, Sendable {
         let mime = try r.string()
         try r.literal(#","rev":"#)
         let rev = try r.int64()
+        try r.literal(#","size":"#)
+        let size = try r.int64()
         try r.literal("}")
         guard r.atEnd else { throw NdesError.metadata("data after the object") }
 
-        let m = Metadata(unchecked: name, dir, mtime, mime, rev)
+        let m = Metadata(unchecked: name, dir, mtime, mime, rev, size)
         try m.checkFieldRules()  // no NFC check on read
         guard m.canonicalJSON() == json else { throw NdesError.metadata("not in canonical form") }
         return m

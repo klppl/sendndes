@@ -200,7 +200,7 @@ def run_differential_fuzzing():
     mutations_a.append(("magic_valv_old", b"VALV" + seed_obj_bytes[4:]))
     mutations_a.append(("magic_random", b"RAND" + seed_obj_bytes[4:]))
     mutations_a.append(("version_0", seed_obj_bytes[:4] + b"\x00" + seed_obj_bytes[5:]))
-    mutations_a.append(("version_2", seed_obj_bytes[:4] + b"\x02" + seed_obj_bytes[5:]))
+    mutations_a.append(("version_1", seed_obj_bytes[:4] + b"\x01" + seed_obj_bytes[5:]))
     mutations_a.append(("version_255", seed_obj_bytes[:4] + b"\xff" + seed_obj_bytes[5:]))
     mutations_a.append(("kind_0", seed_obj_bytes[:5] + b"\x00" + seed_obj_bytes[6:]))
     mutations_a.append(("kind_2_inbox", seed_obj_bytes[:5] + b"\x02" + seed_obj_bytes[6:]))
@@ -309,7 +309,7 @@ def run_differential_fuzzing():
     mutations_b: List[Tuple[str, bytes]] = []
     mutations_b.append(("inb_baseline_valid", seed_inb_bytes))
     mutations_b.append(("inb_magic_zeroed", b"\x00\x00\x00\x00" + seed_inb_bytes[4:]))
-    mutations_b.append(("inb_version_2", seed_inb_bytes[:4] + b"\x02" + seed_inb_bytes[5:]))
+    mutations_b.append(("inb_version_1", seed_inb_bytes[:4] + b"\x01" + seed_inb_bytes[5:]))
     mutations_b.append(("inb_kind_1_obj", seed_inb_bytes[:5] + b"\x01" + seed_inb_bytes[6:]))
     mutations_b.append(("inb_eph_pub_zeroes", seed_inb_bytes[:22] + b"\x00"*32 + seed_inb_bytes[54:]))
     

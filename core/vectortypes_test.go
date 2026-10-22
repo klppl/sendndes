@@ -78,6 +78,7 @@ type metaFields struct {
 	MTime    string   `json:"mtime"`
 	MIME     hexBytes `json:"mime_hex"`
 	Rev      string   `json:"rev"`
+	Size     string   `json:"size"`
 }
 
 func newMetaFields(m Metadata, readable string) metaFields {
@@ -88,6 +89,7 @@ func newMetaFields(m Metadata, readable string) metaFields {
 		MTime:    strconv.FormatInt(m.MTime, 10),
 		MIME:     hexBytes(m.MIME),
 		Rev:      strconv.FormatInt(m.Rev, 10),
+		Size:     strconv.FormatInt(m.Size, 10),
 	}
 }
 
@@ -100,7 +102,11 @@ func (f metaFields) metadata() (Metadata, error) {
 	if err != nil {
 		return Metadata{}, err
 	}
-	return Metadata{Name: string(f.Name), Dir: string(f.Dir), MTime: mt, MIME: string(f.MIME), Rev: rev}, nil
+	size, err := strconv.ParseInt(f.Size, 10, 64)
+	if err != nil {
+		return Metadata{}, err
+	}
+	return Metadata{Name: string(f.Name), Dir: string(f.Dir), MTime: mt, MIME: string(f.MIME), Rev: rev, Size: size}, nil
 }
 
 type chunkVector struct {
@@ -122,6 +128,7 @@ type encryptedFile struct {
 	FileHex         hexBytes      `json:"file_hex,omitempty"`
 	PlaintextFile   string        `json:"plaintext_file"`
 	PlaintextLen    int64         `json:"plaintext_len"`
+	PaddedLen       int64         `json:"padded_len"` // stored plaintext length: content plus zero padding
 	PlaintextSHA256 hexBytes      `json:"plaintext_sha256"`
 	PlaintextHex    hexBytes      `json:"plaintext_hex,omitempty"`
 	FileID          hexBytes      `json:"file_id"`

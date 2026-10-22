@@ -12,10 +12,13 @@ import (
 // Header constants (SPEC 5.1, 6.1).
 const (
 	Magic         = "NDES"
-	FormatVersion = 1
-	KindObject    = 0x01
-	KindInbox     = 0x02
-	FileIDSize    = 16
+	FormatVersion = 2 // object and inbox files (SPEC 5.1, 6.1)
+	// VaultConfigVersion is the "v" of vault.json. It did not change with the
+	// padded object format: nothing in vault.json depends on it.
+	VaultConfigVersion = 1
+	KindObject         = 0x01
+	KindInbox          = 0x02
+	FileIDSize         = 16
 
 	objectFixedHeader = 86
 	inboxFixedHeader  = 58
@@ -207,7 +210,24 @@ func openObject(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*ope
 		o.wipe()
 		return nil, err
 	}
+	if err := checkSizeMatches(o.meta.Size, o.ctTotal); err != nil {
+		o.wipe()
+		return nil, err
+	}
 	return o, nil
+}
+
+// checkSizeMatches requires that the size in the metadata is the one whose
+// padded length is what the file actually stores (SPEC 5.3).
+func checkSizeMatches(size, ctTotal int64) error {
+	stored, err := StoredPlaintextSize(ctTotal)
+	if err != nil {
+		return err
+	}
+	if PaddedSize(size) != stored {
+		return fmt.Errorf("%w: metadata size %d does not match the stored length", ErrMalformed, size)
+	}
+	return nil
 }
 
 // ObjectInfo is what an object's header tells about it.
@@ -238,8 +258,7 @@ func OpenObject(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*Obj
 
 // Info returns the object's id, metadata and plaintext size.
 func (or *ObjectReader) Info() ObjectInfo {
-	ps, _ := PlaintextSize(or.o.ctTotal)
-	return ObjectInfo{ID: or.o.hdr.fileID, Meta: or.o.meta, PlaintextSize: ps}
+	return ObjectInfo{ID: or.o.hdr.fileID, Meta: or.o.meta, PlaintextSize: or.o.meta.Size}
 }
 
 // DecryptTo streams the plaintext to w. The output is valid only if the
@@ -250,10 +269,7 @@ func (or *ObjectReader) DecryptTo(w io.Writer) error {
 		return errors.New("ndes: ObjectReader.DecryptTo called twice")
 	}
 	or.used = true
-	return readChunks(or.r, or.o.ctTotal, &or.o.keys.content, or.o.hdr.fileID, func(_, plain []byte) error {
-		_, err := w.Write(plain)
-		return err
-	})
+	return readPadded(or.r, or.o.ctTotal, or.o.meta.Size, &or.o.keys.content, or.o.hdr.fileID, w)
 }
 
 // Close wipes the object's keys.
@@ -325,14 +341,15 @@ func (o *NewObject) ID() FileID { return o.id }
 // Meta is the normalized metadata that will be written.
 func (o *NewObject) Meta() Metadata { return o.meta }
 
-// Encrypt writes the object file for content to w. It can be called only
+// Encrypt writes the object file for content to w. content must yield exactly
+// the size declared in the metadata, else it fails with ErrContentSize. It can be called only
 // once: a second call would reuse the FK and nonces.
 func (o *NewObject) Encrypt(w io.Writer, keys *VaultKeys, content io.Reader) error {
 	if o.used {
 		return errors.New("ndes: NewObject.Encrypt called twice")
 	}
 	o.used = true
-	return encryptObject(w, keys, o.metaPlain, content, o.id, &o.fk, o.wrapNonce[:], o.metaNonce[:])
+	return encryptObject(w, keys, o.metaPlain, content, o.meta.Size, o.id, &o.fk, o.wrapNonce[:], o.metaNonce[:])
 }
 
 // Wipe zeroes the FK.
@@ -351,7 +368,7 @@ func EncryptObject(w io.Writer, keys *VaultKeys, meta Metadata, content io.Reade
 
 // encryptObject writes an object with the given id, FK and nonces. Release
 // code reaches it only through EncryptObject, with random values.
-func encryptObject(w io.Writer, keys *VaultKeys, metaPlain []byte, content io.Reader, id FileID, fk *[KeySize]byte, wrapNonce, metaNonce []byte) error {
+func encryptObject(w io.Writer, keys *VaultKeys, metaPlain []byte, content io.Reader, size int64, id FileID, fk *[KeySize]byte, wrapNonce, metaNonce []byte) error {
 	fkeys := deriveFileKeys(fk)
 	defer fkeys.wipe()
 	h := &objectHeader{fileID: id, metaBlob: encryptMeta(metaPlain, &fkeys.meta, id, metaNonce)}
@@ -360,7 +377,7 @@ func encryptObject(w io.Writer, keys *VaultKeys, metaPlain []byte, content io.Re
 	if _, err := w.Write(h.marshal()); err != nil {
 		return err
 	}
-	return encryptChunks(w, &fkeys.content, id, content)
+	return encryptChunks(w, &fkeys.content, id, content, size)
 }
 
 // sameBytes reports whether r yields exactly want next.

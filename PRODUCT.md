@@ -21,9 +21,9 @@ A write-only inbox that can seal files for your vault but never open them, paire
 ## Capabilities and Constraints
 
 - Mac app (macOS 14+, Apple silicon, ad-hoc signed; built from source, no signed download yet), CLI `ndes` (macOS, Linux), server `ndesd` (Linux, Docker image `ghcr.io/klppl/sendndes`). No Windows.
-- Experimental: frozen v1 format with model-assisted review only, no external audit. Users must keep plaintext backups.
-- In this version the inbox server briefly sees a sent file's contents and name while sealing it; on-device sealing is planned.
-- Host can see file count, exact sizes and modification times.
+- Experimental: v1 format (object and inbox files at format version 2, with content padding) with model-assisted review only, no external audit. Users must keep plaintext backups.
+- The Mac app seals files on the device when the server keys are set in Settings. A plain `PUT /inbox` (scripts, curl) is sealed by the server, which then sees the contents and name briefly.
+- Host can see file count, padded sizes (within 12.5% above the real size, at least 4 KiB) and modification times.
 
 ## Brand Commitments
 

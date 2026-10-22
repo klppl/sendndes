@@ -3,7 +3,11 @@ import Foundation
 
 enum Format {
     static let magic: [UInt8] = Array("NDES".utf8)
-    static let version: UInt8 = 0x01
+    /// Object and inbox files (SPEC 5.1, 6.1). vault.json has its own "v", which stays 1.
+    static let version: UInt8 = 0x02
+    /// Content padding (SPEC 5.3): every file stores at least this many plaintext bytes.
+    static let minPadded: Int64 = 4096
+    static let maxPlaintextSize: Int64 = 1 << 60
     static let chunkPlain = 65536
     static let chunkStored = 65552  // ct + tag
     static let tag = 16
@@ -19,12 +23,46 @@ enum FileKind: UInt8 {
     var fixedHeaderLength: Int { self == .object ? 86 : 58 }
 }
 
+// MARK: - Padding (SPEC 5.3)
+
+/// Padme (Reble and Pretsch) of `l`, for l >= 2: at most 12% larger, and it
+/// reveals only O(log log l) bits of l.
+func padme(_ l: Int64) -> Int64 {
+    let e = 63 - l.leadingZeroBitCount            // floor(log2 l)
+    let s = 64 - Int64(e).leadingZeroBitCount     // floor(log2 e) + 1
+    let mask = (Int64(1) << (e - s)) - 1
+    return (l + mask) & ~mask
+}
+
+/// The stored plaintext length for a file of `size` bytes, 0 <= size <= 2^60.
+func paddedSize(_ size: Int64) -> Int64 {
+    padme(max(size, Format.minPadded))
+}
+
+/// Separates a padded plaintext stream into content (the first `size` bytes)
+/// and padding, which must be all zero.
+struct PadSplitter {
+    private var left: Int64
+
+    init(size: Int64) { left = size }
+
+    mutating func split(_ plain: Data) throws -> Data {
+        let k = Int(min(left, Int64(plain.count)))
+        left -= Int64(k)
+        for b in plain.dropFirst(k) where b != 0 {
+            throw NdesError.malformed("padding is not zero")
+        }
+        return Data(plain.prefix(k))
+    }
+}
+
 // MARK: - Structural check (SPEC 5.3)
 
 struct ChunkLayout {
     let ctTotal: Int64
     let chunkCount: Int64
-    let plaintextLength: Int64
+    /// Stored plaintext length: the content plus its zero padding.
+    let storedPlaintextLength: Int64
 
     /// Runs before any decryption, including unwrapping FK.
     init(ctTotal ct: Int64) throws {
@@ -32,10 +70,22 @@ struct ChunkLayout {
         guard ct >= 16 else { throw NdesError.malformed("structural check: ct_total < 16") }
         let r = ct % stored
         if r >= 1 && r <= 15 { throw NdesError.malformed("structural check: ct_total mod 65552 in [1, 15]") }
-        if r == 16 && ct != 16 { throw NdesError.malformed("structural check: empty final chunk after a full chunk") }
+        if r == 16 { throw NdesError.malformed("structural check: empty final chunk after a full chunk") }
         ctTotal = ct
         chunkCount = try checkedAdd(ct, stored - 1) / stored  // ceil
-        plaintextLength = try checkedSub(ct, checkedMul(16, chunkCount))
+        let p = try checkedSub(ct, checkedMul(16, chunkCount))
+        // The stored length must be a padded size, so unpadded content is rejected here.
+        guard p >= Format.minPadded, p <= 2 * Format.maxPlaintextSize, padme(p) == p else {
+            throw NdesError.malformed("structural check: stored length \(p) is not a padded size")
+        }
+        storedPlaintextLength = p
+    }
+
+    /// The size in the metadata must be the one whose padded length the file stores.
+    func checkSize(_ size: Int64) throws {
+        guard paddedSize(size) == storedPlaintextLength else {
+            throw NdesError.malformed("metadata size does not match the stored length")
+        }
     }
 
     func storedLength(ofChunk i: Int64) -> Int {
@@ -173,21 +223,57 @@ final class ChunkStream {
     }
 }
 
-/// Stream-encrypts plaintext with a one-chunk lookahead: a chunk is sealed
-/// only once it is known whether more data follows. Holds at most two
-/// plaintext chunks. Returns the plaintext length.
-@discardableResult
-func encryptChunks(from plaintext: NdesInput, key: SymmetricKey, fileID: FileID, to out: NdesOutput) throws -> Int64 {
-    var current = try plaintext.readFull(Format.chunkPlain)
+/// Yields exactly `size` bytes of `source`, then zeros up to `paddedSize(size)`
+/// (SPEC 5.3). Fails if the source is shorter or longer than `size`.
+private struct PaddedSource {
+    let source: NdesInput
+    var contentLeft: Int64
+    var zerosLeft: Int64
+    var probed = false
+
+    init(source: NdesInput, size: Int64) {
+        self.source = source
+        contentLeft = size
+        zerosLeft = paddedSize(size) - size
+    }
+
+    mutating func read(_ count: Int) throws -> [UInt8] {
+        var out = [UInt8]()
+        out.reserveCapacity(count)
+        while out.count < count && contentLeft > 0 {
+            let d = try source.read(upTo: Int(min(Int64(count - out.count), contentLeft)))
+            guard !d.isEmpty else { throw NdesError.io("content is shorter than the declared size") }
+            out.append(contentsOf: d)
+            contentLeft -= Int64(d.count)
+        }
+        if contentLeft == 0 && !probed {
+            probed = true
+            guard try source.read(upTo: 1).isEmpty else { throw NdesError.io("content is longer than the declared size") }
+        }
+        if out.count < count && zerosLeft > 0 {
+            let n = Int(min(Int64(count - out.count), zerosLeft))
+            out.append(contentsOf: [UInt8](repeating: 0, count: n))
+            zerosLeft -= Int64(n)
+        }
+        return out
+    }
+}
+
+/// Stream-encrypts `size` bytes of `plaintext`, padded with zeros to
+/// `paddedSize(size)`, with a one-chunk lookahead: a chunk is sealed only once
+/// it is known whether more data follows. Holds at most two plaintext chunks.
+/// Throws if `plaintext` does not yield exactly `size` bytes.
+func encryptChunks(from plaintext: NdesInput, size: Int64, key: SymmetricKey, fileID: FileID, to out: NdesOutput) throws {
+    guard size >= 0, size <= Format.maxPlaintextSize else { throw NdesError.metadata("size out of range") }
+    var src = PaddedSource(source: plaintext, size: size)
+    var current = try src.read(Format.chunkPlain)
     var index: Int64 = 0
-    var total: Int64 = 0
     while true {
-        // A short chunk can only come from end of input (readFull).
-        let next = current.count == Format.chunkPlain ? try plaintext.readFull(Format.chunkPlain) : []
+        // A short chunk can only come from the end of the padded stream.
+        let next = current.count == Format.chunkPlain ? try src.read(Format.chunkPlain) : []
         let final = next.isEmpty
         try out.write(Data(AEAD.seal(current, key: key, nonce: chunkNonce(index, final: final), aad: fileID.bytes)))
-        total = try checkedAdd(total, Int64(current.count))
-        if final { return total }
+        if final { return }
         current = next
         index = try checkedAdd(index, 1)
     }
@@ -200,26 +286,34 @@ func encryptChunks(from plaintext: NdesInput, key: SymmetricKey, fileID: FileID,
 public final class ObjectReader {
     public let fileID: FileID
     public let metadata: Metadata
-    /// Derived from the file length (SPEC 5.3).
+    /// The size in the metadata, checked against the file length (SPEC 5.3).
     public let plaintextLength: Int64
     let header: FileHeader
     private let stream: ChunkStream
+    private var padding: PadSplitter
 
     init(vault: Vault, input: NdesInput, expected: FileID) throws {
         header = try FileHeader.read(input, kind: .object, expected: expected)
         let keys = FileKeys(fk: try vault.unwrapFK(header))
         metadata = try header.openMetadata(keys.meta)
+        try header.layout.checkSize(metadata.size)
         fileID = header.fileID
-        plaintextLength = header.layout.plaintextLength
+        plaintextLength = metadata.size
+        padding = PadSplitter(size: metadata.size)
         stream = ChunkStream(input: input, layout: header.layout, key: keys.content, fileID: header.fileID)
     }
 
-    /// The next chunk's plaintext, authenticated, or nil after the last.
+    /// The next non-empty chunk of content, authenticated, or nil after the
+    /// last. Padding is checked (it must be zero) and never handed out.
     /// Plaintext handed out before the last chunk is valid only if every
     /// chunk authenticates: write it to a temp file and discard it on any
     /// error (SPEC 5.3, 5.4).
     public func nextChunk() throws -> Data? {
-        try stream.next()?.plaintext
+        while let plain = try stream.next()?.plaintext {
+            let data = try padding.split(plain)
+            if !data.isEmpty { return data }
+        }
+        return nil
     }
 
     public func decryptAll(to output: NdesOutput) throws {
@@ -256,8 +350,8 @@ extension Vault {
         try decryptObject(input, expected: expected, to: DiscardOutput())
     }
 
-    /// Encrypts `plaintext` into a new object with a random file_id and a
-    /// fresh FK. Write `output` to a temp file and move it to the returned
+    /// Encrypts `plaintext`, which must be exactly `metadata.size` bytes, into
+    /// a new object with a random file_id and a fresh FK. Write `output` to a temp file and move it to the returned
     /// id's `objectPath` only after this returns (SPEC 8).
     public func writeObject(plaintext: NdesInput, metadata: Metadata, to output: NdesOutput) throws -> FileID {
         let fileID = FileID(bytes: Random.bytes(16, for: .fileID))
@@ -266,7 +360,7 @@ extension Vault {
         let metaBlob = try sealMetadata(metadata, key: keys.meta, fileID: fileID)
         try output.write(Data(objectHeader(fileID: fileID, fk: keys.fk, metaLen: metaBlob.count)))
         try output.write(Data(metaBlob))
-        try encryptChunks(from: plaintext, key: keys.content, fileID: fileID, to: output)
+        try encryptChunks(from: plaintext, size: metadata.size, key: keys.content, fileID: fileID, to: output)
         return fileID
     }
 

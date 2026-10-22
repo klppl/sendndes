@@ -41,7 +41,7 @@ let testVault: Vault = try! Vault(vk: hex(vaultVector["vk"]), vaultJSON: vfile("
 /// Metadata exactly as stored by the vector (bypasses the writer's NFC step,
 /// for the NFD vector written "by another writer").
 func storedMetadata(_ m: JSONObject) -> Metadata {
-    Metadata(unchecked: hex(m["name_hex"]), hex(m["dir_hex"]), i64(m["mtime"]), hex(m["mime_hex"]), i64(m["rev"]))
+    Metadata(unchecked: hex(m["name_hex"]), hex(m["dir_hex"]), i64(m["mtime"]), hex(m["mime_hex"]), i64(m["rev"]), i64(m["size"]))
 }
 
 func errorClass(_ body: () throws -> Void) -> String? {

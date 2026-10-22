@@ -1,7 +1,7 @@
-# Ndes: Format and Architecture Spec, v1 (DRAFT)
+# Ndes: Format and Architecture Spec, v1 (DRAFT; object and inbox files at format version 2)
 
 Personal, single-user, open-source encrypted vault. Own format, not compatible with anything else.
-Status: v1 format re-baselined (Valv renamed to ndes; owner decision R1). Freeze rules apply again from the new tag. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
+Status: object and inbox files are at format version 0x02 (content padding, section 5.3; owner decision D-P1). vault.json is unchanged and keeps `"v": 1`. v1 object and inbox files are not readable by design. The v1 format was re-baselined earlier (Valv renamed to ndes; owner decision R1). Freeze rules apply again from the new tag. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
 
 You (the AI implementing this) are building a tool for exactly one user. Prefer simple and correct over flexible. Anything not specified here is a question for the human, not a decision for you.
 
@@ -160,7 +160,7 @@ All integers big-endian.
 ```
 offset  size       field
 0       4          magic    "NDES"
-4       1          version  0x01
+4       1          version  0x02
 5       1          kind     0x01
 6       16         file_id
 22      12         wrap_nonce
@@ -170,7 +170,7 @@ offset  size       field
 86+meta_len  ...   chunks
 ```
 
-- A reader rejects a wrong magic or kind as malformed and any version other than 0x01 as unsupported.
+- A reader rejects a wrong magic or kind as malformed and any version other than 0x02 as unsupported. (Version 0x01 files, written before content padding, are unsupported by design.)
 - `meta_len` must satisfy `540 <= meta_len <= 65564` and `(meta_len - 28) mod 512 == 0` (the padded metadata is 512 to 65536 bytes, plus 28 bytes of nonce and tag). Check this before allocating.
 
 Two AADs, deliberately different:
@@ -192,13 +192,12 @@ Fields:
 | `mtime` | int64 | Unix time in nanoseconds. Any int64, including negative (pre-1970 dates). |
 | `mime` | string | `""` if unknown. |
 | `rev` | int64 | At least 1. 1 when a file is created (also by the inbox server), incremented on every rewrite. Helps spot conflicts. |
-
-Plaintext size is not stored (it is derived, see section 5.3).
+| `size` | int64 | The plaintext length in bytes, 0 to 2^60. Content is stored padded (section 5.3); this is where its real length is kept. A rewrite of the metadata alone keeps it. |
 
 Writers check that the input strings are valid UTF-8, normalize `name` and `dir` to NFC, then check the rules above.
 
 Canonical serialization (byte-exact, produced by a hand-written serializer, never by JSONEncoder or encoding/json):
-- `{"name":S,"dir":S,"mtime":I,"mime":S,"rev":I}`: keys in this order, no whitespace, UTF-8.
+- `{"name":S,"dir":S,"mtime":I,"mime":S,"rev":I,"size":I}`: keys in this order, no whitespace, UTF-8.
 - S is a string: `"`, the content, `"`. Escape only `"` as `\"`, `\` as `\\`, and U+0000 to U+001F as `\u00xx` with lowercase hex. Everything else, including `/` and non-ASCII characters, is written as literal UTF-8.
 - I is an integer: plain decimal, `-` for negative values, no leading zeros, no `+`, no fraction, no exponent.
 - Then append spaces (0x20) until the length is a multiple of 512 (nothing if it already is). The padded plaintext is at most 65536 bytes; a writer fails if it would be larger.
@@ -207,7 +206,7 @@ Readers accept only the canonical form:
 1. Check `meta_len` (section 5.1) and decrypt.
 2. Remove trailing spaces. Fewer than 512 may have been removed (padding is minimal), and the padded length must be a multiple of 512.
 3. Reject invalid UTF-8.
-4. Parse with a small hand-written strict parser for exactly this schema. Reject duplicate keys, unknown keys, missing keys, wrong key order, any escape the writer does not emit, any whitespace outside the trailing padding, floats, leading zeros, and int64 overflow. `mtime` and `rev` are parsed as int64, never as float.
+4. Parse with a small hand-written strict parser for exactly this schema. Reject duplicate keys, unknown keys, missing keys, wrong key order, any escape the writer does not emit, any whitespace outside the trailing padding, floats, leading zeros, and int64 overflow. `mtime`, `rev` and `size` are parsed as int64, never as float.
 5. Check the field rules above. Readers do not check or apply NFC: any valid UTF-8 is accepted, so a name written on another Unicode version stays readable. Tools may warn about a non-NFC `name` or `dir` (`verify` does), but must not reject it.
 6. Re-serialize the parsed values; the result must equal the stripped plaintext byte for byte.
 
@@ -215,21 +214,27 @@ Names that differ only in Unicode normalization form can coexist as separate fil
 
 Adding a field requires a format version bump.
 
-### 5.3 Content chunks
+### 5.3 Content chunks and padding
 
-- Plaintext chunk size is 65536 bytes. Each chunk is stored as `ct | tag(16)`, so a stored chunk is at most 65552 bytes.
-- All chunks are full size except the last, which is 1..65536 bytes. An empty file is exactly one empty final chunk (16 bytes: just the tag). A file whose length is an exact multiple of 65536 ends in a full final chunk, with no extra empty chunk.
-- **Structural check**, run before any decryption (including unwrapping FK). `ct_total` = file length minus header length (86 + meta_len). Reject the file if any of these hold:
+The plaintext is padded before it is chunked, so the host sees a padded length, not the real one.
+
+- **Padded size.** For a file of `size` bytes (metadata field `size`, 0 to 2^60), `padded(size) = padme(max(size, 4096))`, where for `L >= 2`: `E = floor(log2 L)`, `S = floor(log2 E) + 1`, `z = E - S`, `mask = 2^z - 1`, `padme(L) = (L + mask) & ~mask` (Padme, Reble and Pretsch). Properties relied on: `padded(size) >= size`, `padded` is non-decreasing, the result is at most 12.5% above `max(size, 4096)`, and `padme(padded(size)) = padded(size)`. Examples: `padded(0) = padded(1) = padded(4096) = 4096`, `padded(4097) = 4352`, `padded(197842) = 200704`, `padded(131072) = 131072`.
+- **Stored plaintext** = the `size` bytes of content followed by `padded(size) - size` zero bytes. Padding is never random, so the same input gives the same bytes.
+- Plaintext chunk size is 65536 bytes. The stored plaintext is cut into chunks and each is stored as `ct | tag(16)`, so a stored chunk is at most 65552 bytes.
+- All chunks are full size except the last, which is 1..65536 bytes. The stored plaintext is at least 4096 bytes, so there is no empty chunk. A length that is an exact multiple of 65536 ends in a full final chunk, with no extra empty chunk.
+- **Structural check**, run before any decryption (including unwrapping FK). `ct_total` = file length minus header length (86 + `meta_len` for objects, 58 + `meta_len` for inbox files). Reject the file if any of these hold:
   - `ct_total < 16`
   - `ct_total mod 65552` is in [1, 15]
-  - `ct_total mod 65552 == 16` and `ct_total != 16`
+  - `ct_total mod 65552 == 16`
 
-  `ct_total mod 65552 == 0` with `ct_total > 0` is valid (the final chunk is full). After the check, the number of chunks is `ceil(ct_total / 65552)`; every chunk but the last is 65552 bytes by construction.
+  After that check, the number of chunks is `n = ceil(ct_total / 65552)` and the stored plaintext length is `P = ct_total - 16 * n`. Also reject the file if `P < 4096`, `P > 2^61`, or `padme(P) != P`: a stored length that is not a padded size means the writer did not pad. Every chunk but the last is 65552 bytes by construction.
+- **Size check**, after the metadata is decrypted and parsed (section 5.2): `padded(size) = P` must hold, or the file is malformed (class `malformed`). This ties the real length in the metadata to the stored length. Because the metadata is copied unchanged from an inbox file into its object, the check holds for both kinds.
+- **Zero padding.** Readers output only the first `size` bytes of the stored plaintext. Every later stored plaintext byte must be zero, otherwise the file is malformed. It is authenticated like all content, so this only enforces the canonical form. Ingest (section 6.3) applies the same check, as it authenticates each chunk.
 - **Nonce (12 bytes)** = `u64 chunk_index (BE) | 0x00 0x00 0x00 | final_flag`, with final_flag 0x01 only on the last chunk. Safe because K_content is unique per file.
 - **AAD** = file_id (16 bytes).
-- Reader decides which chunk is last by the file length. A truncated file fails the structural check or authentication: a new "last" chunk was encrypted with the final flag clear. Reordering fails via the index in the nonce.
-- Plaintext size = `ct_total - 16 * ceil(ct_total / 65552)`, for a `ct_total` that passed the structural check.
+- Reader decides which chunk is last by the file length. A truncated file fails the structural or size check, or authentication: a new "last" chunk was encrypted with the final flag clear. Reordering fails via the index in the nonce.
 - When a file's content changes, generate a new FK. Never reuse an FK for different content.
+- A writer must know `size` before it writes the metadata, which comes before the content in the file. It checks that the content has exactly `size` bytes and fails, writing nothing usable, if it has more or fewer. `add` already re-checks its source (section 5.4); the same applies to an inbox server, which therefore needs the length up front (section 6.2).
 - Streaming encryption needs a one-chunk lookahead, because the writer must know whether a chunk is the last one before encrypting it. Never buffer a whole file in memory.
 - Streaming decryption hands out plaintext before later chunks are checked. The output is valid only if the whole file authenticates; write it to a temp file and discard it on failure (section 5.4).
 
@@ -252,7 +257,7 @@ Written by the inbox server, which holds `inbox_pub` and K_auth (section 3).
 ```
 offset  size       field
 0       4          magic    "NDES"
-4       1          version  0x01
+4       1          version  0x02
 5       1          kind     0x02
 6       16         file_id  (server picks random)
 22      32         eph_pub
@@ -267,7 +272,7 @@ Magic, version, `meta_len`, metadata and chunks follow sections 5.1 to 5.3, with
 
 1. Generate an ephemeral X25519 keypair. `DH = X25519(eph_priv, inbox_pub)`, with `inbox_pub` from the server's own configuration. Reject an all-zero result.
 2. `FK = HKDF-SHA256(ikm = DH | K_auth, salt = eph_pub | inbox_pub, info = "ndes/v1/inbox-fk", L = 32)`, with K_auth from the server's own configuration.
-3. Derive K_content and K_meta from FK as in section 3. Build the metadata as any writer does (section 5.2, `rev` = 1), encrypt it, and stream-encrypt the chunks as in section 5, with the inbox file_id.
+3. Derive K_content and K_meta from FK as in section 3. Build the metadata as any writer does (section 5.2, `rev` = 1, `size` = the upload's length), encrypt it, and stream-encrypt the padded content as in section 5.3, with the inbox file_id. The server needs the plaintext length before it starts, so a server-sealed upload (mode B) must declare it (HTTP `Content-Length`, no chunked uploads) and is rejected if the body differs from it. A client-sealed upload (the client does steps 1 to 4) is structurally checked by the server (section 8), which can only see that the stored length is a padded size.
 4. Discard eph_priv and FK. After the upload completes the server can no longer decrypt the file.
 
 ### 6.3 Client ingest (holds VK)
@@ -294,7 +299,7 @@ Inbox uploads:
 - K_auth cannot be rotated in v1. After a server compromise, treat any inbox the attacker can write to as untrusted: do not run ingest on it blindly; review what is there first.
 - An old valid inbox file can be replayed. While its object exists, the idempotency rule (section 6.3) absorbs it. After the object is deleted, a replay brings the file back; this is accepted in v1.
 
-Leaks: object count, the exact plaintext length of every file, and modification times and access patterns visible to the host. The length is exact because it follows from the stored size: `ct_total` is the file length minus the header length (86 + `meta_len`, both visible), and the plaintext size is `ct_total - 16 * ceil(ct_total / 65552)` (section 5.3). The padded size of the encrypted metadata (`meta_len - 28`, a multiple of 512) is also visible, so the combined length of name, folder and MIME type is known to within a 512-byte step. There is no size padding in v1; padding the content would change the format and is listed in section 12 as a possible v2 item.
+Leaks: object count, the padded plaintext length of every file (section 5.3: at least 4096 bytes, within 12.5% above the real size), and modification times and access patterns visible to the host. The padded length follows from the stored size: `ct_total` is the file length minus the header length (86 + `meta_len` for objects, both visible), and `P = ct_total - 16 * ceil(ct_total / 65552)` (section 5.3). Padme reveals only about log2(log2 size) bits of the real size: a file of 1 MiB to 1.125 MiB can look like any other in that bucket, but files of 100 bytes and 3 KB are indistinguishable, and a 10 GB file is still known to be about 10 GB. The real size is in the encrypted metadata. The padded size of the encrypted metadata (`meta_len - 28`, a multiple of 512) is also visible, so the combined length of name, folder and MIME type is known to within a 512-byte step. Names and folders are still visible by length to within 512 bytes, as above.
 
 Does not protect against: malware on an unlocked device, a weak passphrase, losing the passphrase without the recovery key, or a host deleting or rolling back whole files (an old valid version can be restored, there is no freshness guarantee in v1). The same holds within a file: the host can put back an older `meta_blob` of the same file (undoing a rename), and it still authenticates. A genuine object or inbox file that the host renames to a name on the OS junk list (section 8), or to a name ending in `.part`, is treated as a note (junk or incomplete write) and skipped, which is indistinguishable from deleting it; deletion is already accepted (no freshness guarantee). The reader's rule "skip `*.part`" is a suffix test, so it applies to any name that ends in `.part`, not only to this tool's own temp files.
 
@@ -317,8 +322,8 @@ Deployment (v1, "mode B", chosen first):
 - The server keeps the inbox on its own disk and holds no storage credentials.
 - Your devices pull from it (over Tailscale or HTTPS), ingest, and write the objects into the real vault (e.g. a Google Drive folder). The CLI's `pull` downloads each inbox file into a private temporary directory outside the vault (mode 0700, on a local, non-synced path) and authenticates it there; only a file that authenticates is copied into the vault's `inbox/` and ingested. A download that fails authentication is reported as not authentic, removed from the temporary directory, and stays on the server; nothing unauthenticated is written into the vault or synced to the cloud. `DELETE /inbox/{id}` is sent only after a verified ingest (section 6.3). Files already in the vault's `inbox/` (put there by `pull` earlier, by hand or by mode A) are handled by `ingest` as section 6.3 says.
 - Minimal server API (all authenticated):
-  - `PUT /inbox`: streaming upload (server-sealed). Metadata arrives in headers (name, dir, mtime, mime). Returns the file_id.
-  - `PUT /inbox/{id}`: client-sealed upload. The client seals the file itself with `inbox_pub` and `K_auth` into a finished `.inb` file and uploads it. The server never sees plaintext, filenames, or folders. The server checks the inbox file prefix and chunk structure, and verifies that the file_id in the header matches `{id}`. Idempotent: re-uploading identical bytes for an existing `{id}` returns 200 OK; different bytes return 409 Conflict.
+  - `PUT /inbox`: streaming upload (server-sealed). Metadata arrives in headers (name, dir, mtime, mime). `Content-Length` is required (the size goes into the metadata before the content is read, section 5.3); without it the server answers 411, and a body of another length is refused. Returns the file_id.
+  - `PUT /inbox/{id}`: client-sealed upload. The client seals the file itself with `inbox_pub` and `K_auth` into a finished `.inb` file and uploads it. The server never sees plaintext, filenames, or folders. The server checks the inbox file prefix and chunk structure, including that the stored length is a padded size (section 5.3), and verifies that the file_id in the header matches `{id}`. Idempotent: re-uploading identical bytes for an existing `{id}` returns 200 OK; different bytes return 409 Conflict.
   - `GET /inbox`: list ids.
   - `GET /inbox/{id}`: download the sealed file.
   - `DELETE /inbox/{id}`: called by the client after a successful ingest.
@@ -361,7 +366,6 @@ Do not start step N+1 until step N passes its tests. Not trustworthy with only-c
 ## 12. Open questions
 
 - Deletion semantics: tombstones vs plain delete, and what happens when sync resurrects a deleted file.
-- Optional padding to hide exact file sizes (the host currently learns the exact plaintext length, section 7). A possible v2 item: it changes the stored sizes and the structural check, so it is a format change under section 15.
 - Whether the Mac app uses loopback WebDAV or a File Provider (iOS needs a File Provider regardless).
 - Conflict policy when two devices rewrite the same file_id (use `rev`; probably keep both, surface to the user).
 - K_auth rotation (inbox epochs, section 3).
@@ -435,6 +439,7 @@ A log of what was decided after the first draft and where each rule now lives. T
 | R4-2 | One vault handle per command, opened before any prompt | 8 |
 | R4-3 | SIGKILL and power loss during `init`; interrupted-init hint | 4.3 |
 | R4-W | Advice after an unverified recovery | 4.5 |
+| P1 | Content padding with Padme (minimum 4096), real length in the metadata `size`, zero padding enforced, format version 0x02 (owner decision D-P1) | 5.2, 5.3 |
 | Freeze | v1 format frozen; what may change and how | 15 |
 | S-Q1, S-Q2 | `vault.json` Base64 and decoded-length errors in `salt`, `wrapped_vk`, `inbox_pub`, and invalid UTF-8 passphrases, are `malformed` (`unsupported` is only for `v`, `alg`, `t`, `m_kib`, `p`) | 3, 4.2 |
 | S-Q3 | Recovery with unreadable objects and no authenticating inbox file is case 3 ("cannot be verified: 0 of 0 readable objects"); case 4 requires no object and no inbox files at all | 4.5 |
@@ -524,6 +529,13 @@ Post-freeze clarifications (step 3 cross-implementation questions Q1–Q6, docum
 - Section 10: rule 10 on normative accept/reject versus single-fault error classes.
 - Section 13: rows S-Q1 to S-Q6.
 
+Content padding (owner decision D-P1):
+- Object and inbox files are format version 0x02. vault.json is unchanged (`"v": 1`, same bytes), so an existing vault, its passphrase, recovery key, `inbox_pub` and K_auth keep working; objects and inbox files written at version 0x01 are unsupported by design (re-baseline, as in R1).
+- Section 5.2: new metadata field `size`, last in the canonical order.
+- Section 5.3 rewritten: Padme padding to at least 4096 bytes, stricter structural check (stored length must be a padded size), size check against the metadata, zero padding enforced, writers must know the size first.
+- Section 6.2: server-sealed uploads need a declared length; chunked uploads are refused.
+- Section 7: the host learns a padded length, not the exact one. Section 12: padding removed from the open questions.
+
 Pre-release re-baseline (owner decision R1):
 - Pre-release re-baseline: Valv renamed to ndes, constants changed, version byte unchanged, old test vaults unreadable by design (owner decision R1). The freeze rules apply again from the new tag.
 - Wire constants updated: magic "VALV" -> "NDES", HKDF labels "valv/v1/*" -> "ndes/v1/*", config AAD prefix "valv-config-v1" -> "ndes-config-v1", recovery checksum label "valv/v1/recovery-checksum" -> "ndes/v1/recovery-checksum". Temp file prefix `.valv-*.part` -> `.ndes-*.part`. Test vector build tag `valv_testvectors` -> `ndes_testvectors`.
@@ -531,6 +543,7 @@ Pre-release re-baseline (owner decision R1):
 ## 15. Freeze rules
 
 - **Pre-release re-baseline: Valv renamed to ndes, constants changed, version byte unchanged, old test vaults unreadable by design (owner decision R1).** The freeze rules apply again from the new tag.
+- **Content padding (owner decision D-P1).** The padded format is version 0x02 for object and inbox files, with v1 object and inbox files unsupported by design (pre-release, so no compatibility reader). vault.json is untouched. The freeze rules apply again from the tag that carries it.
 - **Format changes.** A format change is any change that alters the bytes of a committed vector, changes which inputs a reader accepts or rejects, or changes a derivation, label, AAD, field, or layout. Every format change requires a new format version byte (0x02) and a new spec section. v1 readers must keep working. A v1 file is never silently reinterpreted.
 - **Clarifications.** A clarification that changes no behaviour (wording, examples, an added vector that both implementations already agree on) is allowed. It must be listed in the changelog (section 14) and checked against every implementation.
 - **Tool fixes.** Bugs in CLI plumbing (path handling, signals, messages, commands) are normal fixes. They must not touch `testvectors/`.

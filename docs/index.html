@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>send n*des · your own encrypted vault and inbox</title>
-<meta name="description" content="An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. The server seals every file, your cloud stores ciphertext, and only your Mac can read the names again.">
+<meta name="description" content="An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac seals every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="send n*des">
 <meta property="og:description" content="Your own encrypted vault and self-hosted inbox. Nobody in between can look.">
@@ -43,7 +43,7 @@
   <section class="hero">
     <div class="hero-copy">
       <h1>Send <span class="pk">n*des</span>.<br>Nobody in between can look.</h1>
-      <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. The server seals every file for you, your cloud stores ciphertext, and only your Mac can read the names again.</p>
+      <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac seals every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/klppl/sendndes">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
         <a class="quiet-link" href="#trip">Follow the file <svg class="ic"><use href="#i-down"/></svg></a>
@@ -92,9 +92,9 @@
         </article>
 
         <article class="leg" data-name="sealed for your vault" data-where="Waiting in your inbox" data-server="brief">
-          <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox seals it, then forgets it.</h3></div>
-          <p>The inbox server holds your vault's <em>public</em> key and an upload secret. It seals each file the moment it arrives and keeps only the sealed copy. Nothing it holds can open that copy again: not today's uploads, not last year's, not your vault.</p>
-          <p class="aside">Honest bit: in this version the server sees a file in the clear while it seals it. Keep it on Tailscale or behind HTTPS. Sealing on the device itself is planned.</p>
+          <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox only holds sealed files.</h3></div>
+          <p>The inbox server holds your vault's <em>public</em> key and an upload secret. The Mac app seals each file on your Mac with those keys and uploads the sealed copy. Nothing the server holds can open that copy: not today's uploads, not last year's, not your vault.</p>
+          <p class="aside">Honest bit: sealing on your Mac needs the server keys pasted into the app (Settings → Server). Without them, and for scripts or curl that use the plain upload, the server sees the file in the clear while it seals it. Keep it on Tailscale or behind HTTPS either way.</p>
           <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
         </article>
 
@@ -181,7 +181,7 @@
         <h3>The host can see</h3>
         <ul>
           <li><svg><use href="#i-eye"/></svg>How many files</li>
-          <li><svg><use href="#i-eye"/></svg>Their exact sizes</li>
+          <li><svg><use href="#i-eye"/></svg>Their rough sizes</li>
           <li><svg><use href="#i-eye"/></svg>When they changed</li>
         </ul>
       </div>

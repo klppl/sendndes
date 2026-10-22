@@ -72,7 +72,7 @@ The server only ever holds the vault's *public* inbox key and an upload-authenti
 
 ## Quick start
 
-You need Go 1.26+ (and Swift for the Mac app).
+You need Go 1.27.3+ (and Swift for the Mac app).
 
 ### 1. Build
 
@@ -143,12 +143,12 @@ The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HT
 
 **Protected:** file contents, names and folder structure, against the storage host, the sync service and the inbox server. Any change to a file is detected. Argon2id for the passphrase, ChaCha20-Poly1305 for content, X25519 to seal inbox uploads ([SPEC.md §2](SPEC.md)).
 
-**Visible to the host:** how many files there are, their exact sizes, and modification times.
+**Visible to the host:** how many files there are, their approximate sizes (padded up to at most 12.5% above the real size, minimum 4 KiB, so small files look alike), and modification times.
 
 **Not protected:** malware on an unlocked device, a weak passphrase, a lost passphrase *and* recovery key (the data is gone), and a host deleting files or rolling them back to an older version.
 
 **Good to know**
-- Client-sealed upload: the Mac app seals files locally with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. `K_auth` lives in your macOS login keychain (never iCloud-synced). Server-side sealing (`PUT /inbox`) remains available for scripts and curl.
+- Client-sealed upload: once you paste the server keys into the Mac app (Settings → Server, optional), it seals files locally with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. `K_auth` lives in your macOS login keychain (never iCloud-synced). Without those keys the app falls back to server-side sealing (`PUT /inbox`), where the server sees the file, its name and folder in the clear for a moment while it seals them. That route also stays available for scripts and curl. Either way, keep the sync port on Tailscale or behind HTTPS; the Mac app refuses plain HTTP to anything else.
 - The server's upload secret can't be rotated in v1. Give it only to your own server.
 - The Mac app keeps the server token and client-sealing keys in your login keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/bits"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -16,8 +17,33 @@ const (
 	StoredChunkSize = ChunkSize + TagSize
 )
 
+// Content padding (SPEC 5.3). The stored plaintext length of every object is
+// PaddedSize(size): Padme (Reble and Pretsch, "Padmé") of max(size,
+// MinPadded). MaxPlaintextSize keeps the arithmetic far from int64 overflow.
+const (
+	MinPadded        = 4096
+	MaxPlaintextSize = int64(1) << 60
+)
+
+// padme rounds l (at least 2) up to a length with at most 12% overhead that
+// reveals only O(log log l) bits of l.
+func padme(l int64) int64 {
+	e := bits.Len64(uint64(l)) - 1 // floor(log2 l)
+	s := bits.Len64(uint64(e))     // floor(log2 e) + 1
+	mask := int64(1)<<(e-s) - 1
+	return (l + mask) &^ mask
+}
+
+// PaddedSize returns the stored plaintext length for a file of size bytes.
+// It is only meaningful for 0 <= size <= MaxPlaintextSize.
+func PaddedSize(size int64) int64 {
+	return padme(max(size, MinPadded))
+}
+
 // chunkCount runs the structural check on ct_total and returns the number of
-// chunks (SPEC 5.3). It must run before any decryption.
+// chunks (SPEC 5.3). It must run before any decryption. The stored plaintext
+// length it implies must be a valid padded size (at least MinPadded and a
+// fixed point of Padme), so unpadded content is rejected here.
 func chunkCount(ctTotal int64) (int64, error) {
 	r := ctTotal % StoredChunkSize
 	switch {
@@ -28,12 +54,16 @@ func chunkCount(ctTotal int64) (int64, error) {
 	case r == TagSize && ctTotal != TagSize:
 		return 0, fmt.Errorf("%w: empty final chunk after full chunks", ErrMalformed)
 	}
-	return (ctTotal + StoredChunkSize - 1) / StoredChunkSize, nil
+	n := (ctTotal + StoredChunkSize - 1) / StoredChunkSize
+	if p := ctTotal - TagSize*n; p < MinPadded || p > 2*MaxPlaintextSize || padme(p) != p {
+		return 0, fmt.Errorf("%w: stored length %d is not a padded size", ErrMalformed, p)
+	}
+	return n, nil
 }
 
-// PlaintextSize returns the plaintext length for a given ct_total, or an
-// error if ct_total fails the structural check.
-func PlaintextSize(ctTotal int64) (int64, error) {
+// StoredPlaintextSize runs the structural check on ct_total and returns the
+// stored plaintext length (the real size plus padding).
+func StoredPlaintextSize(ctTotal int64) (int64, error) {
 	n, err := chunkCount(ctTotal)
 	if err != nil {
 		return 0, err
@@ -50,8 +80,55 @@ func chunkNonce(index uint64, final bool) [NonceSize]byte {
 	return n
 }
 
-// encryptChunks stream-encrypts r with one chunk of lookahead.
-func encryptChunks(w io.Writer, key *[KeySize]byte, id FileID, r io.Reader) error {
+// ErrContentSize: the content did not have the length declared in the
+// metadata (shorter or longer), so nothing consistent can be written.
+var ErrContentSize = errors.New("ndes: content length differs from the declared size")
+
+// paddedReader yields exactly size bytes from r, then zeros up to padded. It
+// fails with ErrContentSize if r is shorter or longer than size.
+type paddedReader struct {
+	r      io.Reader
+	size   int64 // content bytes still to read
+	zeros  int64 // padding bytes still to emit
+	probed bool
+}
+
+func newPaddedReader(r io.Reader, size int64) *paddedReader {
+	return &paddedReader{r: r, size: size, zeros: PaddedSize(size) - size}
+}
+
+func (p *paddedReader) Read(b []byte) (int, error) {
+	if p.size > 0 {
+		n, err := p.r.Read(b[:min(int64(len(b)), p.size)])
+		p.size -= int64(n)
+		if err == io.EOF {
+			if p.size > 0 {
+				return n, ErrContentSize
+			}
+			err = nil
+		}
+		return n, err
+	}
+	if !p.probed {
+		p.probed = true
+		var one [1]byte
+		if n, _ := io.ReadFull(p.r, one[:]); n > 0 {
+			return 0, ErrContentSize
+		}
+	}
+	if p.zeros == 0 {
+		return 0, io.EOF
+	}
+	n := min(int64(len(b)), p.zeros)
+	clear(b[:n])
+	p.zeros -= n
+	return int(n), nil
+}
+
+// encryptChunks stream-encrypts size bytes of r, padded to PaddedSize(size),
+// with one chunk of lookahead.
+func encryptChunks(w io.Writer, key *[KeySize]byte, id FileID, content io.Reader, size int64) error {
+	r := newPaddedReader(content, size)
 	aead, err := chacha20poly1305.New(key[:])
 	if err != nil {
 		return err
@@ -121,4 +198,34 @@ func readChunks(r io.Reader, ctTotal int64, key *[KeySize]byte, id FileID, fn fu
 		remaining -= int64(len(chunk))
 	}
 	return nil
+}
+
+// padSplitter separates a padded plaintext stream into the real content (the
+// first size bytes) and the padding, which must be all zero.
+type padSplitter struct{ left int64 }
+
+// split returns the content part of plain and checks that the rest is zero.
+func (p *padSplitter) split(plain []byte) ([]byte, error) {
+	k := min(p.left, int64(len(plain)))
+	p.left -= k
+	for _, c := range plain[k:] {
+		if c != 0 {
+			return nil, fmt.Errorf("%w: padding is not zero", ErrMalformed)
+		}
+	}
+	return plain[:k], nil
+}
+
+// readPadded authenticates every chunk like readChunks and writes the first
+// size plaintext bytes to w (w may be nil). The rest must be zero padding.
+func readPadded(r io.Reader, ctTotal, size int64, key *[KeySize]byte, id FileID, w io.Writer) error {
+	ps := padSplitter{left: size}
+	return readChunks(r, ctTotal, key, id, func(_, plain []byte) error {
+		data, err := ps.split(plain)
+		if err != nil || w == nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	})
 }

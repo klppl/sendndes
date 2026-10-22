@@ -26,6 +26,7 @@ type Metadata struct {
 	MTime int64 // Unix nanoseconds
 	MIME  string
 	Rev   int64
+	Size  int64 // plaintext length in bytes; the stored content is padded (SPEC 5.3)
 }
 
 func validMetaLen(n uint32) bool {
@@ -61,6 +62,9 @@ func (m *Metadata) check() error {
 	}
 	if m.Rev < 1 {
 		return fmt.Errorf("%w: rev must be at least 1", ErrMetadata)
+	}
+	if m.Size < 0 || m.Size > MaxPlaintextSize {
+		return fmt.Errorf("%w: size out of range", ErrMetadata)
 	}
 	return nil
 }
@@ -107,6 +111,8 @@ func canonicalMetadataJSON(m *Metadata) []byte {
 	b = appendJSONString(b, m.MIME)
 	b = append(b, `,"rev":`...)
 	b = strconv.AppendInt(b, m.Rev, 10)
+	b = append(b, `,"size":`...)
+	b = strconv.AppendInt(b, m.Size, 10)
 	return append(b, '}')
 }
 
@@ -168,6 +174,7 @@ func parseMetadataStrict(b []byte) (Metadata, bool) {
 		p.lit(`,"mtime":`) && p.int(&m.MTime) &&
 		p.lit(`,"mime":`) && p.str(&m.MIME) &&
 		p.lit(`,"rev":`) && p.int(&m.Rev) &&
+		p.lit(`,"size":`) && p.int(&m.Size) &&
 		p.lit(`}`) && p.i == len(p.b)
 	return m, ok
 }

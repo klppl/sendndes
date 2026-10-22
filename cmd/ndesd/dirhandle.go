@@ -280,7 +280,8 @@ const minChunkedBudget = 1 << 20
 // sealedEstimate is an upper bound for the stored size of an inbox file whose plaintext has n
 // bytes: 16 bytes of tag per chunk plus at most ~70 KiB of header and metadata.
 func sealedEstimate(n int64) int64 {
-	return n + 16*((n+core.ChunkSize-1)/core.ChunkSize) + 70<<10
+	p := core.PaddedSize(n)
+	return p + 16*((p+core.ChunkSize-1)/core.ChunkSize) + 70<<10
 }
 
 // writeInboxAt atomically checks the inbox file quota and the byte quota (admission under

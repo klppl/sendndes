@@ -104,7 +104,7 @@ import Testing
         // A rename (new meta_blob, same FK and chunks) still counts as ingested.
         let r = try testVault.openObject(DataInput(ingestedFile), expected: expected)
         let fk = try testVault.unwrapFK(r.header)
-        let renamed = try Metadata(name: "renamed.pdf", dir: "", mtime: 1, mime: "", rev: 2)
+        let renamed = try Metadata(name: "renamed.pdf", dir: "", mtime: 1, mime: "", rev: 2, size: r.metadata.size)
         let blob = try sealMetadata(renamed, key: FileKeys(fk: fk).meta, fileID: expected)
         var obj = [UInt8](ingestedFile)
         obj.replaceSubrange(86..<(86 + blob.count), with: blob)
@@ -127,7 +127,7 @@ import Testing
         let mb = try sealMetadata(reader.metadata, key: keys.meta, fileID: expected)
         try fresh.write(Data(testVault.objectHeader(fileID: expected, fk: freshFK, metaLen: mb.count)))
         try fresh.write(Data(mb))
-        try encryptChunks(from: DataInput(content.data), key: keys.content, fileID: expected, to: fresh)
+        try encryptChunks(from: DataInput(content.data), size: reader.metadata.size, key: keys.content, fileID: expected, to: fresh)
         #expect(try testVault.verifyObject(DataInput(fresh.data), expected: expected) == reader.metadata)
         #expect(try testVault.compareIngested(inbox: DataInput(inboxFile), existingObject: DataInput(fresh.data),
                                               expected: expected) == .conflict)
@@ -158,7 +158,7 @@ import Testing
         let authB64 = Data(keyBytes(testVault.kAuth)).base64EncodedString()
         let sealer = try InboxSealer(inboxPubBase64: pubB64, kAuthBase64: authB64)
         let plain = Data("standalone inbox sealer test".utf8)
-        let meta = try Metadata(name: "test.txt", dir: "sub", mtime: 1234567, mime: "text/plain", rev: 1)
+        let meta = try Metadata(name: "test.txt", dir: "sub", mtime: 1234567, mime: "text/plain", rev: 1, size: Int64(plain.count))
         let out = DataOutput()
         let fileID = try sealer.seal(plaintext: DataInput(plain), metadata: meta, to: out)
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -210,12 +211,23 @@ func (v *testVault) serverConfig() (inboxPub, kAuth [core.KeySize]byte) {
 	return
 }
 
+// sealSized is core.SealInbox for a reader of unknown length: it reads all of
+// content to set the size that the padded format needs in the metadata.
+func sealSized(w io.Writer, inboxPub, kAuth [core.KeySize]byte, meta core.Metadata, content io.Reader) (core.FileID, error) {
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return core.FileID{}, err
+	}
+	meta.Size = int64(len(data))
+	return core.SealInbox(w, inboxPub, kAuth, meta, bytes.NewReader(data))
+}
+
 // seal writes an inbox file into the vault's inbox, sealed with kAuth.
 func (v *testVault) seal(kAuth [core.KeySize]byte, meta core.Metadata, data []byte) (core.FileID, string) {
 	v.t.Helper()
 	inboxPub, _ := v.serverConfig()
 	var buf bytes.Buffer
-	id, err := core.SealInbox(&buf, inboxPub, kAuth, meta, bytes.NewReader(data))
+	id, err := sealSized(&buf, inboxPub, kAuth, meta, bytes.NewReader(data))
 	if err != nil {
 		v.t.Fatal(err)
 	}

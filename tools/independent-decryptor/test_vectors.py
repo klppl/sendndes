@@ -103,6 +103,7 @@ def run_tests():
         mime = bytes.fromhex(inp["mime_hex"]).decode("utf-8", errors="replace")
         mtime = int(inp["mtime"])
         rev = int(inp["rev"])
+        size = int(inp["size"])
         
         # Test writer serialization and parser
         if exp_err is None:
@@ -118,6 +119,7 @@ def run_tests():
             assert parsed["mtime"] == mtime, f"Metadata {i} mtime mismatch"
             assert parsed["mime"] == mime, f"Metadata {i} mime mismatch"
             assert parsed["rev"] == rev, f"Metadata {i} rev mismatch"
+            assert parsed["size"] == size, f"Metadata {i} size mismatch"
             meta_pos_count += 1
             print(f"  [PASS] Positive metadata vector {i} ('{m['description']}') verified.")
         else:
@@ -148,8 +150,10 @@ def run_tests():
                             is_rejected = True
                 if rev < 1:
                     is_rejected = True
+                if size < 0 or size > (1 << 60):
+                    is_rejected = True
                 # Check padded size <= 65536
-                canon = f'{{"name":"{name_nfc}","dir":"{dir_nfc}","mtime":{mtime},"mime":"{mime}","rev":{rev}}}'.encode('utf-8')
+                canon = f'{{"name":"{name_nfc}","dir":"{dir_nfc}","mtime":{mtime},"mime":"{mime}","rev":{rev},"size":{size}}}'.encode('utf-8')
                 pad_len = math.ceil(len(canon) / 512) * 512
                 if pad_len > 65536:
                     is_rejected = True
@@ -226,7 +230,7 @@ def run_tests():
     print(f"\nPositive vectors summary: All positive vectors verified byte-for-byte!")
 
     # 6. Negative vectors (57 vectors)
-    print("\n--- 6. Testing All 57 Negative Vectors ---")
+    print("\n--- 6. Testing All Negative Vectors ---")
     neg_passed = 0
     neg_failed = 0
     for i, neg in enumerate(doc["negative"]):

@@ -128,7 +128,7 @@ func metadata(_ args: [String], input: String) -> Metadata {
     guard !o1, !o2 else { fail("mtime out of range") }
     do {
         // Metadata(name:dir:...) normalizes name and dir to NFC (SPEC 5.2).
-        return try Metadata(name: name, dir: dir, mtime: mtime, mime: "", rev: 1)
+        return try Metadata(name: name, dir: dir, mtime: mtime, mime: "", rev: 1, size: Int64(st.st_size))
     } catch {
         fail("\(error)")
     }

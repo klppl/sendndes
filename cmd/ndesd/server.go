@@ -375,6 +375,14 @@ func (s *inboxServer) handlePutInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The stored content is padded (SPEC 5.3), and the size goes into the metadata
+	// before the content is read, so the length must be declared up front.
+	if r.ContentLength < 0 {
+		httpError(w, http.StatusLengthRequired, "Content-Length required")
+		return
+	}
+	meta.Size = r.ContentLength
+
 	// Reject known Content-Length exceeding maxUploadBytes immediately.
 	if r.ContentLength > s.opts.maxUploadBytes {
 		httpError(w, http.StatusRequestEntityTooLarge, "upload exceeds maximum size")
@@ -458,7 +466,7 @@ func putErrorResponse(err error) (int, string) {
 		return http.StatusRequestEntityTooLarge, "upload exceeds maximum size"
 	case errors.Is(err, errUploadTooSlow):
 		return http.StatusRequestTimeout, "upload too slow"
-	case errors.Is(err, errStreamTruncated) || errors.Is(err, io.ErrUnexpectedEOF):
+	case errors.Is(err, errStreamTruncated) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, core.ErrContentSize):
 		return http.StatusBadRequest, "incomplete upload stream"
 	case isTimeoutError(err):
 		return http.StatusRequestTimeout, "upload timed out"

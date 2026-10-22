@@ -49,7 +49,7 @@ func readInboxHeader(r io.Reader) (*inboxHeader, error) {
 // authenticated with kAuth (SPEC 6.2). It is what the inbox server runs; it
 // needs no vault keys. meta.Rev is set to 1.
 func SealInbox(w io.Writer, inboxPub, kAuth [KeySize]byte, meta Metadata, content io.Reader) (FileID, error) {
-	meta.Rev = 1
+	meta.Rev = 1 // meta.Size must be the exact length of content
 	plain, _, err := EncodeMetadata(meta)
 	if err != nil {
 		return FileID{}, err
@@ -60,12 +60,12 @@ func SealInbox(w io.Writer, inboxPub, kAuth [KeySize]byte, meta Metadata, conten
 	defer clear(ephPriv[:])
 	var metaNonce [NonceSize]byte
 	randomBytes(metaNonce[:])
-	return id, sealInbox(w, &inboxPub, kAuth[:], plain, content, id, &ephPriv, metaNonce[:])
+	return id, sealInbox(w, &inboxPub, kAuth[:], plain, content, meta.Size, id, &ephPriv, metaNonce[:])
 }
 
 // sealInbox writes an inbox file with the given id, ephemeral key and nonce.
 // Release code reaches it only through SealInbox, with random values.
-func sealInbox(w io.Writer, inboxPub *[KeySize]byte, kAuth, metaPlain []byte, content io.Reader, id FileID, ephPriv *[KeySize]byte, metaNonce []byte) error {
+func sealInbox(w io.Writer, inboxPub *[KeySize]byte, kAuth, metaPlain []byte, content io.Reader, size int64, id FileID, ephPriv *[KeySize]byte, metaNonce []byte) error {
 	ephPub, err := curve25519.X25519(ephPriv[:], curve25519.Basepoint)
 	if err != nil {
 		return err
@@ -85,7 +85,7 @@ func sealInbox(w io.Writer, inboxPub *[KeySize]byte, kAuth, metaPlain []byte, co
 	if _, err := w.Write(h.marshal()); err != nil {
 		return err
 	}
-	return encryptChunks(w, &fkeys.content, id, content)
+	return encryptChunks(w, &fkeys.content, id, content, size)
 }
 
 // openedInbox is an inbox file whose header passed the structural check and
@@ -127,6 +127,10 @@ func openInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys) (*open
 		o.wipe()
 		return nil, err
 	}
+	if err := checkSizeMatches(o.meta.Size, o.ctTotal); err != nil {
+		o.wipe()
+		return nil, err
+	}
 	return o, nil
 }
 
@@ -148,7 +152,7 @@ func VerifyInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys) (Met
 		return Metadata{}, err
 	}
 	defer in.wipe()
-	err = readChunks(r, in.ctTotal, &in.keys.content, in.hdr.fileID, func(_, _ []byte) error { return nil })
+	err = readPadded(r, in.ctTotal, in.meta.Size, &in.keys.content, in.hdr.fileID, nil)
 	return in.meta, err
 }
 
@@ -165,7 +169,11 @@ func ingestInbox(r io.Reader, size int64, expected FileID, keys *VaultKeys, w io
 	if _, err := w.Write(h.marshal()); err != nil {
 		return FileID{}, Metadata{}, err
 	}
-	err = readChunks(r, in.ctTotal, &in.keys.content, id, func(stored, _ []byte) error {
+	ps := padSplitter{left: in.meta.Size}
+	err = readChunks(r, in.ctTotal, &in.keys.content, id, func(stored, plain []byte) error {
+		if _, err := ps.split(plain); err != nil {
+			return err
+		}
 		_, err := w.Write(stored)
 		return err
 	})

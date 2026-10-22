@@ -358,6 +358,7 @@ func main() {
 			MTime: 1729000000000000000,
 			MIME:  "text/plain",
 			Rev:   1,
+			Size:  1234,
 		}
 		basePadded, _, _ := core.EncodeMetadata(baseMeta)
 
@@ -391,6 +392,10 @@ func main() {
 					MTime: rng.Int63(),
 					MIME:  "application/octet-stream",
 					Rev:   int64(rng.Intn(100) + 1),
+					Size:  rng.Int63n(1 << 62),
+				}
+				if rng.Intn(6) == 0 {
+					m.Size = []int64{-1, 1<<60 + 1, 0, 4096, 4097}[rng.Intn(5)]
 				}
 				if rng.Intn(4) == 0 {
 					m.Rev = int64(rng.Intn(5) - 3)
@@ -403,8 +408,8 @@ func main() {
 				}
 				encoded, _, err := core.EncodeMetadata(m)
 				if err != nil {
-					mutated = []byte(fmt.Sprintf(`{"name":"%s","dir":"%s","mtime":%d,"mime":"","rev":%d}`,
-						m.Name, m.Dir, m.MTime, m.Rev))
+					mutated = []byte(fmt.Sprintf(`{"name":"%s","dir":"%s","mtime":%d,"mime":"","rev":%d,"size":%d}`,
+						m.Name, m.Dir, m.MTime, m.Rev, m.Size))
 					padLen := 512 - (len(mutated) % 512)
 					if padLen < 512 {
 						mutated = append(mutated, bytes.Repeat([]byte{0x20}, padLen)...)
@@ -415,7 +420,7 @@ func main() {
 			case 5:
 				escapes := []string{`\u0000`, `\u001f`, `\u0020`, `\u0041`, `\n`, `\t`, `\r`, `\/`}
 				esc := escapes[rng.Intn(len(escapes))]
-				rawJSON := fmt.Sprintf(`{"name":"test%s","dir":"","mtime":123,"mime":"","rev":1}`, esc)
+				rawJSON := fmt.Sprintf(`{"name":"test%s","dir":"","mtime":123,"mime":"","rev":1,"size":0}`, esc)
 				padLen := 512 - (len(rawJSON) % 512)
 				mutated = append([]byte(rawJSON), bytes.Repeat([]byte{0x20}, padLen)...)
 			case 6:
@@ -428,7 +433,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d", m.Name, m.Dir, m.MTime, m.MIME, m.Rev)
+				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d|%d", m.Name, m.Dir, m.MTime, m.MIME, m.Rev, m.Size)
 				return sha256Bytes([]byte(metaStr)), nil
 			})
 		}
@@ -463,7 +468,8 @@ func main() {
 				if len(mutated) >= 86 {
 					metaLen := int(binary.BigEndian.Uint32(mutated[82:86]))
 					hdrLen := 86 + metaLen
-					targetCtTotals := []int{0, 1, 15, 65552 + 1, 65552 + 15, 65552 + 16, 131104 + 16}
+					// Includes the first padded sizes (4096 + tag, 4352 + tag) and lengths that are not Padme sizes.
+					targetCtTotals := []int{0, 1, 15, 65552 + 1, 65552 + 15, 65552 + 16, 131104 + 16, 4096 + 16, 4352 + 16, 4097 + 16, 5000 + 16}
 					target := targetCtTotals[rng.Intn(len(targetCtTotals))]
 					newTotal := hdrLen + target
 					if newTotal > len(mutated) {
@@ -495,7 +501,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d", meta.Name, meta.Dir, meta.MTime, meta.MIME, meta.Rev)
+				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d|%d", meta.Name, meta.Dir, meta.MTime, meta.MIME, meta.Rev, meta.Size)
 				res := sha256Bytes(out.Bytes())
 				res = append(res, sha256Bytes([]byte(metaStr))...)
 				return res, nil
@@ -564,7 +570,7 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d", meta.Name, meta.Dir, meta.MTime, meta.MIME, meta.Rev)
+				metaStr := fmt.Sprintf("%s|%s|%d|%s|%d|%d", meta.Name, meta.Dir, meta.MTime, meta.MIME, meta.Rev, meta.Size)
 				res := sha256Bytes(plainBuf.Bytes())
 				res = append(res, sha256Bytes([]byte(metaStr))...)
 				return res, nil
@@ -875,7 +881,8 @@ func runCLISample(cliBin, swiftToolBin, repoDir string, totalCases int, objSeeds
 					if len(mutated) >= 86 {
 						metaLen := int(binary.BigEndian.Uint32(mutated[82:86]))
 						hdrLen := 86 + metaLen
-						targetCtTotals := []int{0, 1, 15, 65552 + 1, 65552 + 15, 65552 + 16, 131104 + 16}
+						// Includes the first padded sizes (4096 + tag, 4352 + tag) and lengths that are not Padme sizes.
+					targetCtTotals := []int{0, 1, 15, 65552 + 1, 65552 + 15, 65552 + 16, 131104 + 16, 4096 + 16, 4352 + 16, 4097 + 16, 5000 + 16}
 						target := targetCtTotals[wRng.Intn(len(targetCtTotals))]
 						newTotal := hdrLen + target
 						if newTotal > len(mutated) {

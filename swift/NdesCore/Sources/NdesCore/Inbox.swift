@@ -36,7 +36,7 @@ public struct InboxSealer: Sendable {
         self.init(inboxPub: [UInt8](pub), kAuth: SymmetricKey(data: auth))
     }
 
-    /// Seals `plaintext` into a new inbox file with a random file_id and a
+    /// Seals `plaintext`, which must be exactly `metadata.size` bytes, into a new inbox file with a random file_id and a
     /// fresh ephemeral key. `metadata.rev` must be 1. Returns the file_id;
     /// the file belongs at its `inboxPath`.
     public func seal(plaintext: NdesInput, metadata: Metadata, to output: NdesOutput) throws -> FileID {
@@ -54,7 +54,7 @@ public struct InboxSealer: Sendable {
         h.appendU32BE(UInt32(metaBlob.count))
         try output.write(Data(h))
         try output.write(Data(metaBlob))
-        try encryptChunks(from: plaintext, key: keys.content, fileID: fileID, to: output)
+        try encryptChunks(from: plaintext, size: metadata.size, key: keys.content, fileID: fileID, to: output)
         // eph and keys go out of scope here; CryptoKit zeroes their storage.
         return fileID
     }
@@ -69,6 +69,7 @@ public final class InboxReader {
     let header: FileHeader
     let keys: FileKeys
     private let stream: ChunkStream
+    private var padding: PadSplitter
 
     init(vault: Vault, input: NdesInput, expected: FileID) throws {
         let (h, k) = try vault.openInboxHeader(input, expected: expected)
@@ -79,18 +80,27 @@ public final class InboxReader {
         } catch NdesError.auth {
             throw NdesError.auth("inbox file is not authentic")
         }
+        try h.layout.checkSize(metadata.size)
         fileID = h.fileID
-        plaintextLength = h.layout.plaintextLength
+        plaintextLength = metadata.size
+        padding = PadSplitter(size: metadata.size)
         stream = ChunkStream(input: input, layout: h.layout, key: k.content, fileID: h.fileID)
     }
 
     /// Like `ObjectReader.nextChunk`.
     public func nextChunk() throws -> Data? {
-        try stream.next()?.plaintext
+        while let plain = try stream.next()?.plaintext {
+            let data = try padding.split(plain)
+            if !data.isEmpty { return data }
+        }
+        return nil
     }
 
-    fileprivate func nextChunkWithStored() throws -> (stored: [UInt8], plaintext: Data)? {
-        try stream.next()
+    /// The next stored chunk, authenticated, with its padding checked.
+    fileprivate func nextChunkWithStored() throws -> [UInt8]? {
+        guard let (stored, plain) = try stream.next() else { return nil }
+        _ = try padding.split(plain)
+        return stored
     }
 
     public func decryptAll(to output: NdesOutput) throws {
@@ -142,8 +152,8 @@ extension Vault {
         let h = reader.header
         try output.write(Data(objectHeader(fileID: h.fileID, fk: reader.keys.fk, metaLen: h.metaLen)))
         try output.write(Data(h.metaBlob))
-        while let chunk = try reader.nextChunkWithStored() {
-            try output.write(Data(chunk.stored))
+        while let stored = try reader.nextChunkWithStored() {
+            try output.write(Data(stored))
         }
         return reader.metadata
     }
@@ -179,7 +189,7 @@ extension Vault {
         while let ichunk = try reader.nextChunkWithStored() {
             if matches, let os = ostream {
                 do {
-                    if let ostored = try os.next()?.stored, constantTimeEqual(ichunk.stored, ostored) {
+                    if let ostored = try os.next()?.stored, constantTimeEqual(ichunk, ostored) {
                         continue
                     }
                 } catch let e as NdesError {
