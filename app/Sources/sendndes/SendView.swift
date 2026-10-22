@@ -25,10 +25,17 @@ struct SendView: View {
                             .label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                             .multilineTextAlignment(.center).frame(maxWidth: 420)
                     }
-                    ServerForm(model: model, compact: false)
-                        .padding(18).sticker(radius: 16, shadow: 4)
-                        .padding(.trailing, 4).padding(.bottom, 4)
-                        .frame(maxWidth: 460)
+                    VStack(alignment: .leading, spacing: 12) {
+                        ConnectBox(model: model)
+                        Text("Press Connect, then approve the code on your server's web page.")
+                            .font(.caption).foregroundStyle(Theme.inkSoft)
+                        DisclosureGroup("Advanced: type a token or let the server encrypt") {
+                            ServerForm(model: model, compact: false).padding(.top, 8)
+                        }
+                    }
+                    .padding(18).sticker(radius: 16, shadow: 4)
+                    .padding(.trailing, 4).padding(.bottom, 4)
+                    .frame(maxWidth: 460)
                 }
                 .padding(28)
                 .frame(maxWidth: .infinity)

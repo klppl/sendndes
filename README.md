@@ -42,7 +42,7 @@ Runs on macOS and Linux (not Windows), plus iOS for the phone app. The format ha
   </tr>
   <tr>
     <td><img src="docs/screenshots/mac-vault.png" alt="Unlocked vault with a file selected"></td>
-    <td><img src="docs/screenshots/mac-send-setup.png" alt="Settings → Server: enter the address and press Connect"></td>
+    <td><img src="docs/screenshots/mac-send-setup.png" alt="Send screen with a server address field and a Connect button"></td>
   </tr>
   <tr>
     <td><b>Unlocked.</b> Drop files in, press Space for Quick Look, export when you need a copy. Files that arrived from the inbox are tagged <i>new</i>.</td>
