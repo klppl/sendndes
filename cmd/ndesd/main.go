@@ -52,7 +52,6 @@ Classic mode (no web GUI), flags:
                                    that would eat into it gets 507 "server out of space"
   --min-upload-rate <n>            slowest accepted upload in bytes/s (default 65536): an upload must finish
                                    within 60s + Content-Length / rate
-  --max-chunked-duration <d>       longest total time for an upload without Content-Length (default 10m)
 `
 
 func main() {
@@ -82,7 +81,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		maxInboxBytes  int64
 		minFreeBytes   int64
 		minUploadRate  int64
-		maxChunkedTime time.Duration
 		dataDir        string
 		adminListen    string
 		adminPublic    bool
@@ -103,7 +101,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.Int64Var(&maxInboxBytes, "max-inbox-bytes", defaultMaxInboxBytes, "max stored inbox bytes")
 	fs.Int64Var(&minFreeBytes, "min-free-bytes", defaultMinFreeBytes, "free space to keep")
 	fs.Int64Var(&minUploadRate, "min-upload-rate", defaultMinUploadRate, "minimum upload rate in bytes/s")
-	fs.DurationVar(&maxChunkedTime, "max-chunked-duration", defaultMaxChunkedDuration, "max duration of an upload without Content-Length")
 
 	fs.StringVar(&dataDir, "data", os.Getenv("NDESD_DATA"), "data directory (managed mode)")
 	fs.StringVar(&adminListen, "admin-listen", envOr("NDESD_ADMIN_LISTEN", "127.0.0.1:8080"), "web GUI address")
@@ -133,8 +130,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "ndesd: --config and --inbox are required (see ndesd --help)")
 		return 1
 	}
-	if maxInboxBytes <= 0 || minFreeBytes < 0 || minUploadRate <= 0 || maxChunkedTime <= 0 {
-		fmt.Fprintln(stderr, "ndesd: --max-inbox-bytes, --min-upload-rate and --max-chunked-duration must be positive; --min-free-bytes must not be negative")
+	if maxInboxBytes <= 0 || minFreeBytes < 0 || minUploadRate <= 0 {
+		fmt.Fprintln(stderr, "ndesd: --max-inbox-bytes and --min-upload-rate must be positive; --min-free-bytes must not be negative")
 		return 1
 	}
 	if (tlsCert == "") != (tlsKey == "") {
@@ -182,7 +179,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		maxInboxBytes:     maxInboxBytes,
 		minFreeBytes:      minFreeBytes,
 		minUploadRate:     minUploadRate,
-		maxChunkedTime:    maxChunkedTime,
 	}
 	srvHandler := newInboxServer(ctx, dir, reg, cfg, opts)
 	defer srvHandler.Wipe()

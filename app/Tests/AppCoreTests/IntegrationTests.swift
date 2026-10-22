@@ -250,7 +250,9 @@ final class IntegrationTests: XCTestCase {
         // instead point the model at a second vault whose passphrase differs.
         let other = env.tmp + "/other"
         XCTAssertEqual(runTool(env.helper, ["init", other, "--passphrase-stdin", "--allow-weak-passphrase"], stdin: "another-passphrase\n").status, 0)
+        // Server address, token and keys belong to the vault that is open: switch to the second vault, then give it its own.
         try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: nil, vaultPath: other)
+        try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: goodToken, vaultPath: other)
         await env.model.unlock(passphrase: "another-passphrase")
         XCTAssertEqual(env.model.lockState, .unlocked)
         env.model.sendQueue.add(urls: [env.writeSource("p.txt", Data("p".utf8))])

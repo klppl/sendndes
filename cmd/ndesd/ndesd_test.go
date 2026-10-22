@@ -882,6 +882,12 @@ func TestChunkedUploadRefused(t *testing.T) {
 	if ids, _, _ := env.dirH.listInboxIDs(); len(ids) != 0 {
 		t.Fatalf("partial upload kept: %v", ids)
 	}
+	// A client-sealed upload needs a length too.
+	id := core.FileID{1}
+	resp, body = env.doReq(http.MethodPut, "/inbox/"+id.String(), nil, io.LimitReader(zeroReader{}, 1<<20), -1)
+	if resp.StatusCode != http.StatusLengthRequired {
+		t.Fatalf("chunked client-sealed: %d %q", resp.StatusCode, body)
+	}
 }
 
 type zeroReader struct{}
@@ -975,13 +981,10 @@ func TestSlowDripUploadLosesItsSlot(t *testing.T) {
 }
 
 func TestUploadDeadlineFormula(t *testing.T) {
-	s := &inboxServer{opts: serverOpts{uploadBase: 10 * time.Second, minUploadRate: 1000, maxChunkedTime: time.Minute}}
+	s := &inboxServer{opts: serverOpts{uploadBase: 10 * time.Second, minUploadRate: 1000}}
 	now := time.Unix(0, 0)
 	if got := s.uploadDeadline(5000, now); got != now.Add(15*time.Second) {
-		t.Fatalf("known length: %v", got)
-	}
-	if got := s.uploadDeadline(-1, now); got != now.Add(time.Minute) {
-		t.Fatalf("unknown length: %v", got)
+		t.Fatalf("deadline: %v", got)
 	}
 }
 

@@ -274,9 +274,6 @@ type byteQuota struct {
 	reserved int64
 }
 
-// minChunkedBudget: an upload of unknown length needs at least this much room to be admitted.
-const minChunkedBudget = 1 << 20
-
 // sealedEstimate is an upper bound for the stored size of an inbox file whose plaintext has n
 // bytes: 16 bytes of tag per chunk plus at most ~70 KiB of header and metadata.
 func sealedEstimate(n int64) int64 {
@@ -287,8 +284,8 @@ func sealedEstimate(n int64) int64 {
 // writeInboxAt atomically checks the inbox file quota and the byte quota (admission under
 // quotaMu, REV2-03 and L2) and creates a .ndes-<16 hex>.part temp file in d, writes the
 // sealed inbox stream, syncs and verifies it by reopening through d, then moves it to <id>.inb
-// without replacing an existing file. need is the estimated stored size, or -1 when the upload
-// length is unknown; fill is told how many bytes it may write.
+// without replacing an existing file. need is the estimated stored size (every upload declares
+// its length); fill is told how many bytes it may write.
 func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInboxFiles int, bq *byteQuota, need int64, fill func(w io.Writer, budget int64) (core.FileID, int64, error)) (id core.FileID, err error) {
 	if quotaMu != nil {
 		quotaMu.Lock()
@@ -324,27 +321,15 @@ func writeInboxAt(d *dirHandle, reg *tempRegistry, quotaMu *sync.Mutex, maxInbox
 			return core.FileID{}, fmt.Errorf("%w: %w", errStorage, ferr)
 		}
 		room := free - bq.minFree
-		if need >= 0 {
-			if need > remaining {
-				unlock()
-				return core.FileID{}, errBytesQuota
-			}
-			if need > room {
-				unlock()
-				return core.FileID{}, errNoSpace
-			}
-			budget = need
-		} else {
-			if remaining < minChunkedBudget {
-				unlock()
-				return core.FileID{}, errBytesQuota
-			}
-			if room < minChunkedBudget {
-				unlock()
-				return core.FileID{}, errNoSpace
-			}
-			budget = min(remaining, room)
+		if need > remaining {
+			unlock()
+			return core.FileID{}, errBytesQuota
 		}
+		if need > room {
+			unlock()
+			return core.FileID{}, errNoSpace
+		}
+		budget = need
 		bq.reserved += budget
 		admitted = true
 	}

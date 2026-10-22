@@ -13,9 +13,10 @@ final class SecretBindingTests: XCTestCase {
         defer { attacker.shutdown() }
         // The app is configured for its own server and the token was saved for that address.
         try env.model.saveSettings(serverURL: "http://127.0.0.1:\(env.port)", token: goodToken, vaultPath: env.vault)
-        // Same-user malware: `defaults write ... serverURL http://127.0.0.1:<attacker>`.
+        // Same-user malware edits the stored address for this vault in the app's defaults.
         let suite = UserDefaults(suiteName: env.defaultsName)!
-        suite.set("http://127.0.0.1:\(attacker.port)", forKey: AppModel.urlKey)
+        let attackerURL = "http://127.0.0.1:\(attacker.port)"
+        suite.set([env.vault: attackerURL], forKey: AppModel.urlsKey)
         // Next launch.
         let relaunched = AppModel(defaults: suite, secrets: env.secrets, runner: env.runner, tempBase: env.tokenBase)
         XCTAssertTrue(relaunched.tokenNeedsReentry)
@@ -30,10 +31,10 @@ final class SecretBindingTests: XCTestCase {
         XCTAssertEqual(attacker.requests, [], "no request, so no token, reached the edited address")
 
         // Saving the edited address without retyping the token is refused; with the token it is accepted.
-        XCTAssertThrowsError(try relaunched.saveSettings(serverURL: suite.string(forKey: AppModel.urlKey)!, token: nil, vaultPath: env.vault)) {
+        XCTAssertThrowsError(try relaunched.saveSettings(serverURL: attackerURL, token: nil, vaultPath: env.vault)) {
             XCTAssertEqual($0 as? AppModel.SettingsError, .tokenRequiredForNewHost)
         }
-        try relaunched.saveSettings(serverURL: suite.string(forKey: AppModel.urlKey)!, token: goodToken, vaultPath: env.vault)
+        try relaunched.saveSettings(serverURL: attackerURL, token: goodToken, vaultPath: env.vault)
         XCTAssertFalse(relaunched.tokenNeedsReentry)
         XCTAssertNotNil(relaunched.credentials())
     }
