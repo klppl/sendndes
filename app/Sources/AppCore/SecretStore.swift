@@ -19,9 +19,13 @@ public protocol SecretStoring: AnyObject {
     func credential() -> StoredCredential?
     func setCredential(token: String, server: String, serverKeys: ServerKeys?) throws
     func deleteToken()
+    /// Scopes the credential to a vault: each vault has its own server address, token and keys.
+    /// `adoptLegacy` moves the old single (unscoped) credential to this vault if it has none yet.
+    func select(vault: String, adoptLegacy: Bool)
 }
 
 extension SecretStoring {
+    public func select(vault: String, adoptLegacy: Bool) {}
     public func setCredential(token: String, server: String) throws {
         try setCredential(token: token, server: server, serverKeys: nil)
     }
@@ -33,11 +37,34 @@ public struct KeychainError: Error { public let status: OSStatus }
 /// keychain), a generic password, not synchronizable (owner decision A5-fix).
 public final class KeychainSecretStore: SecretStoring {
     private let service: String
-    private let account: String
+    private let legacyAccount: String
+    private var account: String
 
     public init(service: String = "se.klippel.sendndes", account: String = "bearer-token") {
         self.service = service
+        self.legacyAccount = account
         self.account = account
+    }
+
+    public func select(vault: String, adoptLegacy: Bool) {
+        let scoped = vault.isEmpty ? legacyAccount : legacyAccount + ":" + vault
+        guard scoped != legacyAccount else { account = scoped; return }
+        account = scoped
+        guard adoptLegacy, credential() == nil else { return }
+        var q = base
+        q[kSecAttrAccount as String] = legacyAccount
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return }
+        var add = base
+        add[kSecValueData as String] = d
+        if SecItemAdd(add as CFDictionary, nil) == errSecSuccess {
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                           kSecAttrService as String: service,
+                           kSecAttrAccount as String: legacyAccount,
+                           kSecAttrSynchronizable as String: false] as CFDictionary)
+        }
     }
 
     private var base: [String: Any] {

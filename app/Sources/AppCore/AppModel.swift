@@ -81,7 +81,10 @@ public final class AppModel {
     private var generation = 0
 
     let routeGuard: RouteGuard
+    /// Legacy single server address; adopted by the vault that is open at the first launch after the upgrade.
     public static let urlKey = "serverURL"
+    /// Server address per vault path. The token and server keys are scoped per vault in the secret store.
+    public static let urlsKey = "serverURLByVault"
     public static let vaultKey = "vaultPath"
 
     public init(defaults: UserDefaults = .standard, secrets: SecretStoring, runner: HelperRunner, biometric: BiometricUnlocking? = nil, tempBase: String? = nil) {
@@ -90,8 +93,17 @@ public final class AppModel {
         self.secrets = secrets
         self.runner = runner
         self.tempBase = tempBase
-        let url = defaults.string(forKey: Self.urlKey) ?? ""
         let vault = defaults.string(forKey: Self.vaultKey) ?? ""
+        var urls = defaults.dictionary(forKey: Self.urlsKey) as? [String: String] ?? [:]
+        var url = urls[vault] ?? ""
+        var adopt = false
+        if url.isEmpty, !vault.isEmpty, let legacy = defaults.string(forKey: Self.urlKey), !legacy.isEmpty {
+            url = legacy; adopt = true
+            urls[vault] = legacy
+            defaults.set(urls, forKey: Self.urlsKey)
+            defaults.removeObject(forKey: Self.urlKey)
+        }
+        secrets.select(vault: vault, adoptLegacy: adopt)
         let stored = defaults.integer(forKey: Self.autoLockKey)
         autoLockMinutes = stored == 0 ? 10 : min(max(stored, Self.autoLockRange.lowerBound), Self.autoLockRange.upperBound)
         serverURLText = url
@@ -163,6 +175,9 @@ public final class AppModel {
         if let t = token, !t.isEmpty {
             guard (32...512).contains(t.utf8.count), t.utf8.allSatisfy({ $0 > 0x20 && $0 < 0x7f }) else { throw SettingsError.badToken }
         }
+        // With no vault open yet, the settings belong to the vault being chosen.
+        let scopeVault = vaultPath.isEmpty ? newVault : vaultPath
+        if vaultPath.isEmpty, !newVault.isEmpty { secrets.select(vault: newVault, adoptLegacy: false) }
         // M3: the token belongs to scheme+host+port as saved. Any other address needs the token typed again.
         let stored = secrets.credential()
         if let stored, stored.server != parsed.canonical, (token ?? "").isEmpty { throw SettingsError.tokenRequiredForNewHost }
@@ -172,15 +187,31 @@ public final class AppModel {
             do { try secrets.setCredential(token: t, server: parsed.canonical, serverKeys: effectiveKeys) } catch { throw SettingsError.keychain }
         }
         serverURLText = parsed.canonical
-        defaults.set(parsed.canonical, forKey: Self.urlKey)
+        storeURL(parsed.canonical, for: scopeVault)
         refreshTokenState()
         if newVault != vaultPath {
-            lock()
-            vaultPath = newVault
-            defaults.set(newVault, forKey: Self.vaultKey)
-            lockState = newVault.isEmpty ? .noFolder : .locked
-            refreshTouchID()
+            switchVault(to: newVault)
         }
+    }
+
+    private func storeURL(_ url: String, for vault: String) {
+        guard !vault.isEmpty else { return }
+        var urls = defaults.dictionary(forKey: Self.urlsKey) as? [String: String] ?? [:]
+        urls[vault] = url
+        defaults.set(urls, forKey: Self.urlsKey)
+    }
+
+    /// Each vault has its own server address, token and keys, so a send never uses another vault's.
+    private func switchVault(to path: String) {
+        lock()
+        vaultPath = path
+        defaults.set(path, forKey: Self.vaultKey)
+        let urls = defaults.dictionary(forKey: Self.urlsKey) as? [String: String] ?? [:]
+        serverURLText = urls[path] ?? ""
+        secrets.select(vault: path, adoptLegacy: false)
+        lockState = path.isEmpty ? .noFolder : .locked
+        refreshTokenState()
+        refreshTouchID()
     }
 
     public func saveSettings(serverURL: String, token: String?, vaultPath newVault: String) throws {
@@ -229,11 +260,7 @@ public final class AppModel {
     public func acknowledgeRecoveryKey() { recoveryKey = nil }
 
     public func setVaultPath(_ path: String) {
-        lock()
-        vaultPath = path
-        defaults.set(path, forKey: Self.vaultKey)
-        lockState = path.isEmpty ? .noFolder : .locked
-        refreshTouchID()
+        switchVault(to: path)
     }
 
     // MARK: Touch ID
