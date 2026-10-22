@@ -226,7 +226,7 @@ func (t *tokenStore) devices() []deviceInfo {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	data, _ := t.readRaw()
-	var out []deviceInfo
+	out := []deviceInfo{} // never null in the JSON the pages read
 	file, err := parseTokensFile(data, true)
 	if err != nil {
 		return out

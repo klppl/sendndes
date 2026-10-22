@@ -328,3 +328,13 @@ func TestPairingRateLimitsAndNoSecretsInResponses(t *testing.T) {
 	}
 	_ = rr
 }
+
+func TestDeviceListIsNeverNull(t *testing.T) {
+	r := newPairRig(t)
+	if c, out := r.owner("GET", "/v1/devices", nil); c != 200 || !strings.Contains(out, `"devices":[]`) {
+		t.Fatalf("an empty list must be [], not null: %d %s", c, out)
+	}
+	if c, out := r.owner("GET", "/v1/pair/pending", nil); c != 200 || !strings.Contains(out, `"requests":[]`) {
+		t.Fatalf("%d %s", c, out)
+	}
+}

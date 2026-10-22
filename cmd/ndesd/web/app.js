@@ -372,7 +372,8 @@ function pairingPanel(opts) {
   const root = h("div", { class: "pairing" });
   const act2 = (b, fn) => act(b, async () => { S.pairing = await fn(); redraw(); });
   function redraw() {
-    const p = S.pairing || { open: false, seconds_left: 0, requests: [], devices: [] };
+    const p0 = S.pairing || {};
+    const p = { open: !!p0.open, seconds_left: p0.seconds_left || 0, requests: p0.requests || [], devices: p0.devices || [] };
     const reqs = p.requests.map((r) => h("li", { class: "pairreq" },
       h("span", { class: "paircode", "aria-label": "Code " + r.code.split("").join(" ") }, fmtCode(r.code)),
       h("span", { class: "pairwho" }, h("b", {}, r.label), h("span", { class: "soft small" }, roleText(r.role))),
