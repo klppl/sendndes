@@ -34,7 +34,7 @@ public enum UploadFailure: Error, Equatable {
         case .notTailscaleRoute: return RouteGuard.routeMessage
         case .serverOutOfSpace: return "The server is out of space."
         case .uploadRejected: return "The server could not store this file."
-        case .sealingNeeded: return "This server only accepts files sealed on your Mac. Add the server keys in Settings > Server."
+        case .sealingNeeded: return "This server only accepts files encrypted on your Mac. Add the server keys in Settings > Server."
         case .dateOutOfRange: return "This file's modification date is out of range (before 1677 or after 2262)."
         }
     }

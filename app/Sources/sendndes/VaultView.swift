@@ -42,7 +42,7 @@ struct VaultBrowser: View {
         let n = model.entries.count
         if n == 0 { return "Empty. Suspiciously tidy." }
         let size = ByteCountFormatter.string(fromByteCount: model.entries.reduce(0) { $0 + $1.size }, countStyle: .file)
-        return "\(n) \(plural(n, "file", "files")) · \(size), all sealed."
+        return "\(n) \(plural(n, "file", "files")) · \(size), all encrypted."
     }
 
     var body: some View {
@@ -76,7 +76,7 @@ struct VaultBrowser: View {
             selectionBar
         }
         .padding(20)
-        .overlay { if targeted { DropHint(title: "Drop to seal it in").padding(10) } }
+        .overlay { if targeted { DropHint(title: "Drop to add it").padding(10) } }
         .animation(.snappy(duration: 0.18), value: targeted)
         .animation(.snappy(duration: 0.18), value: selection.isEmpty)
         .dropDestination(for: URL.self) { urls, _ in
@@ -218,14 +218,14 @@ struct VaultBrowser: View {
     private var addingList: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Sealing files in").label(.callout, weight: .bold).foregroundStyle(Theme.ink)
+                Text("Adding files").label(.callout, weight: .bold).foregroundStyle(Theme.ink)
                 Spacer()
                 if model.addItems.contains(where: { $0.state == .sent }) {
                     Button("Clear finished") { model.clearAddFinished() }.buttonStyle(.chunkyQuietSmall)
                 }
             }
             // As tall as its rows (about 44 pt each), up to four rows, then it scrolls.
-            TransferList(items: model.addItems, activeText: "sealing…", doneText: "sealed")
+            TransferList(items: model.addItems, activeText: "encrypting…", doneText: "encrypted")
                 .frame(height: min(CGFloat(model.addItems.count) * 44, 176))
         }
         .transition(.opacity)
@@ -368,7 +368,7 @@ private struct PullDetails: View {
             .popover(isPresented: $shown, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Last inbox check").label(.headline, weight: .bold).foregroundStyle(Theme.ink)
-                    Text("Files are listed by id: their names stay sealed until they are in the vault.")
+                    Text("Files are listed by id: their names stay encrypted until they are in the vault.")
                         .font(.caption).foregroundStyle(Theme.inkSoft).fixedSize(horizontal: false, vertical: true)
                     ScrollView {
                         VStack(spacing: 0) {

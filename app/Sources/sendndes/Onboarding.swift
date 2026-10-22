@@ -80,7 +80,7 @@ struct WelcomeView: View {
                 VStack(spacing: 6) {
                     Text("Hi. Let's keep your files to yourself.").display(28).foregroundStyle(Theme.ink)
                         .multilineTextAlignment(.center)
-                    Text("A vault is a folder of sealed files. Put it anywhere: on this Mac, a NAS, Drive or Dropbox. Only your passphrase opens it.")
+                    Text("A vault is a folder of encrypted files. Put it anywhere: on this Mac, a NAS, Drive or Dropbox. Only your passphrase opens it.")
                         .label(.body, weight: .medium).foregroundStyle(Theme.inkSoft)
                         .multilineTextAlignment(.center).frame(maxWidth: 460)
                 }
@@ -350,7 +350,7 @@ struct CreateVaultView: View {
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
         p.canCreateDirectories = true
         p.prompt = "Use this folder"
-        p.message = "Pick an empty folder, or make a new one. In Google Drive or Dropbox the sealed files sync there."
+        p.message = "Pick an empty folder, or make a new one. In Google Drive or Dropbox the encrypted files sync there."
         if p.runModal() == .OK, let u = p.url {
             folder = u.path
             let items = (try? FileManager.default.contentsOfDirectory(atPath: u.path)) ?? []

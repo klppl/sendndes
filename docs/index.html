@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>send n*des · your own encrypted vault and inbox</title>
-<meta name="description" content="An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac seals every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.">
+<meta name="description" content="An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac encrypts every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.">
 <meta name="color-scheme" content="light dark">
 <meta property="og:title" content="send n*des">
 <meta property="og:description" content="Your own encrypted vault and self-hosted inbox. Nobody in between can look.">
@@ -43,7 +43,7 @@
   <section class="hero">
     <div class="hero-copy">
       <h1>Send <span class="pk">n*des</span>.<br>Nobody in between can look.</h1>
-      <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac seals every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.</p>
+      <p class="lede">An encrypted vault that's just a folder, and a self-hosted inbox your devices send to. Your Mac encrypts every file before it leaves, your cloud stores ciphertext, and only your Mac can read the names again.</p>
       <div class="actions">
         <a class="btn primary" href="https://github.com/klppl/sendndes">View on GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
         <a class="quiet-link" href="#trip">Follow the file <svg class="ic"><use href="#i-down"/></svg></a>
@@ -59,7 +59,7 @@
       </svg>
       <ol>
         <li class="stop s1"><svg class="stop-ic"><use href="#i-laptop"/></svg><span class="k">Your laptop</span><span class="f">Passport scan.pdf</span><span class="d">Sent over Tailscale</span></li>
-        <li class="stop s2"><svg class="stop-ic"><use href="#i-server"/></svg><span class="k">Your inbox server</span><span class="f c">sealed</span><span class="d">Holds it. Can't read it.</span></li>
+        <li class="stop s2"><svg class="stop-ic"><use href="#i-server"/></svg><span class="k">Your inbox server</span><span class="f c">encrypted</span><span class="d">Holds it. Can't read it.</span></li>
         <li class="stop s3"><svg class="stop-ic"><use href="#i-cloud"/></svg><span class="k">Google Drive</span><span class="f c">7755bb95…7e0f.obj</span><span class="d">All Drive ever sees.</span></li>
         <li class="stop s4"><svg class="stop-ic"><use href="#i-vault"/></svg><span class="k">Your Mac vault</span><span class="f">Passport scan.pdf</span><span class="d">Back by name. <em class="new">new</em></span></li>
       </ol>
@@ -91,16 +91,16 @@
           <figure class="shot"><img src="screenshots/mac-send-setup.webp" width="1600" height="1017" loading="lazy" alt="The Send screen in the Mac app, asking for the server address and access token"><figcaption>The one-time step: address and Connect. After that, Send is a drop zone.</figcaption></figure>
         </article>
 
-        <article class="leg" data-name="sealed for your vault" data-where="Waiting in your inbox" data-server="brief">
-          <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox only holds sealed files.</h3></div>
+        <article class="leg" data-name="encrypted for your vault" data-where="Waiting in your inbox" data-server="brief">
+          <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox only holds encrypted files.</h3></div>
           <p>Your Mac or iPhone locks each file before it leaves the device, using a key that can only lock, not unlock. The server stores the locked file and has nothing that could open it. Only your vault, on your Mac, can.</p>
-          <p class="aside">Honest bit: only the older plain upload (scripts, curl) lets the server see a file in the clear while it seals it, and that route works only if you paste the vault's keys into the server yourself. Keep the sync port on Tailscale or behind HTTPS either way.</p>
-          <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
+          <p class="aside">Honest bit: only the older plain upload (scripts, curl) lets the server see a file in the clear while it encrypts it, and that route works only if you paste the vault's keys into the server yourself. Keep the sync port on Tailscale or behind HTTPS either way.</p>
+          <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three encrypted files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
         </article>
 
         <article class="leg" data-name="7755bb95…7e0f.obj" data-where="In your synced vault folder" data-server="no">
           <div class="leg-head"><span class="leg-ic sun"><svg><use href="#i-cloud"/></svg></span><h3>Your cloud stores noise.</h3></div>
-          <p>The vault is an ordinary folder: put it on a NAS, Google Drive, Dropbox or just your disk. File names, folder names and contents are all sealed, so your sync service sees random ids and sizes, nothing else.</p>
+          <p>The vault is an ordinary folder: put it on a NAS, Google Drive, Dropbox or just your disk. File names, folder names and contents are all encrypted, so your sync service sees random ids and sizes, nothing else.</p>
           <figure class="listing" aria-label="What a synced vault folder holds">
             <figcaption>~/Google Drive/MyVault</figcaption>
             <ul>
@@ -151,7 +151,7 @@
         <ul class="ticks">
           <li><b>Share sheet</b>: send photos, files and links from any app straight to your inbox.</li>
           <li><b>Connect by approval</b>: enter the address, compare the code on the server page, approve. A QR code works too.</li>
-          <li><b>Sealed on the phone</b>, retried in the background, and it never holds your vault.</li>
+          <li><b>Encrypted on the phone</b>, retried in the background, and it never holds your vault.</li>
           <li><b>Build it yourself</b> with Xcode and your own Apple developer team: <code>scripts/build-ios.sh</code>.</li>
         </ul>
       </div>
@@ -182,7 +182,7 @@
     <p class="section-lede">Security tools oversell. This is the whole receipt.</p>
     <div class="receipt">
       <div class="col sealed">
-        <h3>Sealed</h3>
+        <h3>Encrypted</h3>
         <ul>
           <li><svg><use href="#i-check"/></svg>File contents</li>
           <li><svg><use href="#i-check"/></svg>File names</li>

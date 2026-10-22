@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>A private vault for your files, and an inbox your devices can drop them into.</b><br>
-  Contents, names and folders stay sealed, wherever the vault is stored or synced.
+  Contents, names and folders stay encrypted, wherever the vault is stored or synced.
 </p>
 
 <p align="center">
@@ -15,14 +15,14 @@
 
 | Piece | What it does |
 |---|---|
-| **Vault** | A folder of sealed files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
+| **Vault** | A folder of encrypted files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
 | **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
-| **iPhone app** (`ios/`) | Send-only: share photos and files from any app to your inbox. Seals on the phone, retries in the background. Build it yourself with Xcode ([ios/README](coordination/README-ios.md)). |
+| **iPhone app** (`ios/`) | Send-only: share photos and files from any app to your inbox. Encrypts on the phone, retries in the background. Build it yourself with Xcode ([ios/README](coordination/README-ios.md)). |
 | **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It can never read the vault. Devices connect by approving a code on its page. |
 | **CLI** (`ndes`) | Everything the app does, plus verify, recover and change the passphrase. |
 
 ```
- Mac / iPhone ──send (sealed on the device)──> ndesd inbox
+ Mac / iPhone ──send (encrypted on the device)──> ndesd inbox
                               │
  Mac app or ndes ──pull───────┘──> vault folder (local, NAS, Drive, Dropbox…)
 ```
@@ -73,7 +73,7 @@ The admin page walks you through setup once: **claim** the server with the one-t
 
 **Start over** (after signing in) removes the devices, reachability settings, pasted keys or waiting files you tick, and runs the setup again.
 
-The server never holds a secret that can open anything. Devices seal files with the vault's *public* inbox key, which they learn while pairing; the server itself needs no keys unless you opt in to server-side sealing for scripts and curl.
+The server never holds a secret that can open anything. Devices encrypt files with the vault's *public* inbox key, which they learn while pairing; the server itself needs no keys unless you opt in to server-side encryption for scripts and curl.
 
 ## Quick start
 
@@ -146,17 +146,17 @@ The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HT
 
 ## Security in short
 
-**Protected:** file contents, names and folder structure, against the storage host, the sync service and the inbox server. Any change to a file is detected. Argon2id for the passphrase, ChaCha20-Poly1305 for content, X25519 to seal inbox uploads ([SPEC.md §2](SPEC.md)).
+**Protected:** file contents, names and folder structure, against the storage host, the sync service and the inbox server. Any change to a file is detected. Argon2id for the passphrase, ChaCha20-Poly1305 for content, X25519 for inbox uploads ([SPEC.md §2](SPEC.md)).
 
 **Visible to the host:** how many files there are, their approximate sizes (padded up to at most 12.5% above the real size, minimum 4 KiB, so small files look alike), and modification times.
 
 **Not protected:** malware on an unlocked device, a weak passphrase, a lost passphrase *and* recovery key (the data is gone), and a host deleting files or rolling them back to an older version.
 
 **Good to know**
-- Client-sealed upload: the Mac and iPhone apps seal files on the device with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. Server-side sealing (`PUT /inbox`) exists only for scripts and curl and only if you gave the server the vault's keys; then it sees the file for a moment while it seals. Either way, keep the sync port on Tailscale or behind HTTPS; the apps refuse plain HTTP to anything else.
+- Encrypted-on-device upload: the Mac and iPhone apps encrypt files on the device with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. Server-side encryption (`PUT /inbox`) exists only for scripts and curl and only if you gave the server the vault's keys; then it sees the file for a moment while it encrypts. Either way, keep the sync port on Tailscale or behind HTTPS; the apps refuse plain HTTP to anything else.
 - Device tokens are stored hashed on the server, with separate upload and pull roles, per-client rate limits and a short, closed pairing window. Behind Cloudflare see [coordination/ndesd-cloudflare.md](coordination/ndesd-cloudflare.md).
 - Padding hides exact sizes but not roughly how big a file is.
-- The apps keep the device token and client-sealing keys in the Keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
+- The apps keep the device token and encryption keys in the Keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
 
 Full threat model: [SPEC.md §7](SPEC.md). App details: [app/README.md](app/README.md).
 
@@ -167,8 +167,8 @@ ndes init <vault-dir>                       create a new vault
 ndes add <file> [--dir <path>] [--name <n>] encrypt a file into the vault
 ndes ls [--dir <path>]                      list files
 ndes get <id-or-path> [-o <out>]            decrypt a file
-ndes pull --server <url> --token-file <f>   pull sealed files from a ndesd server
-ndes ingest [--inbox <dir>]                 move sealed inbox files into the vault
+ndes pull --server <url> --token-file <f>   pull encrypted files from a ndesd server
+ndes ingest [--inbox <dir>]                 move encrypted inbox files into the vault
 ndes verify                                 authenticate every file in the vault
 ndes passwd                                 change the passphrase
 ndes recover <vault-dir>                    rebuild vault.json from the recovery key

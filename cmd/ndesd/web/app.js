@@ -517,7 +517,7 @@ function dashboard() {
         : h("div", { class: "empty" }, aster("asleep", 64), h("b", {}, "Nothing waiting."),
             h("p", { class: "soft small" }, "Your vault pulls files in when it unlocks.")),
       S.file_count > files.length ? h("p", { class: "note" }, "Showing the newest " + files.length + " of " + S.file_count + ".") : null,
-      files.length ? h("p", { class: "note" }, "Names stay sealed until the files are in your vault, so they're listed by id.") : null);
+      files.length ? h("p", { class: "note" }, "Names stay encrypted until the files are in your vault, so they're listed by id.") : null);
   }
 
   function drawConnect() {
@@ -554,7 +554,7 @@ function dashboard() {
       panel("Reachability", "Where your devices connect", reachForm({ saveLabel: "Save and apply" })),
       panel("Limits and HTTPS", "File size, queue length, certificate", limitsForm()),
       panel("Advanced: vault keys", S.sync.fingerprint ? "Linked · key check " + S.sync.fingerprint : "Not needed",
-        h("div", {}, h("p", { class: "soft small" }, "Not needed for the Mac app or the phone: they seal files themselves and this server then holds no keys. Paste the vault's server keys only if a script should upload plain files for this server to seal (it then sees them)."), keys.el)),
+        h("div", {}, h("p", { class: "soft small" }, "Not needed for the Mac app or the phone: they encrypt files themselves and this server then holds no keys. Paste the vault's server keys only if a script should upload plain files for this server to encrypt (it then sees them)."), keys.el)),
       panel("Advanced: shared access token", "An older way to connect a device", h("div", {},
         h("p", { class: "soft small" }, "One token that every device using it shares. Prefer Add a device. A new token locks out everything that uses the old one."),
         h("div", { class: "actions" }, btn("Show token", "small", (e) => act(e.currentTarget, async () => { copy((await api("GET", "/api/token")).token, "Token"); }))),

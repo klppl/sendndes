@@ -15,7 +15,7 @@ public struct SealedItem: Codable, Equatable, Sendable, Identifiable {
             case .serverFull: return "The server is out of space."
             case .tooLargeForServer: return "The server (or the network in front of it) refused a file this large."
             case .rejectedByServer: return "The server did not accept the file."
-            case .fileMissing: return "The sealed file is gone from this phone."
+            case .fileMissing: return "The encrypted file is gone from this phone."
             case .unexpected: return "The server's answer was not what send n*des expects (a login page or a redirect in front of it?). The file is kept; try again."
             case .pairedElsewhere: return "This file was locked for a different server or vault than the one this phone is paired with now. Discard it and share it again."
             }

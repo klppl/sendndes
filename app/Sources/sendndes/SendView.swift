@@ -62,16 +62,16 @@ struct SendView: View {
             HStack(spacing: 6) {
                 if model.hasServerKeys {
                     Image(systemName: "lock.shield").foregroundStyle(Theme.mintText)
-                    Text("Sealed on this Mac: the server only receives encrypted files and never sees contents or names.")
+                    Text("Encrypted on this Mac: the server only receives encrypted files and never sees contents or names.")
                         .font(.caption).foregroundStyle(Theme.inkSoft)
-                    HelpTip(title: "How client-sealed sending works",
-                            text: "Files are sealed on your Mac using the vault's inbox public key and upload authentication key. The server stores only the sealed .inb file and never sees contents, names or directories.")
+                    HelpTip(title: "How encrypting on your Mac works",
+                            text: "Files are encrypted on your Mac using the vault's inbox public key and upload authentication key. The server stores only the encrypted .inb file and never sees contents, names or directories.")
                 } else {
                     Image(systemName: "eye").foregroundStyle(Theme.amberText)
-                    Text("Sealed by the server: files are sent unencrypted, and the server sees each file and its name while it seals it.")
+                    Text("Encrypted by the server: files are sent unencrypted, and the server sees each file and its name while it encrypts it.")
                         .font(.caption).foregroundStyle(Theme.inkSoft)
                     HelpTip(title: "How sending works",
-                            text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server seals each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox. To seal on this Mac instead, choose that option in Settings → Server and paste the server keys.")
+                            text: "Files go one at a time, straight from where they are (no copies). Don't send files that are still being written. The server encrypts each one for your vault and keeps it until your vault pulls it in, which happens when you unlock or press Check inbox. To encrypt on this Mac instead, choose that option in Settings → Server and paste the server keys.")
                 }
             }
         }
@@ -131,12 +131,12 @@ struct ServerForm: View {
             FieldLabel(title: "How files are protected") {
                 VStack(spacing: 8) {
                     SealChoice(selected: sealMode == .onMac, icon: "lock.shield", tint: Theme.mintText,
-                               title: "Seal on this Mac (recommended)",
-                               detail: "Files are encrypted here before they leave. The server only ever receives sealed files and can't see contents or names.") {
+                               title: "Encrypt on this Mac (recommended)",
+                               detail: "Files are encrypted here before they leave. The server only ever receives encrypted files and can't see contents or names.") {
                         sealMode = .onMac; error = nil
                     }
                     SealChoice(selected: sealMode == .byServer, icon: "eye", tint: Theme.amberText,
-                               title: "Let the server seal them",
+                               title: "Let the server encrypt them",
                                detail: "Files are sent unencrypted and the server encrypts them on arrival. It sees each file and its name for a moment, so use Tailscale or https.") {
                         sealMode = .byServer; error = nil
                     }
@@ -184,7 +184,7 @@ struct ServerForm: View {
             parsedKeys = k
         }
         if sealMode == .onMac, parsedKeys == nil, !model.hasServerKeys {
-            error = "Paste the server keys to seal files on this Mac, or choose “Let the server seal them”."
+            error = "Paste the server keys to encrypt files on this Mac, or choose “Let the server encrypt them”."
             return
         }
         do {
