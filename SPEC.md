@@ -1,7 +1,7 @@
 # Ndes: Format and Architecture Spec, v1 (DRAFT; object and inbox files at format version 2)
 
 Personal, single-user, open-source encrypted vault. Own format, not compatible with anything else.
-Status: object and inbox files are at format version 0x02 (content padding, section 5.3; owner decision D-P1). vault.json is unchanged and keeps `"v": 1`. v1 object and inbox files are not readable by design. The v1 format was re-baselined earlier (Valv renamed to ndes; owner decision R1). Freeze rules apply again from the new tag. Still experimental: the design has had model-assisted review only and no external human review. Keep plaintext backups of anything important.
+Status: object and inbox files are at format version 0x02 (content padding, section 5.3; owner decision D-P1). vault.json is unchanged and keeps `"v": 1`. v1 object and inbox files are not readable by design. The v1 format was re-baselined earlier (Valv renamed to ndes; owner decision R1). Freeze rules apply again from the new tag. Made by AI for one person: the design has had model-assisted review and three independent implementations that agree, and no human review, none planned (owner decision D-NR1). It exists to satisfy its creator. Keep plaintext backups of anything important; entropy wins in the end.
 
 You (the AI implementing this) are building a tool for exactly one user. Prefer simple and correct over flexible. Anything not specified here is a question for the human, not a decision for you.
 
@@ -361,7 +361,7 @@ Deployment (v1, "mode B", chosen first):
 5. **Mac app.**
 6. **iPhone app + File Provider extension.**
 
-Do not start step N+1 until step N passes its tests. Not trustworthy with only-copy data until someone credible has reviewed the crypto.
+Do not start step N+1 until step N passes its tests. The owner has decided not to commission a human crypto review (D-NR1): the design is not claimed to be audited, and the owner accepts that.
 
 ## 12. Open questions
 

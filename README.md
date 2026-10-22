@@ -9,7 +9,7 @@
   <img src="docs/screenshots/mac-vault.png" alt="The send n*des Mac app showing an unlocked vault with five files" width="760">
 </p>
 
-> **Experimental.** The format is frozen (v1) but has only had model-assisted review, no external human review. Keep plaintext backups of anything important.
+> **Made by machines, for one person.** This was designed and written by AI, carefully, then attacked by other AI reviewers and cross-checked by three independent implementations (Go, Swift, Python) that agree byte for byte. No human cryptographer has audited it, and none is planned. It was built to satisfy its creator, nobody else, so there are no promises here about anyone else's data. Everything is entropy in the end, ciphertext included. Keep a plaintext backup of anything you can't lose anyway.
 
 ## What's in the box
 
