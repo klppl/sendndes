@@ -2,7 +2,7 @@
 #   docker build -t ndesd .
 #   docker run -d --name ndesd -v ndesd-data:/data -p 127.0.0.1:8080:8080 -p 8485:8485 ndesd
 # Then open http://127.0.0.1:8080 and follow the setup code from `docker logs ndesd`.
-FROM golang:1.26 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

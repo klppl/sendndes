@@ -1,6 +1,6 @@
 module github.com/klppl/sendndes
 
-go 1.26.3
+go 1.27.3
 
 require (
 	golang.org/x/crypto v0.58.0
