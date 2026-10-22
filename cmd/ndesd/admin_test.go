@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type adminEnv struct {
@@ -425,5 +426,51 @@ func TestAdminKeylessServerPairsADevice(t *testing.T) {
 	rq.Header.Set("Authorization", "Bearer "+ps.Token)
 	if rp, _ := http.DefaultClient.Do(rq); rp != nil {
 		rp.Body.Close()
+	}
+}
+
+func TestAdminStartOverRemovesWhatWasPicked(t *testing.T) {
+	e := newAdminEnv(t)
+	e.m.setPassword("correct horse battery")
+	e.ok("POST", "/api/login", map[string]string{"password": "correct horse battery"})
+	e.ok("POST", "/api/keys", map[string]string{"text": randKeyText(t)})
+	e.ok("POST", "/api/settings", map[string]any{"listen": freeAddr(t), "max_upload_bytes": 10 << 20, "max_inbox_files": 5, "max_concurrent_uploads": 2})
+	e.ok("POST", "/api/setup/finish", nil)
+	// A device and a waiting file.
+	e.m.pair.open(time.Hour)
+	_, rr, _ := func() (int, reqResp, string) {
+		id, code, err := e.m.pair.request("phone", "upload", secretHash("s"), "c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return 0, reqResp{ID: id, Code: code}, ""
+	}()
+	if err := e.m.pair.approve(rr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.m.tokens.devices()) != 1 {
+		t.Fatal("no device")
+	}
+	// Nothing ticked: only the guided setup comes back; the device and the keys stay.
+	e.ok("POST", "/api/reset", map[string]bool{})
+	var st syncStatus
+	json.Unmarshal(e.ok("GET", "/api/status", nil).Body.Bytes(), &struct {
+		Sync *syncStatus `json:"sync"`
+	}{&st})
+	if st.SetupDone || len(e.m.tokens.devices()) != 1 || !e.m.configured() {
+		t.Fatalf("reset with nothing ticked: %+v devices=%d", st, len(e.m.tokens.devices()))
+	}
+	// Devices and keys ticked.
+	e.ok("POST", "/api/reset", map[string]bool{"devices": true, "keys": true, "settings": true})
+	if len(e.m.tokens.devices()) != 0 || e.m.configured() || e.m.pair.secondsOpen() != 0 {
+		t.Fatal("devices, keys or the pairing window survived")
+	}
+	if _, err := os.Stat(e.m.path(tokensFileName)); err == nil {
+		t.Fatal("the tokens file survived")
+	}
+	// The admin password and the session are untouched.
+	e.ok("GET", "/api/status", nil)
+	if !e.m.checkPassword("correct horse battery") {
+		t.Fatal("the admin password was reset")
 	}
 }

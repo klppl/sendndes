@@ -231,6 +231,16 @@ func (a *adminServer) routeAuthed(w http.ResponseWriter, r *http.Request, p, met
 			return
 		}
 		writeJSON(w, http.StatusOK, a.m.pairingView())
+	case p == "/api/reset" && method == http.MethodPost:
+		var req resetOptions
+		if !readJSON(w, r, &req) {
+			return
+		}
+		if err := a.m.reset(req); err != nil {
+			apiErr(w, http.StatusInternalServerError, "could not reset: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, a.m.status())
 	case p == "/api/settings" && method == http.MethodPost:
 		a.handleSettings(w, r)
 	case p == "/api/server/start" && method == http.MethodPost:

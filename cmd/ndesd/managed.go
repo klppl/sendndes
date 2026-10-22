@@ -114,6 +114,9 @@ type manager struct {
 	run     *runningSync
 	lastErr string
 
+	defaultListen string
+	ackDefault    bool
+
 	tokens  *tokenStore // <data>/tokens: hashes of every device that was approved
 	pair    *pairing
 	handler atomic.Pointer[inboxServer]
@@ -139,7 +142,7 @@ func newManager(dataDir string, defaultListen string, ackDefault bool, stderr io
 	if err != nil {
 		return nil, err
 	}
-	m := &manager{dataDir: dataDir, dir: dir, reg: newTempRegistry(), stderr: stderr}
+	m := &manager{dataDir: dataDir, dir: dir, reg: newTempRegistry(), stderr: stderr, defaultListen: defaultListen, ackDefault: ackDefault}
 	m.tokens = newTokenStore(filepath.Join(dataDir, tokensFileName), nil, func(ts *tokenSet) {
 		if h := m.handler.Load(); h != nil {
 			h.setTokens(ts)
@@ -690,4 +693,55 @@ func (m *manager) pairingView() map[string]any {
 		"requests":     m.pair.pending(),
 		"devices":      m.tokens.devices(),
 	}
+}
+
+// resetOptions say what "start over" removes. The admin password and the inbox files stay unless asked.
+type resetOptions struct {
+	Devices  bool `json:"devices"`  // every approved device and pending request; closes the pairing window
+	Keys     bool `json:"keys"`     // pasted vault keys and the shared token (server.conf)
+	Settings bool `json:"settings"` // reachability, limits and TLS back to the defaults
+	Files    bool `json:"files"`    // the sealed files waiting in the inbox
+}
+
+// reset removes what the owner picked and shows the guided setup again. The sync server is restarted.
+func (m *manager) reset(o resetOptions) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopLocked()
+	if o.Devices {
+		m.pair.close()
+		m.pair.mu.Lock()
+		m.pair.reqs = map[string]*pairRequest{}
+		m.pair.mu.Unlock()
+		if err := os.Remove(m.path(tokensFileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if o.Keys {
+		if err := os.Remove(m.path(confFileName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if o.Settings {
+		m.state.Sync = defaultSyncSettings(m.defaultListen)
+		m.state.Sync.AckPlainHTTP = m.ackDefault
+	}
+	if o.Files {
+		files, err := m.listFiles()
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			if err := m.deleteFile(f.ID); err != nil {
+				return err
+			}
+		}
+	}
+	m.state.SetupDone = false
+	m.state.Stopped = false
+	if err := m.saveStateLocked(); err != nil {
+		return err
+	}
+	_ = m.startLocked() // a failure shows in the status panel
+	return nil
 }

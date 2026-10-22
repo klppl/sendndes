@@ -551,6 +551,7 @@ function dashboard() {
         h("p", { class: "soft small" }, "One token that every device using it shares. Prefer Add a device. A new token locks out everything that uses the old one."),
         h("div", { class: "actions" }, btn("Show token", "small", (e) => act(e.currentTarget, async () => { copy((await api("GET", "/api/token")).token, "Token"); }))),
         regenOut, h("div", { class: "actions" }, regen))),
+      panel("Start over", "Remove devices, keys or settings and set up again", startOver()),
       panel("Admin password", "For this page", h("div", {},
         h("div", { class: "row" },
           h("label", { class: "field", for: "curpw" }, h("span", { class: "field-label" }, "Current password"), cur),
@@ -563,6 +564,32 @@ function dashboard() {
   view = { redraw() { drawHero(); drawInbox(); drawConnect(); } };
   view.redraw();
   startPolling(5000);
+}
+
+// Start over: pick what to remove, then the guided setup comes back. The admin password stays.
+function startOver() {
+  const opts = [
+    ["devices", "Remove every connected device", "They stop working at once and have to connect again.", true],
+    ["settings", "Reset reachability and limits", "Address, port, file limits and HTTPS go back to the defaults.", true],
+    ["keys", "Remove the vault keys and the shared token", "Only if you pasted them under Advanced.", false],
+    ["files", "Delete the files waiting in the inbox", "They haven't reached your vault yet and can't be recovered.", false],
+  ];
+  const boxes = {};
+  const list = h("div", { class: "resetopts" }, opts.map(([k, title, desc, on]) => {
+    boxes[k] = h("input", { type: "checkbox", id: "reset-" + k, checked: on });
+    return h("label", { class: "resetopt", for: "reset-" + k }, boxes[k], h("span", {}, h("b", {}, title), h("span", { class: "soft small" }, desc)));
+  }));
+  const out = h("div", {});
+  const go = btn("Start over", "danger", () => act(go, async () => {
+    const body = {}; for (const [k] of opts) body[k] = boxes[k].checked;
+    if (!Object.values(body).some(Boolean) && !confirm("Show the guided setup again without removing anything?")) return;
+    if (Object.values(body).some(Boolean) && !confirm("Start over? What you ticked is removed and the setup begins again. Your admin password stays.")) return;
+    await api("POST", "/api/reset", body);
+    clearInterval(poll);
+    toast("Starting over");
+    await mainScreen();
+  }, out));
+  return h("div", {}, h("p", { class: "soft small" }, "Tick what to remove. Nothing is removed that you leave unticked. You stay signed in."), list, out, h("div", { class: "actions" }, go));
 }
 
 function limitsForm() {
