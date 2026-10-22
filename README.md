@@ -17,16 +17,17 @@
 |---|---|
 | **Vault** | A folder of sealed files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
 | **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
-| **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It seals each file for your vault and can never read the vault. |
+| **iPhone app** (`ios/`) | Send-only: share photos and files from any app to your inbox. Seals on the phone, retries in the background. Build it yourself with Xcode ([ios/README](coordination/README-ios.md)). |
+| **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It can never read the vault. Devices connect by approving a code on its page. |
 | **CLI** (`ndes`) | Everything the app does, plus verify, recover and change the passphrase. |
 
 ```
- Mac / phone ──send──> ndesd inbox (seals each file for the vault)
+ Mac / iPhone ──send (sealed on the device)──> ndesd inbox
                               │
  Mac app or ndes ──pull───────┘──> vault folder (local, NAS, Drive, Dropbox…)
 ```
 
-Runs on macOS and Linux (not Windows). The format has two independent implementations, Go and Swift, that agree byte for byte ([SPEC.md](SPEC.md)).
+Runs on macOS and Linux (not Windows), plus iOS for the phone app. The format has independent implementations in Go and Swift (and a Python cross-check) that agree byte for byte ([SPEC.md](SPEC.md)).
 
 ## The Mac app
 
@@ -66,9 +67,13 @@ Runs on macOS and Linux (not Windows). The format has two independent implementa
   </tr>
 </table>
 
-The admin page walks you through setup once: **claim** the server with the one-time code, **link your vault** (paste the server keys from the Mac app), choose **how your devices reach it** (Tailscale, a proxy on the machine, the local network or every interface), then **connect your Mac**. The page tells you when the first file arrives. After that it shows status, what's waiting, connection details and settings.
+The admin page walks you through setup once: **claim** the server with the one-time code, choose **how your devices reach it** (Tailscale, a proxy on the machine, the local network or every interface), then **connect your devices**. After that it shows status, what's waiting, the Devices card and settings.
 
-The server only ever holds the vault's *public* inbox key and an upload-authentication secret. It cannot decrypt anything, past or future.
+**Connecting a device** needs no copying of tokens: in the Mac app (Settings → Server) or the iPhone app, type the server address and press Connect. The app shows a six-digit code. Press *Add a device* on the server page (it opens a ten-minute window), compare the codes and approve. Each device gets its own token, stored hashed on the server, and you can remove a device at any time to cut it off. If the admin page and the sync address differ (a proxy or tunnel), set **Address your devices use** under reachability so the page shows `https://vault.example.com` rather than a host and port.
+
+**Start over** (after signing in) removes the devices, reachability settings, pasted keys or waiting files you tick, and runs the setup again.
+
+The server never holds a secret that can open anything. Devices seal files with the vault's *public* inbox key, which they learn while pairing; the server itself needs no keys unless you opt in to server-side sealing for scripts and curl.
 
 ## Quick start
 
@@ -105,7 +110,7 @@ docker compose up -d
 docker compose logs ndesd            # shows the one-time setup code
 ```
 
-Open <http://127.0.0.1:8080> and follow the setup. To pull from the command line instead of the Mac app:
+Open <http://127.0.0.1:8080> and follow the setup. The iPhone app is built separately (see [coordination/README-ios.md](coordination/README-ios.md)). To pull from the command line instead of the Mac app:
 
 ```bash
 ./ndes pull --server http://<tailscale-ip>:8485 --token-file token.txt
@@ -148,9 +153,10 @@ The sync port (8485) speaks plain HTTP: keep it on Tailscale or a VPN, or put HT
 **Not protected:** malware on an unlocked device, a weak passphrase, a lost passphrase *and* recovery key (the data is gone), and a host deleting files or rolling them back to an older version.
 
 **Good to know**
-- Client-sealed upload: once you paste the server keys into the Mac app (Settings → Server, optional), it seals files locally with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. `K_auth` lives in your macOS login keychain (never iCloud-synced). Without those keys the app falls back to server-side sealing (`PUT /inbox`), where the server sees the file, its name and folder in the clear for a moment while it seals them. That route also stays available for scripts and curl. Either way, keep the sync port on Tailscale or behind HTTPS; the Mac app refuses plain HTTP to anything else.
-- The server's upload secret can't be rotated in v1. Give it only to your own server.
-- The Mac app keeps the server token and client-sealing keys in your login keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
+- Client-sealed upload: the Mac and iPhone apps seal files on the device with `inbox_pub` and `K_auth` before sending (`PUT /inbox/{id}`); the inbox server never sees plaintext, filenames, or folder structure. Server-side sealing (`PUT /inbox`) exists only for scripts and curl and only if you gave the server the vault's keys; then it sees the file for a moment while it seals. Either way, keep the sync port on Tailscale or behind HTTPS; the apps refuse plain HTTP to anything else.
+- Device tokens are stored hashed on the server, with separate upload and pull roles, per-client rate limits and a short, closed pairing window. Behind Cloudflare see [coordination/ndesd-cloudflare.md](coordination/ndesd-cloudflare.md).
+- Padding hides exact sizes but not roughly how big a file is.
+- The apps keep the device token and client-sealing keys in the Keychain (never iCloud-synced). Opened and Quick Look copies live in a private temporary folder that's emptied on lock and quit; exports stay where you put them.
 
 Full threat model: [SPEC.md §7](SPEC.md). App details: [app/README.md](app/README.md).
 
@@ -184,6 +190,7 @@ scripts/test-app.sh          # Mac app core tests (builds a real helper and serv
 | `core/` | Go reference implementation of the format |
 | `cmd/ndes`, `cmd/ndesd` | CLI and inbox server (admin page in `cmd/ndesd/web`) |
 | `app/` | Mac app (SwiftUI); it runs the bundled `ndes` as a checked helper |
+| `ios/` | iPhone send-only app and share extension (XcodeGen) |
 | `swift/NdesCore` | Swift implementation of the format |
 | `testvectors/` | Shared vectors both implementations must match |
 | `coordination/` | Design notes, reviews and decisions, including the UX write-ups for the [app](coordination/app-ux-v1.md) and the [server](coordination/ndesd-ux-v1.md) |

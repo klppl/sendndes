@@ -49,7 +49,7 @@
         <a class="quiet-link" href="#trip">Follow the file <svg class="ic"><use href="#i-down"/></svg></a>
       </div>
       <ul class="chips" aria-label="What's included">
-        <li>Mac app</li><li>Docker server</li><li>Open format</li><li>Go + Swift</li>
+        <li>Mac app</li><li>iPhone app</li><li>Docker server</li><li>Open format</li><li>Go + Swift</li>
       </ul>
     </div>
 
@@ -87,14 +87,14 @@
       <div class="stops">
         <article class="leg" data-name="Passport scan.pdf" data-where="On your laptop" data-server="no">
           <div class="leg-head"><span class="leg-ic"><svg><use href="#i-laptop"/></svg></span><h3>Drop it in the Send window.</h3></div>
-          <p>Connect your inbox server once with an address and a token, then drag files onto the window. Sending works while your vault is locked, from any Mac you own, or anything that can make an HTTP request with the token.</p>
-          <figure class="shot"><img src="screenshots/mac-send-setup.webp" width="1600" height="1017" loading="lazy" alt="The Send screen in the Mac app, asking for the server address and access token"><figcaption>The one-time step: address and token. After that, Send is a drop zone.</figcaption></figure>
+          <p>Type your server's address, press Connect, and approve the six-digit code on the server's web page. No tokens to copy. After that, drag files onto the window. Sending works while your vault is locked, and the same flow connects the iPhone app.</p>
+          <figure class="shot"><img src="screenshots/mac-send-setup.webp" width="1600" height="1017" loading="lazy" alt="The Send screen in the Mac app, asking for the server address and access token"><figcaption>The one-time step: address and Connect. After that, Send is a drop zone.</figcaption></figure>
         </article>
 
         <article class="leg" data-name="sealed for your vault" data-where="Waiting in your inbox" data-server="brief">
           <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox only holds sealed files.</h3></div>
-          <p>The inbox server holds your vault's <em>public</em> key and an upload secret. The Mac app seals each file on your Mac with those keys and uploads the sealed copy. Nothing the server holds can open that copy: not today's uploads, not last year's, not your vault.</p>
-          <p class="aside">Honest bit: sealing on your Mac needs the server keys pasted into the app (Settings → Server). Without them, and for scripts or curl that use the plain upload, the server sees the file in the clear while it seals it. Keep it on Tailscale or behind HTTPS either way.</p>
+          <p>The inbox server holds your vault's <em>public</em> key and a hash of each device's token, never a secret it could read with. The Mac and iPhone seal each file on the device with the vault's public key and upload only the sealed copy. Nothing the server holds can open that copy: not today's uploads, not last year's, not your vault.</p>
+          <p class="aside">Honest bit: only the older plain upload (scripts, curl) lets the server see a file in the clear while it seals it, and that route works only if you paste the vault's keys into the server yourself. Keep the sync port on Tailscale or behind HTTPS either way.</p>
           <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
         </article>
 
@@ -146,12 +146,25 @@
 
     <div class="feature flip">
       <div class="feature-copy">
+        <h3>The iPhone app</h3>
+        <p>Send-only, same look as the Mac app.</p>
+        <ul class="ticks">
+          <li><b>Share sheet</b>: send photos, files and links from any app straight to your inbox.</li>
+          <li><b>Connect by approval</b>: enter the address, compare the code on the server page, approve. A QR code works too.</li>
+          <li><b>Sealed on the phone</b>, retried in the background, and it never holds your vault.</li>
+          <li><b>Build it yourself</b> with Xcode and your own Apple developer team: <code>scripts/build-ios.sh</code>.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="feature-copy">
         <h3>The inbox server</h3>
         <p>A write-only drop box you run yourself.</p>
         <ul class="ticks">
-          <li><b>Guided setup</b>: claim it, paste your vault's keys, pick how devices reach it, send a test file.</li>
-          <li><b>Made for Tailscale</b>, and happy behind tailscale serve, Caddy or a Cloudflare Tunnel.</li>
-          <li><b>Can't read your vault.</b> It holds a public key and an upload secret, never your passphrase.</li>
+          <li><b>Guided setup</b>: claim it, pick how devices reach it, then connect your Mac and phone by approving a code. No keys to paste.</li><li><b>Devices card</b>: open a ten-minute pairing window, approve or deny requests, remove a device and its access ends at once. A <b>Start over</b> panel resets what you tick.</li>
+          <li><b>Made for Tailscale</b>, and happy behind tailscale serve, Caddy or a Cloudflare Tunnel, with rate limiting and an optional public address so devices see <code>https://vault.example.com</code> instead of a port.</li>
+          <li><b>Can't read your vault.</b> It holds a public key and hashed device tokens, never your passphrase.</li>
           <li><b>One Docker image</b>: <code>ghcr.io/klppl/sendndes</code>. The admin page only answers your own network.</li>
           <li><b>Works on your phone</b>, light or dark.</li>
         </ul>
