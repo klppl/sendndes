@@ -63,7 +63,7 @@ Runs on macOS and Linux (not Windows), plus iOS for the phone app. The format ha
     <td width="32%"><img src="docs/screenshots/web-phone.png" alt="The same dashboard on a phone, light mode"></td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/screenshots/web-setup-reachability.png" alt="Guided setup step 2: choosing how devices reach the server"></td>
+    <td colspan="2"><img src="docs/screenshots/web-setup-reachability.png" alt="Guided setup step 1: choosing how devices reach the server"></td>
   </tr>
 </table>
 
