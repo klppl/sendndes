@@ -476,7 +476,7 @@ function dashboard() {
   const pairingUI = pairingPanel();
   const connect = h("section", { class: "sticker card" },
     h("div", { class: "card-head" }, h("h2", {}, "Devices")),
-    h("p", { class: "soft small" }, "Connect a Mac or a phone: it shows a code, you compare it here and approve. No tokens to copy."),
+    h("p", { class: "soft small" }, "Connect a Mac or a phone: it shows a code, you compare it here and approve."),
     h("div", {}));
   const connectBody = connect.lastChild;
   const addr = h("div", {});
