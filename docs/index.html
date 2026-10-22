@@ -93,7 +93,7 @@
 
         <article class="leg" data-name="sealed for your vault" data-where="Waiting in your inbox" data-server="brief">
           <div class="leg-head"><span class="leg-ic grape"><svg><use href="#i-server"/></svg></span><h3>Your inbox only holds sealed files.</h3></div>
-          <p>The inbox server holds your vault's <em>public</em> key and a hash of each device's token, never a secret it could read with. The Mac and iPhone seal each file on the device with the vault's public key and upload only the sealed copy. Nothing the server holds can open that copy: not today's uploads, not last year's, not your vault.</p>
+          <p>Your Mac or iPhone locks each file before it leaves the device, using a key that can only lock, not unlock. The server stores the locked file and has nothing that could open it. Only your vault, on your Mac, can.</p>
           <p class="aside">Honest bit: only the older plain upload (scripts, curl) lets the server see a file in the clear while it seals it, and that route works only if you paste the vault's keys into the server yourself. Keep the sync port on Tailscale or behind HTTPS either way.</p>
           <figure class="shot"><img src="screenshots/web-dashboard.webp" width="1600" height="1251" loading="lazy" alt="The ndesd admin page: inbox open, three sealed files waiting, connection details"><figcaption>The server's admin page, shown with example data.</figcaption></figure>
         </article>
