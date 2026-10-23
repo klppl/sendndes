@@ -15,9 +15,8 @@ sh scripts/build-app.sh
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")
 DMG=build/sendndes-$VERSION.dmg
 
-# Notarization needs a Developer ID signature, the hardened runtime and a secure timestamp.
-codesign --force --options runtime --timestamp -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/ndes"
-codesign --force --options runtime --timestamp -s "$SIGN_IDENTITY" "$APP"
+# build-app.sh signed the helper and the app (Developer ID, hardened runtime, secure timestamp). The helper
+# must not be signed again: the app checks its hash at run time.
 codesign --verify --strict --deep "$APP"
 
 # Disk image: the app plus an Applications shortcut to drag it onto.

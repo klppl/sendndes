@@ -8,6 +8,10 @@
 #   keeps trusting the app across rebuilds; default "-" is ad-hoc and changes on every build)
 set -eu
 SIGN_IDENTITY=${SIGN_IDENTITY:--}
+# A real identity gets a secure timestamp (notarization requires it). It must happen here, before the
+# helper is hashed: signing the helper again afterwards changes its bytes and the app's integrity check fails.
+TS=--timestamp=none
+[ "$SIGN_IDENTITY" = "-" ] || TS=--timestamp
 
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -26,7 +30,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
 cp app/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp dist/ndes-darwin-arm64 "$APP/Contents/Helpers/ndes"
 chmod 755 "$APP/Contents/Helpers/ndes"
-codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/ndes"
+codesign --force --options runtime $TS -s "$SIGN_IDENTITY" "$APP/Contents/Helpers/ndes"
 HASH=$(shasum -a 256 "$APP/Contents/Helpers/ndes" | cut -d' ' -f1)
 
 mkdir -p "$SRC"
@@ -48,8 +52,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleName</key><string>sendndes</string>
 	<key>CFBundleDisplayName</key><string>send n*des</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.1</string>
-	<key>CFBundleVersion</key><string>1</string>
+	<key>CFBundleShortVersionString</key><string>0.1.1</string>
+	<key>CFBundleVersion</key><string>2</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSHighResolutionCapable</key><true/>
@@ -57,7 +61,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --options runtime -s "$SIGN_IDENTITY" "$APP"
+codesign --force --options runtime $TS -s "$SIGN_IDENTITY" "$APP"
 AFTER=$(shasum -a 256 "$APP/Contents/Helpers/ndes" | cut -d' ' -f1)
 if [ "$HASH" != "$AFTER" ]; then
 	echo "error: helper changed while signing the app" >&2
