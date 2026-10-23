@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get it running · send n*des docs</title>
+<meta name="description" content="Build send n*des, make a vault, run the inbox server, and connect your Mac and iPhone. Commands, settings and fixes for the things that go wrong.">
+<meta name="color-scheme" content="light dark">
+<meta property="og:title" content="Get send n*des running">
+<meta property="og:description" content="Build it, make a vault, run the inbox server, connect your Mac and iPhone.">
+<meta property="og:image" content="https://klppl.github.io/sendndes/screenshots/mac-vault.png">
+<link rel="preload" href="../fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../site.css">
+<link rel="stylesheet" href="guide.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-6 -6 112 112'%3E%3Cg fill='%23241B2F'%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(30 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(90 50 50)'/%3E%3Crect x='-0.5' y='34.75' width='101' height='30.5' rx='15.25' transform='rotate(150 50 50)'/%3E%3C/g%3E%3Cg fill='%23FF5C8A'%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(30 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(90 50 50)'/%3E%3Crect x='3' y='38.25' width='94' height='23.5' rx='11.75' transform='rotate(150 50 50)'/%3E%3C/g%3E%3C/svg%3E">
+</head>
+<body>
+<svg width="0" height="0" class="sprite" aria-hidden="true">
+  <symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="3.5" width="16" height="7" rx="2"/><rect x="4" y="13.5" width="16" height="7" rx="2"/><path d="M8 7h.01M8 17h.01"/></symbol>
+  <symbol id="i-vault" viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="16" rx="3"/><circle cx="12" cy="12" r="3.2"/><path d="M12 8.8V7M15.2 12H17"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.6"/><path d="M10.5 17.5h3"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></symbol>
+</svg>
+
+<header class="nav">
+  <a class="brand" href="../" aria-label="send n*des home"><span data-aster="happy" data-size="38"></span><span class="wordmark">send n<span class="ast">*</span>des</span></a>
+  <nav aria-label="Site">
+    <a href="../">Home</a>
+    <a href="../#security">Security</a>
+    <a href="../#selfhost">Self-host</a>
+  </nav>
+  <a class="btn small" href="https://github.com/klppl/sendndes">GitHub <svg class="ic"><use href="#i-arrow"/></svg></a>
+</header>
+
+<main id="top">
+  <section class="doc-hero">
+    <h1>Get it <span class="pk">running</span>.</h1>
+    <p class="lede">Build the apps, make a vault, run the inbox server and connect your devices. Start with the part you need; each one works without the next.</p>
+    <ol class="paths">
+      <li><a class="path" href="#vault"><svg class="ic"><use href="#i-vault"/></svg><b>Just a vault</b><span class="d">An encrypted folder you open on your Mac. No server, no network.</span><span class="go">Start at "Make a vault" →</span></a></li>
+      <li><a class="path two" href="#server"><svg class="ic"><use href="#i-server"/></svg><b>Add an inbox</b><span class="d">A server your devices send files to, even while the vault is locked.</span><span class="go">Start at "Run the server" →</span></a></li>
+      <li><a class="path three" href="#iphone"><svg class="ic"><use href="#i-phone"/></svg><b>Add the iPhone</b><span class="d">Share a photo, PDF or link from any app straight to your inbox.</span><span class="go">Start at "The iPhone app" →</span></a></li>
+    </ol>
+  </section>
+
+  <div class="doc">
+    <aside class="doc-side" aria-label="On this page">
+      <details class="toc" open>
+        <summary>On this page</summary>
+        <ol>
+          <li class="grp">Start</li>
+          <li><a href="#overview">How the pieces fit</a></li>
+          <li><a href="#requirements">What you need</a></li>
+          <li class="grp">Set up</li>
+          <li><a href="#build">Build the apps</a></li>
+          <li><a href="#vault">Make a vault</a></li>
+          <li><a href="#server">Run the server</a></li>
+          <li><a href="#setup">First-time server setup</a></li>
+          <li><a href="#mac">Connect the Mac app</a></li>
+          <li><a href="#iphone">The iPhone app</a></li>
+          <li class="grp">Use it</li>
+          <li><a href="#receive">Getting files into the vault</a></li>
+          <li><a href="#cli">Command line</a></li>
+          <li><a href="#maintain">Devices, upgrades, backups</a></li>
+          <li class="grp">Help</li>
+          <li><a href="#troubleshooting">Troubleshooting</a></li>
+          <li><a href="#next">Where to go next</a></li>
+        </ol>
+      </details>
+    </aside>
+
+    <div class="doc-main">
+
+      <section id="overview">
+        <h2>How the pieces fit<a class="anchor" href="#overview" aria-label="Link to this section">#</a></h2>
+        <p class="lead">Your devices lock each file before it leaves them. The server only holds locked files until your Mac collects them.</p>
+        <ol class="flow">
+          <li><b>Mac or iPhone</b>Locks the file with the vault's <em>public</em> key, then uploads it.</li>
+          <li class="arr" aria-hidden="true">→</li>
+          <li><b>Inbox server</b>Stores locked files (<code>ndesd</code>). Holds no key that can open them.</li>
+          <li class="arr" aria-hidden="true">→</li>
+          <li><b>Your vault</b>A folder of encrypted files. Only your Mac, with your passphrase, can read it.</li>
+        </ol>
+        <p>The vault is just a folder, so it can live on this Mac, a NAS, Google Drive or Dropbox. Whoever hosts or syncs it sees only ciphertext. The inbox server is optional: you need it only if you want devices to send files without the vault being unlocked.</p>
+      </section>
+
+      <section id="requirements">
+        <h2>What you need<a class="anchor" href="#requirements" aria-label="Link to this section">#</a></h2>
+        <div class="table-wrap">
+          <table class="doc-table">
+            <thead><tr><th>Part</th><th>Needs</th></tr></thead>
+            <tbody>
+              <tr><td>Mac app and <code>ndes</code> CLI</td><td>A Mac with Apple silicon on macOS 14 or later. <a href="https://go.dev/dl/">Go</a> 1.27.3 or newer, and the Swift toolchain (install Xcode or the Command Line Tools).</td></tr>
+              <tr><td>Inbox server</td><td>Any machine that stays on: Docker with Compose, or a Linux box (amd64 or arm64) to run the binary.</td></tr>
+              <tr><td>iPhone app</td><td>Xcode, <a href="https://github.com/yonaskolb/XcodeGen">XcodeGen</a>, an iPhone on iOS 17 or later, and a paid Apple Developer account. The app uses an App Group and a shared Keychain group, which free accounts can't register.</td></tr>
+              <tr><td>An address for the server</td><td>The Mac app can reach <code>http://</code> on Tailscale or loopback. <strong>The iPhone app only accepts <code>https://</code> and a real DNS name</strong> (no IP address, no plain http), so put HTTPS in front of the server if the phone will use it.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <span class="lab">The iPhone app isn't on the App Store</span>
+          <p>You build and install it yourself with your own signing team. That's covered in <a href="#iphone">The iPhone app</a>.</p>
+        </div>
+      </section>
+
+      <section id="build">
+        <h2>Build the apps<a class="anchor" href="#build" aria-label="Link to this section">#</a></h2>
+        <p class="lead">One clone gives you the Mac app, the CLI and the server.</p>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-build"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-build"><code><span class="pr">$</span> git clone https://github.com/klppl/sendndes &amp;&amp; cd sendndes
+<span class="pr">$</span> go build -o ndes ./cmd/ndes       <span class="cm"># the command-line tool</span>
+<span class="pr">$</span> scripts/build-app.sh               <span class="cm"># the Mac app, at build/sendndes.app</span></code></pre>
+        </div>
+        <p>Open <code>build/sendndes.app</code> (drag it to Applications if you like).</p>
+        <div class="callout tip">
+          <span class="lab">Keep the Keychain happy</span>
+          <p>The default build is ad-hoc signed, so its signature changes every build and macOS may ask again for Keychain access. To keep it stable, build with your own certificate:</p>
+          <p><code>SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" scripts/build-app.sh</code></p>
+        </div>
+      </section>
+
+      <section id="vault">
+        <h2>Make a vault<a class="anchor" href="#vault" aria-label="Link to this section">#</a></h2>
+        <p class="lead">A vault is a folder. Choose where it lives; everyone who stores or syncs it sees only ciphertext.</p>
+        <ol class="steps">
+          <li>
+            <span class="st">Create it</span>
+            <p>In the Mac app choose <b>Create a vault</b>, pick a folder and set a passphrase of at least 12 characters. Or use the CLI, which asks for the passphrase:</p>
+            <div class="terminal">
+              <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-init"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-init"><code><span class="pr">$</span> ./ndes init ~/MyVault               <span class="cm"># prints the recovery key</span>
+<span class="pr">$</span> export NDES_VAULT=~/MyVault        <span class="cm"># or pass --vault after a command</span></code></pre>
+            </div>
+          </li>
+          <li>
+            <span class="st">Write down the recovery key</span>
+            <p>It is shown once. The app makes you confirm three random groups of it before you can continue.</p>
+            <div class="callout danger">
+              <span class="lab">There is no reset</span>
+              <p>If you lose both the passphrase <em>and</em> the recovery key, the data is gone. Nobody can recover it for you, including this project.</p>
+            </div>
+          </li>
+          <li>
+            <span class="st">Try it</span>
+            <div class="terminal">
+              <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-try"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-try"><code><span class="pr">$</span> ./ndes add photo.jpg
+<span class="pr">$</span> ./ndes ls
+<span class="pr">$</span> ./ndes get &lt;id&gt; -o photo.jpg</code></pre>
+            </div>
+            <p>In the Mac app, drop files in, press <kbd>Space</kbd> for Quick Look, and export when you need a decrypted copy.</p>
+          </li>
+        </ol>
+        <div class="callout">
+          <span class="lab">Cloud folders</span>
+          <p>With Google Drive "stream" or Dropbox online-only folders, listing the vault opens every file, which can make the sync client download them. Mark the vault folder as available offline.</p>
+        </div>
+        <p>That's a complete setup if you only want a private vault on your Mac. Keep reading to add an inbox.</p>
+      </section>
+
+      <section id="server">
+        <h2>Run the server<a class="anchor" href="#server" aria-label="Link to this section">#</a></h2>
+        <p class="lead"><code>ndesd</code> is the inbox. It starts with a web page that walks you through setup, so there are no config files to write.</p>
+
+        <h3>Docker (easiest)<a class="anchor" href="#server-docker" id="server-docker" aria-label="Link to this section">#</a></h3>
+        <p>On the machine that will receive files, from the cloned repo:</p>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-docker"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-docker"><code><span class="pr">$</span> docker compose up -d
+<span class="pr">$</span> docker compose logs ndesd        <span class="cm"># shows your one-time setup code</span></code></pre>
+        </div>
+        <p>Then open <code>http://127.0.0.1:8080</code> on that machine. From another computer, use an SSH tunnel: <code>ssh -L 8080:127.0.0.1:8080 your-server</code>.</p>
+
+        <h3>A prebuilt image<a class="anchor" href="#server-image" id="server-image" aria-label="Link to this section">#</a></h3>
+        <p>To skip building on the server, run the repo's <b>Docker image</b> workflow from the Actions tab. It publishes <code>ghcr.io/&lt;you&gt;/sendndes</code>. If the package is private, make it public or run <code>docker login ghcr.io</code> on the server. Then use this <code>docker-compose.yml</code>:</p>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">docker-compose.yml</span><button class="copy" type="button" data-copy="c-compose"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-compose"><code>services:
+  ndesd:
+    image: ghcr.io/&lt;you&gt;/sendndes:latest
+    restart: unless-stopped
+    volumes:
+      - ndesd-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "8485:8485"
+volumes:
+  ndesd-data:</code></pre>
+        </div>
+
+        <h3>A Linux binary<a class="anchor" href="#server-binary" id="server-binary" aria-label="Link to this section">#</a></h3>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-linux"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-linux"><code><span class="pr">$</span> scripts/build-linux.sh                    <span class="cm"># dist/ndesd-linux-amd64, -arm64, SHA256SUMS</span>
+<span class="pr">$</span> sudo install -m 0755 dist/ndesd-linux-amd64 /usr/local/bin/ndesd
+<span class="pr">$</span> ndesd --data /var/lib/ndesd</code></pre>
+        </div>
+        <p>For a hardened systemd unit and a dedicated user, follow <a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-deploy.md">the deploy notes</a>.</p>
+
+        <h3>Ports and who can reach them<a class="anchor" href="#server-ports" id="server-ports" aria-label="Link to this section">#</a></h3>
+        <div class="table-wrap">
+          <table class="doc-table">
+            <thead><tr><th>Port</th><th>What it is</th><th>Keep it</th></tr></thead>
+            <tbody>
+              <tr><td><code>8080</code></td><td>The admin web page, for you only.</td><td>On this machine. It answers only loopback, private-network and Tailscale addresses, and needs a password. Reach it over an SSH tunnel or Tailscale.</td></tr>
+              <tr><td><code>8485</code></td><td>The sync port your devices connect to.</td><td>On Tailscale or a VPN, or behind HTTPS. It speaks plain HTTP itself.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <span class="lab">Don't expose 8485 as plain HTTP</span>
+          <p>Files are locked on the device, but the upload token travels in a header. Put the sync port behind HTTPS (<code>tailscale serve</code>, Caddy or a Cloudflare Tunnel) or keep it on Tailscale. The iPhone needs HTTPS anyway.</p>
+        </div>
+        <p>Using a Cloudflare Tunnel? Read <a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-cloudflare.md">the Cloudflare notes</a> first. Bot protection can block the app, and the admin page needs its own Access policy and <code>NDESD_ADMIN_BEHIND_PROXY=1</code>.</p>
+      </section>
+
+      <section id="setup">
+        <h2>First-time server setup<a class="anchor" href="#setup" aria-label="Link to this section">#</a></h2>
+        <p class="lead">The admin page asks three things, once.</p>
+        <ol class="steps">
+          <li>
+            <span class="st">Claim the server</span>
+            <p>Enter the one-time setup code from the logs and choose an admin password. The code is also saved as <code>setup-code</code> in the data folder.</p>
+          </li>
+          <li>
+            <span class="st">Choose how devices reach it</span>
+            <p>Tailscale, a proxy on the machine, the local network, or every interface. If a proxy or tunnel sits in front, set <b>Address your devices use</b> to the public address, like <code>https://vault.example.com</code>, so the page shows that instead of a host and port.</p>
+            <figure class="shot"><img src="../screenshots/web-setup-reachability.webp" width="1600" height="1673" loading="lazy" alt="Setup step: choosing how your devices reach the server, with Tailscale recommended"><figcaption>Step 2: how devices reach the server.</figcaption></figure>
+          </li>
+          <li>
+            <span class="st">Connect your devices</span>
+            <p>The page now shows status, what's waiting and the <b>Devices</b> card. You add devices there, in the next two sections.</p>
+          </li>
+        </ol>
+        <p>The server never holds a key that can open anything. Devices learn the vault's <em>public</em> inbox key while pairing.</p>
+      </section>
+
+      <section id="mac">
+        <h2>Connect the Mac app<a class="anchor" href="#mac" aria-label="Link to this section">#</a></h2>
+        <p class="lead">No tokens to copy. You compare a six-digit code on two screens and approve.</p>
+        <ol class="steps">
+          <li>
+            <span class="st">Open the pairing window</span>
+            <p>On the server's page, press <b>Add a device</b> under Devices. The window stays open for ten minutes and closes by itself. Nothing can connect while it's closed.</p>
+          </li>
+          <li>
+            <span class="st">Connect from the app</span>
+            <p>In the Mac app go to <b>Settings → Server</b>, type the server address and press <b>Connect</b>. The app shows a code like <code>742 913</code>.</p>
+            <figure class="shot"><img src="../screenshots/mac-send-setup.webp" width="1600" height="1159" loading="lazy" alt="The Send screen in the Mac app: a server address and a Connect button"><figcaption>Enter the address and press Connect.</figcaption></figure>
+          </li>
+          <li>
+            <span class="st">Approve it on the server</span>
+            <p>The same code appears on the server page next to the Mac's name. If it matches, press <b>Approve</b>. The Mac now has its own access, kept in its Keychain.</p>
+          </li>
+        </ol>
+        <p>Sending now works while the vault is locked.</p>
+      </section>
+
+      <section id="iphone">
+        <h2>The iPhone app<a class="anchor" href="#iphone" aria-label="Link to this section">#</a></h2>
+        <p class="lead">Send-only. The phone has an upload-only key: it can send files, but it can't read or delete anything.</p>
+
+        <h3>Build and install<a class="anchor" href="#iphone-build" id="iphone-build" aria-label="Link to this section">#</a></h3>
+        <ol class="steps">
+          <li>
+            <span class="st">Set your signing team</span>
+            <p>Find your 10-character Team ID at developer.apple.com → Account → Membership details. Then:</p>
+            <div class="terminal">
+              <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-ios"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-ios"><code><span class="pr">$</span> brew install xcodegen
+<span class="pr">$</span> cp ios/Local.xcconfig.example ios/Local.xcconfig
+<span class="pr">$</span> open -e ios/Local.xcconfig        <span class="cm"># set DEVELOPMENT_TEAM to your Team ID</span>
+<span class="pr">$</span> cd ios &amp;&amp; xcodegen &amp;&amp; open SendndesIOS.xcodeproj</code></pre>
+            </div>
+            <p><code>Local.xcconfig</code> is git-ignored, so your Team ID stays out of the repo.</p>
+          </li>
+          <li>
+            <span class="st">Use your own bundle IDs (only if you aren't the project's owner)</span>
+            <p>The project uses the prefix <code>se.klippel.sendndes</code> for its app IDs, App Group and Keychain group, and Apple allows each ID on one team only. Replace that prefix everywhere under <code>ios/</code> (in <code>project.yml</code>, <code>App/SendndesApp.swift</code> and <code>ShareExtension/ShareViewController.swift</code>), then run <code>xcodegen</code> again.</p>
+          </li>
+          <li>
+            <span class="st">Prepare the phone</span>
+            <p>Connect it by cable, unlock it and tap <b>Trust This Computer</b>. Turn on <b>Developer Mode</b> in Settings → Privacy &amp; Security (the phone restarts).</p>
+          </li>
+          <li>
+            <span class="st">Run it</span>
+            <p>In Xcode pick the <b>Sendndes</b> scheme and your iPhone, then press <kbd>⌘R</kbd>. The first build registers the app IDs and the App Group under your team. If iOS says "Untrusted Developer", open Settings → General → VPN &amp; Device Management and trust your certificate.</p>
+          </li>
+        </ol>
+
+        <h3>Pair it with your Mac<a class="anchor" href="#iphone-pair" id="iphone-pair" aria-label="Link to this section">#</a></h3>
+        <p>The phone pairs by scanning a QR code your Mac shows, so the server's address and keys never get typed.</p>
+        <ol class="steps">
+          <li>
+            <span class="st">Show the code on the Mac</span>
+            <p>Mac app → <b>Settings → Devices</b>. Name the device, check the server's <code>https://</code> address, and press <b>Show QR code</b>. The server's pairing window opens by itself.</p>
+          </li>
+          <li>
+            <span class="st">Scan it with the phone</span>
+            <p>Open send n*des, tap <b>Scan the QR code from your Mac</b> and allow the camera. The phone shows the server, a device name and a <b>check value</b>.</p>
+          </li>
+          <li>
+            <span class="st">Compare, then pair</span>
+            <p>The check value must be the same as the one on your Mac's screen. If it isn't, press Cancel. Otherwise press <b>Pair</b>.</p>
+          </li>
+          <li>
+            <span class="st">Approve the code</span>
+            <p>The phone shows a six-digit code, and your Mac's QR window shows the same one. Press <b>Approve</b> there (or on the server's Devices page). Then tap <b>Test connection</b> on the phone: it should say the server accepts this phone's token.</p>
+          </li>
+        </ol>
+        <div class="phone-shots">
+          <img src="../screenshots/ios-pair.webp" width="600" height="1304" loading="lazy" alt="The iPhone app asking to pair with a server, showing the server, device name and a check value">
+          <img src="../screenshots/ios-home.webp" width="600" height="1304" loading="lazy" alt="The iPhone app paired with a server, with a Test connection button">
+          <img src="../screenshots/ios-share.webp" width="600" height="1304" loading="lazy" alt="The share sheet extension showing one item locked and queued">
+        </div>
+
+        <h3>Send something<a class="anchor" href="#iphone-send" id="iphone-send" aria-label="Link to this section">#</a></h3>
+        <p>Open a photo, PDF, note or web page, tap the share button and choose <b>send n*des</b>. The file is locked on the phone and queued; the system uploads it in the background, even while the phone is locked.</p>
+        <ul class="plain">
+          <li>Up to 20 items per share and 90 MiB per file. Use the Mac app for larger files.</li>
+          <li>Open the app to see what's waiting, what failed (with <b>Retry</b> and <b>Discard</b>) and a history. Failed items are kept for 7 days.</li>
+          <li>"Stored on server" means the server has the locked file. It doesn't mean your Mac has opened it yet.</li>
+        </ul>
+      </section>
+
+      <section id="receive">
+        <h2>Getting files into the vault<a class="anchor" href="#receive" aria-label="Link to this section">#</a></h2>
+        <p class="lead">Files wait on the server until your Mac collects them. Your Mac needs the passphrase for that; the server doesn't.</p>
+        <ul class="plain">
+          <li><b>Mac app:</b> unlocking checks the inbox and brings new files in by itself (you can turn that off in Settings). Press <kbd>⇧⌘I</kbd> to check at any time. New files carry a <em class="new">new</em> tag.</li>
+          <li><b>Command line:</b> <code>ndes pull --server &lt;url&gt; --token-file &lt;file&gt;</code> pulls and ingests sealed files. Use it for scripts and servers without the Mac app.</li>
+        </ul>
+      </section>
+
+      <section id="cli">
+        <h2>Command line<a class="anchor" href="#cli" aria-label="Link to this section">#</a></h2>
+        <p class="lead">Everything the app does, plus verify, recover and change the passphrase.</p>
+        <div class="table-wrap">
+          <table class="doc-table">
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>ndes init &lt;vault-dir&gt;</code></td><td>Create a vault and print the recovery key.</td></tr>
+              <tr><td><code>ndes add &lt;file&gt;</code></td><td>Encrypt a file into the vault. <code>--dir</code> and <code>--name</code> choose where and what.</td></tr>
+              <tr><td><code>ndes ls</code></td><td>List files. <code>--dir</code> picks a folder.</td></tr>
+              <tr><td><code>ndes get &lt;id-or-path&gt; -o &lt;out&gt;</code></td><td>Decrypt a file.</td></tr>
+              <tr><td><code>ndes pull --server &lt;url&gt; --token-file &lt;f&gt;</code></td><td>Pull sealed files from a server and ingest them.</td></tr>
+              <tr><td><code>ndes ingest</code></td><td>Move sealed files from an inbox folder into the vault.</td></tr>
+              <tr><td><code>ndes verify</code></td><td>Read and authenticate every file in the vault.</td></tr>
+              <tr><td><code>ndes passwd</code></td><td>Change the passphrase. The vault key and recovery key stay the same.</td></tr>
+              <tr><td><code>ndes recovery-key</code></td><td>Print the recovery key (needs the passphrase).</td></tr>
+              <tr><td><code>ndes recover &lt;vault-dir&gt;</code></td><td>Rebuild <code>vault.json</code> from the recovery key.</td></tr>
+              <tr><td><code>ndes sender-config</code></td><td>Make a phone pairing payload and the matching server line.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Common flags: <code>--vault &lt;dir&gt;</code> (default <code>$NDES_VAULT</code>, then <code>.</code>) and <code>--passphrase-stdin</code>. Run <code>ndes --help</code> for the rest.</p>
+      </section>
+
+      <section id="maintain">
+        <h2>Devices, upgrades, backups<a class="anchor" href="#maintain" aria-label="Link to this section">#</a></h2>
+
+        <h3>Remove a device<a class="anchor" href="#maintain-remove" id="maintain-remove" aria-label="Link to this section">#</a></h3>
+        <p>On the server page choose <b>Devices → Remove</b>, or in the Mac app go to <b>Settings → Devices</b>. The device stops working at once. This is what actually cuts off a lost phone: the phone still holds its encryption key, and it's the token that stops uploads.</p>
+
+        <h3>Start over<a class="anchor" href="#maintain-reset" id="maintain-reset" aria-label="Link to this section">#</a></h3>
+        <p>After signing in, the server's <b>Settings → Start over</b> removes what you tick (devices, reachability settings, pasted keys, waiting files) and runs the guided setup again. Your admin password stays.</p>
+
+        <h3>Upgrade the server<a class="anchor" href="#maintain-upgrade" id="maintain-upgrade" aria-label="Link to this section">#</a></h3>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><span class="term-title">bash</span><button class="copy" type="button" data-copy="c-up"><svg class="ic"><use href="#i-copy"/></svg><span>Copy</span></button></div>
+<pre id="c-up"><code><span class="pr">$</span> git pull &amp;&amp; docker compose up -d --build   <span class="cm"># built from source</span>
+<span class="pr">$</span> docker compose pull &amp;&amp; docker compose up -d    <span class="cm"># prebuilt image</span></code></pre>
+        </div>
+        <p>Your settings, device tokens and waiting files live in the <code>ndesd-data</code> volume, so they survive an upgrade. Update the Mac app and the server together when the release notes say the format changed.</p>
+
+        <h3>Back up<a class="anchor" href="#maintain-backup" id="maintain-backup" aria-label="Link to this section">#</a></h3>
+        <ul class="plain">
+          <li><b>The vault folder.</b> It's ciphertext, so any backup or sync service is fine.</li>
+          <li><b>The recovery key and passphrase</b>, somewhere separate from the vault.</li>
+          <li>The server is a relay, not a store: once the Mac has pulled a file it's deleted from the inbox. Losing the server loses only files that hadn't been collected yet.</li>
+        </ul>
+      </section>
+
+      <section id="troubleshooting">
+        <h2>Troubleshooting<a class="anchor" href="#troubleshooting" aria-label="Link to this section">#</a></h2>
+        <p class="lead">What you'll see, why, and the fix.</p>
+        <div class="table-wrap">
+          <table class="doc-table trouble">
+            <thead><tr><th>You see</th><th>Why and what to do</th></tr></thead>
+            <tbody>
+              <tr><td>"The server isn't accepting new devices right now"</td><td>The ten-minute pairing window is closed. Press <b>Add a device</b> on the server page (or reopen the QR window on the Mac), then try again.</td></tr>
+              <tr><td>"The server address must start with https://"</td><td>The phone accepts only <code>https://</code> with a real DNS name. No IP address, no plain http. Put HTTPS in front of the sync port and use that address.</td></tr>
+              <tr><td>The check values differ</td><td>Cancel and don't pair. A mismatch means the code didn't come from your Mac, and pairing it would point the phone at someone else's server or keys. Make a new code on your Mac.</td></tr>
+              <tr><td>Phone says "Connected", but files never show up in the vault</td><td>The server has them; your Mac hasn't collected them. Unlock the Mac app or press <kbd>⇧⌘I</kbd>.</td></tr>
+              <tr><td>Uploads stay "failed, retry later" behind Cloudflare</td><td>Bot Fight Mode, challenges or Browser Integrity Check can block the app. Add a WAF rule that skips them for <code>PUT /inbox/…</code>, <code>GET /v1/ping</code> and <code>/v1/pair/…</code> (details in the Cloudflare notes).</td></tr>
+              <tr><td>An upload is refused as too large (413)</td><td>The phone's limit is 90 MiB per file. Cloudflare's free and Pro plans cap a request near 100 MB.</td></tr>
+              <tr><td>Mac: "The route to this address does not go through Tailscale"</td><td>The app insists plain-http Tailscale addresses are actually reached over Tailscale. Check that Tailscale is connected, or use an HTTPS address.</td></tr>
+              <tr><td>Xcode: "Device isn't registered in your developer account" or "No profiles for …"</td><td>Xcode is still using a free Personal Team. In Xcode → Settings → Accounts sign in with your paid account (sign out and back in if it only lists "Personal Team"), choose that team under Signing &amp; Capabilities for both targets, and run once from Xcode.</td></tr>
+              <tr><td>Xcode: "Manual pairing of this device is already in progress"</td><td>Unlock the phone, tap <b>Trust</b> on its prompt, turn on Developer Mode, then unplug and replug the cable.</td></tr>
+              <tr><td>Camera won't start on the scan screen</td><td>Allow the camera under Settings → send n*des. The camera is used only to read the pairing QR code.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout tip">
+          <span class="lab">A lost phone</span>
+          <p>Remove its device on the server page. That revokes its token immediately and is the step that matters. Then, if you like, tap <b>Remove configuration</b> in the app to delete the keys, address, waiting files and history from the phone.</p>
+        </div>
+      </section>
+
+      <section id="next">
+        <h2>Where to go next<a class="anchor" href="#next" aria-label="Link to this section">#</a></h2>
+        <ul class="plain">
+          <li><a href="../#security">What it protects, and what it doesn't</a>, in plain words.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/SPEC.md">SPEC.md</a>: the file format and threat model, with independent Go, Swift and Python implementations that agree byte for byte.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-deploy.md">Server deploy notes</a>: systemd, tokens file, limits.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-cloudflare.md">Cloudflare notes</a>: tunnel setup and what Cloudflare can see.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/README-ios.md">iPhone app notes</a>: what has been tested, and what hasn't.</li>
+        </ul>
+        <div class="doc-end">
+          <p>Found a mistake, or something unclear?</p>
+          <div class="links">
+            <a href="https://github.com/klppl/sendndes/issues">Open an issue</a>
+            <a href="https://github.com/klppl/sendndes/blob/main/docs/guide/index.html">Edit this page</a>
+            <a href="#top">Back to top ↑</a>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<footer class="foot">
+  <span class="wordmark small">send n<span class="ast">*</span>des</span>
+  <span>Open format · Go and Swift · macOS and Linux</span>
+  <a href="https://github.com/klppl/sendndes">github.com/klppl/sendndes</a>
+</footer>
+
+<script src="../site.js" defer></script>
+<script>
+"use strict";
+// Contents list: collapsed on small screens, and the link for the section in view is marked. The page reads fine without it.
+(() => {
+  const toc = document.querySelector(".toc");
+  if (toc && matchMedia("(max-width: 980px)").matches) toc.open = false;
+  const links = new Map([...document.querySelectorAll(".toc a")].map((a) => [a.getAttribute("href").slice(1), a]));
+  const secs = [...document.querySelectorAll(".doc-main > section")];
+  if (!("IntersectionObserver" in window) || !secs.length) return;
+  const mark = (id) => links.forEach((a, k) => a.toggleAttribute("aria-current", k === id) || (k !== id && a.removeAttribute("aria-current")));
+  const set = (id) => links.forEach((a, k) => { if (k === id) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); });
+  const io = new IntersectionObserver((es) => {
+    const vis = es.filter((e) => e.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+    if (vis) set(vis.target.id);
+  }, { rootMargin: "-10% 0px -70% 0px" });
+  secs.forEach((s) => io.observe(s));
+})();
+</script>
+</body>
+</html>

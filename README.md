@@ -96,6 +96,8 @@ The server never holds a secret that can open anything. Devices encrypt files wi
 
 ## Quick start
 
+A longer walkthrough, with the iPhone app, screenshots and troubleshooting, is in the [guide](https://klppl.github.io/sendndes/guide/).
+
 You need Go 1.27.3+ (and Swift for the Mac app).
 
 ### 1. Build
