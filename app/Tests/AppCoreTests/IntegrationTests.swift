@@ -445,7 +445,7 @@ final class HostileServerTests: XCTestCase {
         }
         defer { redirector.shutdown() }
         let (r, _) = await upload(redirector.port)
-        if case .success = r { XCTFail("redirect treated as success") }
+        XCTAssertEqual(r, .failure(.redirected))
         try? await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertEqual(redirector.requests.count, 1)
         XCTAssertTrue(redirector.requests[0].hasPrefix("PUT /inbox"))

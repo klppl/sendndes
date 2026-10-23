@@ -10,6 +10,7 @@ public enum PairFailure: Error, Equatable {
     case rejected      // the server refused the request as invalid
     case unreachable
     case unexpected
+    case redirected    // an http:// address that the server or a proxy sends to https://
     case denied, expired
     case notOffered    // an older server without pairing
     case tokenRejected
@@ -21,6 +22,7 @@ public enum PairFailure: Error, Equatable {
         case .rejected: return "The server did not accept the request."
         case .unreachable: return "Can't reach the server. Check the address and that it is running."
         case .unexpected: return "The server's answer was not understood."
+        case .redirected: return "The server redirected the request. Use its https:// address."
         case .denied: return "The request was denied on the server."
         case .expired: return "The request ran out of time (5 minutes). Press Connect to try again."
         case .notOffered: return "This server does not offer device pairing. Update it to the latest send n*des server."
@@ -85,7 +87,7 @@ enum PairClient {
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         switch await Transfer.run(request: r, body: nil) {
-        case .failure(let f): return .failure(f == .unexpectedResponse ? .unexpected : .unreachable)
+        case .failure(let f): return .failure(f == .redirected ? .redirected : f == .unexpectedResponse ? .unexpected : .unreachable)
         case .success(let (s, d)): return .success((s, d))
         }
     }

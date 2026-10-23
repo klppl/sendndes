@@ -4,7 +4,7 @@ import NdesCore
 
 public enum UploadFailure: Error, Equatable {
     case tokenRejected, tooLarge, rateLimited, inboxFull, badName, serverError
-    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, notTailscaleRoute, dateOutOfRange, serverOutOfSpace, uploadRejected
+    case unreachable, timedOut, fileChanged(deleted: Bool), cantRead, unexpectedResponse, redirected, notTailscaleRoute, dateOutOfRange, serverOutOfSpace, uploadRejected
     /// The server has server-side sealing off (it holds no keys): files must be sealed here first.
     case sealingNeeded
 
@@ -31,6 +31,7 @@ public enum UploadFailure: Error, Equatable {
                            : "The file changed while sending; the server may keep a partial copy."
         case .cantRead: return "Can't read this file."
         case .unexpectedResponse: return "The server's answer was not understood."
+        case .redirected: return "The server redirected the request. Use its https:// address."
         case .notTailscaleRoute: return RouteGuard.routeMessage
         case .serverOutOfSpace: return "The server is out of space."
         case .uploadRejected: return "The server could not store this file."
@@ -312,7 +313,11 @@ final class Transfer: NSObject, URLSessionDataDelegate {
             return
         }
         if error != nil { finish(.failure(.unreachable)); return }
-        if (100..<200).contains(status) || (300..<400).contains(status) || status == 0 {
+        if (300..<400).contains(status) {
+            finish(.failure(.redirected))
+            return
+        }
+        if (100..<200).contains(status) || status == 0 {
             finish(.failure(.unexpectedResponse))
             return
         }
