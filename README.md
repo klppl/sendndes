@@ -10,13 +10,16 @@
   Contents, names and folders stay encrypted, wherever the vault is stored or synced.
 </p>
 
+<h2 align="center">
+  <a href="https://klppl.github.io/sendndes/">Visit the website &rarr;</a>
+</h2>
+
 <p align="center">
   <img src="docs/screenshots/mac-vault.png" alt="The send n*des Mac app showing an unlocked vault with five files" width="760">
 </p>
 
 <p align="center">
   <a href="https://github.com/klppl/sendndes/releases/latest"><b>Download for Mac</b></a> ·
-  <a href="https://klppl.github.io/sendndes/">Website</a> ·
   <a href="https://klppl.github.io/sendndes/guide/">Guide</a> ·
   <a href="SPEC.md">Format spec</a>
 </p>
