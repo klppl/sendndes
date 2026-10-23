@@ -55,6 +55,25 @@ Runs on macOS and Linux (not Windows), plus iOS for the phone app. The format ha
 - The recovery key is shown once at creation; you confirm three random groups of it before you can continue.
 - Keyboard: ⌘O add, ⌘R refresh, ⇧⌘I check inbox, ⌘L lock, ⌘, settings.
 
+## The iPhone app
+
+<table>
+  <tr>
+    <td width="25%"><img src="docs/screenshots/ios-welcome.png" alt="iPhone app welcome screen with a Scan the QR code from your Mac button"></td>
+    <td width="25%"><img src="docs/screenshots/ios-pair.png" alt="Pair with this server screen showing the server, device name and a check value"></td>
+    <td width="25%"><img src="docs/screenshots/ios-home.png" alt="Paired home screen with a Test connection button and an empty Waiting to send list"></td>
+    <td width="25%"><img src="docs/screenshots/ios-share.png" alt="The share sheet extension showing one item locked and queued"></td>
+  </tr>
+  <tr>
+    <td><b>First launch.</b> Scan the QR code from the Mac app (Settings → Devices).</td>
+    <td><b>Pair.</b> Compare the check value with your Mac's, then approve the code it shows.</td>
+    <td><b>Paired.</b> Test the connection. What is waiting, failed or sent shows here.</td>
+    <td><b>Share.</b> Pick send n*des in any share sheet. The file is locked on the phone, then uploaded in the background.</td>
+  </tr>
+</table>
+
+Send-only: the phone holds an upload-only key, so it can send files but can't read or delete anything. Up to 20 items per share, 90 MiB per file; use the Mac app for larger ones. The screenshots show an example server address.
+
 ## The inbox server
 
 <table>
