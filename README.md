@@ -17,7 +17,7 @@
 |---|---|
 | **Vault** | A folder of encrypted files. Put it anywhere: this Mac, a NAS, Google Drive, Dropbox. Whoever hosts or syncs it sees only ciphertext. |
 | **Mac app** (`send n*des`) | Create, unlock and browse the vault; add, Quick Look, open and export files; send files to your inbox server. |
-| **iPhone app** (`ios/`) | *Coming soon.* Send-only: share photos and files from any app to your inbox. Encrypts on the phone, retries in the background. |
+| **iPhone app** (`ios/`) | Send-only: share photos and files from any app to your inbox. Encrypts on the phone, retries in the background. |
 | **Inbox server** (`ndesd`) | A write-only drop box your devices send to, with a web admin page. It can never read the vault. Devices connect by approving a code on its page. |
 | **CLI** (`ndes`) | Everything the app does, plus verify, recover and change the passphrase. |
 
