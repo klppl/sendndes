@@ -36,8 +36,8 @@
 .doc-main h2:hover .anchor, .doc-main h3:hover .anchor, .anchor:focus-visible { opacity: 1; }
 .doc-main p, .doc-main li { font-size: 1.04rem; line-height: 1.62; }
 .doc-main .lead { color: var(--ink-soft); font-size: 1.14rem; margin: 10px 0 18px; }
-.doc-main :not(pre) > code { background: var(--paper-deep); border: 2px solid color-mix(in srgb, var(--ink) 18%, transparent); border-radius: 7px; padding: 1px 6px; font-size: .84em; overflow-wrap: anywhere; }
-.doc-main kbd { font: 800 .82em/1 var(--round); padding: 3px 7px; border: 2px solid var(--ink); border-bottom-width: 3px; border-radius: 7px; background: var(--card); white-space: nowrap; }
+.doc-main :not(pre) > code { background: var(--paper-deep); border: 2px solid color-mix(in srgb, var(--ink) 18%, transparent); border-radius: 7px; padding: 2px 7px; font-size: .84em; overflow-wrap: anywhere; }
+.doc-main kbd { font: 800 .82em/1 var(--round); padding: 4px 9px; border: 2px solid var(--ink); border-bottom-width: 3px; border-radius: 7px; background: var(--card); white-space: nowrap; }
 .doc-main ul.plain { margin: 8px 0 16px; padding-left: 22px; }
 .doc-main ul.plain li { margin: 5px 0; }
 
