@@ -167,6 +167,11 @@ section { scroll-margin-top: 16px; }
 .server-shots { position: relative; aspect-ratio: 6 / 5; }
 .server-shots .wide { width: 78%; left: 0; top: 0; transform: rotate(-1.5deg); }
 .server-shots .phone { width: 30%; right: 0; bottom: 0; transform: rotate(3deg); border-radius: 20px; z-index: 2; }
+.phone-shots { position: relative; display: flex; gap: 3%; justify-content: center; align-items: flex-start; padding: 0 2% 32px; }
+.phone-shots img { width: 31%; height: auto; border: 3px solid var(--ink); border-radius: 22px; box-shadow: 7px 7px 0 var(--ink); background: var(--card); }
+.phone-shots img:nth-child(1) { transform: rotate(-2deg); }
+.phone-shots img:nth-child(2) { transform: translateY(28px) rotate(1deg); z-index: 2; }
+.phone-shots img:nth-child(3) { transform: rotate(2.5deg); }
 
 /* ---------- security receipt ---------- */
 .receipt { margin-top: 40px; background: var(--card); border: 3px solid var(--ink); border-radius: 20px; box-shadow: 9px 9px 0 var(--ink);
