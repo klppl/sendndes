@@ -4,7 +4,7 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
-/// Scan-only pairing: the camera is the only way in (no paste, no photo library).
+/// Scan-only pairing: the camera is the only way in (no paste, no photo library), except in debug builds (see `DebugPasteField`).
 struct ScannerScreen: View {
     @Bindable var model: SenderModel
     @State private var denied = false
@@ -28,9 +28,36 @@ struct ScannerScreen: View {
                     .padding(20)
                 Note(text: "Point the camera at the QR code on your Mac.").padding(.horizontal, 20).padding(.bottom, 20)
             }
+            #if DEBUG
+            DebugPasteField(model: model)
+            #endif
         }
     }
 }
+
+#if DEBUG
+/// Debug builds only (the Simulator has no camera): paste the `payload:` line of `ndes sender-config --pair`.
+/// It goes through the same `scanned` path as a camera read, so the owner still compares the check value.
+private struct DebugPasteField: View {
+    @Bindable var model: SenderModel
+    @State private var text = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Debug: paste the pairing code").font(.footnote).foregroundStyle(Theme.ink)
+            TextField("ndes-sender2:…", text: $text)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .submitLabel(.go).onSubmit { if !text.isEmpty { model.scanned(text.trimmingCharacters(in: .whitespacesAndNewlines)) } }
+                .font(.footnote.monospaced())
+                .padding(10)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.ink, lineWidth: 2))
+            Button("Use pasted code") { model.scanned(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                .buttonStyle(.chunkySmall).disabled(text.isEmpty)
+        }
+        .padding(.horizontal, 20).padding(.bottom, 20)
+    }
+}
+#endif
 
 struct QRScannerView: UIViewControllerRepresentable {
     let onCode: (String) -> Void
