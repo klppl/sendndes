@@ -201,7 +201,7 @@ volumes:
 <span class="pr">$</span> sudo install -m 0755 dist/ndesd-linux-amd64 /usr/local/bin/ndesd
 <span class="pr">$</span> ndesd --data /var/lib/ndesd</code></pre>
         </div>
-        <p>For a hardened systemd unit and a dedicated user, follow <a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-deploy.md">the deploy notes</a>.</p>
+        <p>For a hardened systemd unit and a dedicated user, follow <a href="https://github.com/klppl/sendndes/blob/main/cmd/ndesd/DEPLOY.md">the deploy notes</a>.</p>
 
         <h3>Ports and who can reach them<a class="anchor" href="#server-ports" id="server-ports" aria-label="Link to this section">#</a></h3>
         <div class="table-wrap">
@@ -217,7 +217,7 @@ volumes:
           <span class="lab">Don't expose 8485 as plain HTTP</span>
           <p>Files are locked on the device, but the upload token travels in a header. Put the sync port behind HTTPS (<code>tailscale serve</code>, Caddy or a Cloudflare Tunnel) or keep it on Tailscale. The iPhone needs HTTPS anyway.</p>
         </div>
-        <p>Using a Cloudflare Tunnel? Read <a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-cloudflare.md">the Cloudflare notes</a> first. Bot protection can block the app, and the admin page needs its own Access policy and <code>NDESD_ADMIN_BEHIND_PROXY=1</code>.</p>
+        <p>Using a Cloudflare Tunnel? Read <a href="https://github.com/klppl/sendndes/blob/main/cmd/ndesd/CLOUDFLARE.md">the Cloudflare notes</a> first. Bot protection can block the app, and the admin page needs its own Access policy and <code>NDESD_ADMIN_BEHIND_PROXY=1</code>.</p>
       </section>
 
       <section id="setup">
@@ -418,9 +418,9 @@ volumes:
         <ul class="plain">
           <li><a href="../#security">What it protects, and what it doesn't</a>, in plain words.</li>
           <li><a href="https://github.com/klppl/sendndes/blob/main/SPEC.md">SPEC.md</a>: the file format and threat model, with independent Go, Swift and Python implementations that agree byte for byte.</li>
-          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-deploy.md">Server deploy notes</a>: systemd, tokens file, limits.</li>
-          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/ndesd-cloudflare.md">Cloudflare notes</a>: tunnel setup and what Cloudflare can see.</li>
-          <li><a href="https://github.com/klppl/sendndes/blob/main/coordination/README-ios.md">iPhone app notes</a>: what has been tested, and what hasn't.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/cmd/ndesd/DEPLOY.md">Server deploy notes</a>: systemd, tokens file, limits.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/cmd/ndesd/CLOUDFLARE.md">Cloudflare notes</a>: tunnel setup and what Cloudflare can see.</li>
+          <li><a href="https://github.com/klppl/sendndes/blob/main/ios/README.md">iPhone app notes</a>: what has been tested, and what hasn't.</li>
         </ul>
         <div class="doc-end">
           <p>Found a mistake, or something unclear?</p>

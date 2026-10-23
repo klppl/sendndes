@@ -4,7 +4,7 @@ Mutates the files in `testvectors/` and checks that the Go library and the Swift
 
 ## Provenance (read this first)
 
-This is the REVIEWER's library-mode harness as it was on disk in `/tmp/valv-reviewer/` on 2026-10-19. The files there were last modified at 17:09–17:19, which is **before** the F1 commits (`5b18e4d`, `0790469`, 20:53–20:54). So this is most likely the round-1 harness, not the F1 version:
+This is the REVIEWER's library-mode harness as it was on disk in `/tmp/valv-reviewer/` on 2026-10-19. The files there were last modified at 17:09–17:19, which is **before** the F1 commits (`60de820`, `7be08af`, 20:53–20:54). So this is most likely the round-1 harness, not the F1 version:
 
 - It still contains the helpers TASKS.md F1 says were removed: `metaSummary` (metadata compared as a SHA-256 over `name|dir|mtime|mime|rev|size`), `fileIDFromBytes` and `hexDecode` in the Swift worker. Outputs are compared as SHA-256 digests, not byte for byte.
 - The **CLI mode** reported in F1 (2,000 cases running the real `ndes` CLI and `ndes-swift-tool` as subprocesses) is not here. It was not found anywhere under `/tmp`. It is lost and would have to be rewritten.

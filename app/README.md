@@ -1,10 +1,9 @@
 # send n*des (Mac app, milestone 1)
 
 Build: `scripts/build-app.sh` → `build/sendndes.app` (arm64, ad-hoc signed, not sandboxed). Tests: `scripts/test-app.sh`.
-Manual steps: `coordination/app-manual-test-m1.md`. Design: `coordination/app-design-v0.md`.
 
 Trust and secrets, in plain words:
-- With the server keys saved (Settings → Server, optional), the app seals each file on your Mac and the server only ever stores ciphertext. Without them, the app falls back to server-side sealing, but only if the server has it turned on (`--enable-server-sealing`, off by default): then the server sees the file's contents, name and folder for a moment while it seals them. A server with it off answers "This server only accepts files sealed on your Mac" and you add the keys. The Send screen says which mode is active. Settings → Devices pairs a phone: a QR code with an upload-only token (see `coordination/README-ios.md`).
+- With the server keys saved (Settings → Server, optional), the app seals each file on your Mac and the server only ever stores ciphertext. Without them, the app falls back to server-side sealing, but only if the server has it turned on (`--enable-server-sealing`, off by default): then the server sees the file's contents, name and folder for a moment while it seals them. A server with it off answers "This server only accepts files sealed on your Mac" and you add the keys. The Send screen says which mode is active. Settings → Devices pairs a phone: a QR code with an upload-only token (see [ios/README.md](../ios/README.md)).
 - The bearer token is stored in your **login keychain** (legacy keychain): not synchronizable, not iCloud-synced, readable while the login keychain is unlocked (normally the whole login session). macOS may ask you to allow access after each rebuild of the app.
 - For a pull the token is written to a 0600 file in a private temp directory and deleted as soon as the helper has read it, and on lock, quit and next launch. A force-kill (SIGKILL) can leave it until the next launch.
 - The passphrase is kept in memory until you lock. A Swift String cannot be wiped, so it may stay in freed memory until overwritten.
@@ -25,7 +24,7 @@ Plain `http://` is accepted only for loopback or a Tailscale address (100.64.0.0
 defaults write se.klippel.sendndes tailscaleInterfaces -string "wg0,utun9"
 ```
 
-https is not checked. The recommended setup is https through `tailscale serve`; see `coordination/ndesd-deploy.md` (§4.1b).
+https is not checked. The recommended setup is https through `tailscale serve`; see [cmd/ndesd/DEPLOY.md](../cmd/ndesd/DEPLOY.md) (§4.1b).
 
 ## Auto-lock, token binding, signing
 

@@ -497,7 +497,7 @@ Third revision (independent review of step 2):
 - Section 12: K_auth rotation.
 - Section 13: rows R-H1 to R-S2.
 
-Fourth revision (re-review of step2-fixed):
+Fourth revision (re-review of the third revision):
 - Section 1: macOS, iOS and Linux only.
 - Section 3: how to handle K_auth from `server-config`; output file mode 0600.
 - Section 4.3: `init` cleans up only what it created, on error or signal.
@@ -523,7 +523,7 @@ Sixth revision (round 4 re-verification):
 - Section 13: rows R4-1 to R4-W.
 
 Freeze:
-- The v1 format is frozen at commit 68bb5d7 (tag format-v1-frozen). Documentation only: the status line now says the format is frozen, section 15 (freeze rules) is added, rule 10.8 points to it, and section 13 has a row for it. No behaviour, vector or code changed.
+- The v1 format is frozen at commit f5fb8e6. Documentation only: the status line now says the format is frozen, section 15 (freeze rules) is added, rule 10.8 points to it, and section 13 has a row for it. No behaviour, vector or code changed.
 
 Post-freeze clarifications (audit follow-up, documentation only; each statement was checked against the Go and Swift implementations and no behaviour changed):
 - Section 7: the host learns the exact plaintext length, not an approximate size (SP1); renaming an object to `*.part` or to a junk name hides it, equivalent to deletion (SP5).

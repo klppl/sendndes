@@ -88,7 +88,7 @@ go test ./...                # core, CLI, server
 scripts/test-app.sh          # Mac app core tests
 ```
 
-`core/` Go reference implementation · `cmd/` CLI and server · `app/` Mac app · `ios/` iPhone app · `swift/NdesCore` Swift implementation · `testvectors/` shared vectors · `coordination/` design notes. More in [app/README.md](app/README.md).
+`core/` Go reference implementation · `cmd/` CLI and server · `app/` Mac app · `ios/` iPhone app · `swift/NdesCore` Swift implementation · `testvectors/` shared vectors · `cmd/ndesd/DEPLOY.md` server deploy notes. More in [app/README.md](app/README.md).
 
 ## License
 

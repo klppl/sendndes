@@ -3,7 +3,7 @@
 Every positive and negative vector passes. No vector failed, so the Python
 decryptor in ~/valv-review/round2/ was not consulted.
 
-The points below are places where SPEC.md (at format-v1-frozen) does not pin
+The points below are places where SPEC.md (as frozen for v1, commit f5fb8e6) does not pin
 down behaviour. None of them changes a byte the format writes, and none is
 exercised by a vector. All six are **resolved by owner**; the Swift code
 already behaves as ruled. SPEC.md is not edited (format frozen; see its

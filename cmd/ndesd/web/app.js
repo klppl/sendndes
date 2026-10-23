@@ -1,5 +1,5 @@
 "use strict";
-// send n*des server: admin page. Same look and words as the Mac app (see coordination/ndesd-ux-v1.md).
+// send n*des server: admin page. Same look and words as the Mac app.
 // First visit: claim (setup code + password). Then a guided setup (link vault, reachability, connect),
 // then a dashboard. Everything goes through /api/*; the server keeps all state.
 (() => {

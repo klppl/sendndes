@@ -6,7 +6,7 @@ Run of `swift/interop/run.sh` on 2026-10-19.
 
 | | |
 |---|---|
-| Go code | built from `cmd/valv` at repository commit `082b5d9d1986a3aba73628ff5d758df7a8fd7497` (main). `core/`, `cmd/`, `go.mod` and `go.sum` last changed in `68bb5d7624bf1e3d1a8a0c97a839e12490bbfb51` (tag `format-v1-frozen`). |
+| Go code | built from `cmd/valv` at repository commit `08056fba3701dda17babb135798b8164e922eb1d` (main). `core/`, `cmd/`, `go.mod` and `go.sum` last changed in `f5fb8e6df0be0106adb14764707ce49fd47e3609` (the v1 format freeze). |
 | Go | go1.26.3 darwin/arm64 |
 | Swift | Apple Swift 6.4 (swiftlang-6.4.0.34.1), Xcode 27.1 (27A9275) |
 | OS | macOS 26.6.2, arm64 |

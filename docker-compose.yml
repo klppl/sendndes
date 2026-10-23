@@ -5,7 +5,7 @@ services:
     build: .
     restart: unless-stopped
     # Only if the GUI is behind a Cloudflare Tunnel / reverse proxy. Protect the
-    # hostname with a Cloudflare Access policy too (see coordination/ndesd-deploy.md).
+    # hostname with a Cloudflare Access policy too (see cmd/ndesd/DEPLOY.md).
     # environment:
     #   NDESD_ADMIN_BEHIND_PROXY: "1"
     volumes:

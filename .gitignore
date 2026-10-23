@@ -17,3 +17,6 @@ build/
 /cmd/*/ndesd
 
 build/ios-derived/
+
+# macOS Finder metadata
+.DS_Store

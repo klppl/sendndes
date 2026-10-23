@@ -6,7 +6,7 @@
 # 2. builds the app and the share extension entry points for the generic iOS Simulator and the generic iOS device
 #    with CODE_SIGNING_ALLOWED=NO (Swift package targets: no XcodeGen needed);
 # 3. if XcodeGen is installed and ios/Local.xcconfig exists, also generates the Xcode project and builds it.
-# It cannot sign, install on a device or use an Apple account; see coordination/ios-manual-test.md.
+# It cannot sign, install on a device or use an Apple account; see ios/MANUAL-TEST.md.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
