@@ -206,6 +206,7 @@ section { scroll-margin-top: 16px; }
 /* ---------- close ---------- */
 .close { text-align: center; display: grid; justify-items: center; gap: 22px; padding-bottom: clamp(64px, 9vw, 120px); }
 .close h2 { max-width: 14em; }
+.close .fine { margin: 0; color: var(--ink-soft); font-size: .95rem; }
 .foot { max-width: 1240px; margin: 0 auto; padding: 26px var(--gutter) 40px; border-top: 3px dashed var(--ink); display: flex; gap: 18px; flex-wrap: wrap; align-items: center; justify-content: space-between;
   color: var(--ink-soft); font-size: .95rem; }
 
