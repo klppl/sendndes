@@ -52,8 +52,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 	<key>CFBundleName</key><string>sendndes</string>
 	<key>CFBundleDisplayName</key><string>send n*des</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.1.1</string>
-	<key>CFBundleVersion</key><string>2</string>
+	<key>CFBundleShortVersionString</key><string>0.1.2</string>
+	<key>CFBundleVersion</key><string>3</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>NSPrincipalClass</key><string>NSApplication</string>
 	<key>NSHighResolutionCapable</key><true/>
